@@ -6,6 +6,7 @@ import asyncio
 import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,7 @@ class ExtractionRequest:
     user_id: str
     agent_id: str | None = None
     sentence_ids: list[str] | None = None  # IDs of sentences stored in this session
+    session_time: datetime | None = None   # when the conversation happened (for event_time on facts)
 
 
 @dataclass
@@ -119,6 +121,7 @@ class ExtractionWorker:
                     await self._extractor.extract(
                         req.messages, req.session_id, req.user_id, req.agent_id,
                         sentence_ids=req.sentence_ids,
+                        session_time=req.session_time,
                     )
                 except Exception as e:
                     logger.error(

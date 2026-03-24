@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 from typing import Any
 
 from vektori.models.base import EmbeddingProvider
 from vektori.retrieval.scoring import explain_score, score_and_rank
+from vektori.retrieval.temporal import TemporalQueryParser
 from vektori.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
@@ -50,17 +52,20 @@ class SearchPipeline:
         embedder: EmbeddingProvider,
         temporal_decay_rate: float = 0.001,
         use_mentions: bool = True,
-        min_score: float = 0.0,
+        min_score: float = 0.3,
         debug: bool = False,
     ) -> None:
         self.db = db
         self.embedder = embedder
         self.temporal_decay_rate = temporal_decay_rate
         self.use_mentions = use_mentions
-        # Drop facts below this score floor (0.0 = no floor, return everything)
+        # Facts below this score are dropped — empty result signals "not found" (abstention).
+        # 0.3 is a reasonable floor: irrelevant facts score ~0.1-0.2, weak matches ~0.3-0.4.
+        # Set to 0.0 to disable (always return something regardless of relevance).
         self.min_score = min_score
         # debug=True logs score breakdowns for each returned fact
         self.debug = debug
+        self._temporal_parser = TemporalQueryParser()
 
     async def search(
         self,
@@ -73,6 +78,9 @@ class SearchPipeline:
         top_k: int = 10,
         context_window: int = 3,
         include_superseded: bool = False,
+        before_date: datetime | None = None,
+        after_date: datetime | None = None,
+        parse_temporal: bool = True,
     ) -> dict[str, Any]:
         """Retrieve relevant memories for a query.
 
@@ -87,6 +95,9 @@ class SearchPipeline:
             context_window: ±N sentences around each source sentence (L2 only).
             include_superseded: If True, also return overridden/old facts.
                                  Useful for historical queries.
+            before_date/after_date: Explicit temporal filters on fact event_time.
+            parse_temporal: If True and no explicit dates provided, auto-parse
+                            temporal expressions from the query (e.g. "last week").
 
         Returns:
             {
@@ -103,6 +114,17 @@ class SearchPipeline:
                 f"Invalid depth '{depth}'. Must be one of: {sorted(VALID_DEPTHS)}"
             )
 
+        # Auto-parse temporal window from query when no explicit dates given
+        if parse_temporal and before_date is None and after_date is None:
+            window = self._temporal_parser.parse(query)
+            if window:
+                before_date = window.before_date
+                after_date = window.after_date
+                logger.debug(
+                    "Temporal window parsed from query: after=%s before=%s",
+                    after_date, before_date,
+                )
+
         query_embedding = await self.embedder.embed(query)
 
         # L2 on Postgres: single CTE round trip — faster than 4 separate calls.
@@ -114,12 +136,14 @@ class SearchPipeline:
             and getattr(self.db, "supports_single_query", False)
         ):
             return await self._search_l2_fast(
-                query_embedding, user_id, agent_id, subject, session_id, top_k, context_window
+                query_embedding, user_id, agent_id, subject, session_id, top_k, context_window,
+                before_date=before_date, after_date=after_date,
             )
 
         return await self._search_stepped(
             query_embedding, user_id, agent_id, subject, session_id, depth,
-            top_k, context_window, include_superseded
+            top_k, context_window, include_superseded,
+            before_date=before_date, after_date=after_date,
         )
 
     # ── Step-by-step path (all backends, L0/L1, and L2 fallback) ──────────────
@@ -135,6 +159,8 @@ class SearchPipeline:
         top_k: int,
         context_window: int,
         include_superseded: bool,
+        before_date: datetime | None = None,
+        after_date: datetime | None = None,
     ) -> dict[str, Any]:
         # ── Step 1: Vector search over FACTS (L0 entry point) ─────────────────
         seed_facts = await self.db.search_facts(
@@ -145,6 +171,8 @@ class SearchPipeline:
             subject=subject,
             limit=top_k,
             active_only=not include_superseded,
+            before_date=before_date,
+            after_date=after_date,
         )
 
         # Sentence fallback: no facts yet (extraction still in-flight)
@@ -231,6 +259,8 @@ class SearchPipeline:
         session_id: str | None,
         top_k: int,
         context_window: int,
+        before_date: datetime | None = None,
+        after_date: datetime | None = None,
     ) -> dict[str, Any]:
         """Execute full L2 retrieval in one CTE round trip on Postgres."""
         raw = await self.db.search_l2_single_query(
@@ -241,6 +271,8 @@ class SearchPipeline:
             session_id=session_id,
             limit=top_k,
             window=context_window,
+            before_date=before_date,
+            after_date=after_date,
         )
 
         scored_facts = score_and_rank(
