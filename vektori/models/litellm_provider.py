@@ -39,16 +39,19 @@ class LiteLLMProvider(LLMProvider):
         self.model = model or DEFAULT_MODEL
         self._kwargs = kwargs  # pass-through to litellm (api_key, api_base, etc.)
 
-    async def generate(self, prompt: str) -> str:
+    async def generate(self, prompt: str, max_tokens: int | None = None) -> str:
         try:
             import litellm
         except ImportError as e:
             raise ImportError("litellm required: pip install litellm") from e
 
+        kwargs = dict(self._kwargs)
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
         response = await litellm.acompletion(
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
-            **self._kwargs,
+            **kwargs,
         )
         return response.choices[0].message.content or ""

@@ -76,11 +76,14 @@ class OllamaLLM(LLMProvider):
         self.model = model or DEFAULT_LLM_MODEL
         self.base_url = base_url.rstrip("/")
 
-    async def generate(self, prompt: str) -> str:
+    async def generate(self, prompt: str, max_tokens: int | None = None) -> str:
+        payload: dict = {"model": self.model, "prompt": prompt, "stream": False}
+        if max_tokens is not None:
+            payload["options"] = {"num_predict": max_tokens}
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 f"{self.base_url}/api/generate",
-                json={"model": self.model, "prompt": prompt, "stream": False},
+                json=payload,
                 timeout=120.0,
             )
             response.raise_for_status()

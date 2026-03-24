@@ -55,6 +55,8 @@ CREATE TABLE IF NOT EXISTS facts (
 
     user_id TEXT NOT NULL,
     agent_id TEXT,
+    session_id TEXT,                           -- which session produced this fact
+    subject TEXT,                              -- entity this fact is about (pre-filter discriminator)
 
     is_active BOOLEAN DEFAULT true,
     superseded_by UUID REFERENCES facts(id),  -- conflict resolution chain
@@ -70,6 +72,7 @@ CREATE INDEX IF NOT EXISTS idx_facts_embedding ON facts
 CREATE INDEX IF NOT EXISTS idx_facts_user ON facts (user_id);
 CREATE INDEX IF NOT EXISTS idx_facts_user_agent ON facts (user_id, agent_id);
 CREATE INDEX IF NOT EXISTS idx_facts_active ON facts (user_id, is_active) WHERE is_active = true;
+CREATE INDEX IF NOT EXISTS idx_facts_subject ON facts (user_id, subject) WHERE subject IS NOT NULL;
 
 
 -- ============================================================

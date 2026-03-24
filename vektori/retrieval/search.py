@@ -58,6 +58,8 @@ class SearchPipeline:
         query: str,
         user_id: str,
         agent_id: str | None = None,
+        subject: str | None = None,
+        session_id: str | None = None,
         depth: str = "l1",
         top_k: int = 10,
         context_window: int = 3,
@@ -103,11 +105,11 @@ class SearchPipeline:
             and getattr(self.db, "supports_single_query", False)
         ):
             return await self._search_l2_fast(
-                query_embedding, user_id, agent_id, top_k, context_window
+                query_embedding, user_id, agent_id, subject, session_id, top_k, context_window
             )
 
         return await self._search_stepped(
-            query_embedding, user_id, agent_id, depth,
+            query_embedding, user_id, agent_id, subject, session_id, depth,
             top_k, context_window, include_superseded
         )
 
@@ -118,6 +120,8 @@ class SearchPipeline:
         query_embedding: list[float],
         user_id: str,
         agent_id: str | None,
+        subject: str | None,
+        session_id: str | None,
         depth: str,
         top_k: int,
         context_window: int,
@@ -128,6 +132,8 @@ class SearchPipeline:
             embedding=query_embedding,
             user_id=user_id,
             agent_id=agent_id,
+            session_id=session_id,
+            subject=subject,
             limit=top_k,
             active_only=not include_superseded,
         )
@@ -202,6 +208,8 @@ class SearchPipeline:
         query_embedding: list[float],
         user_id: str,
         agent_id: str | None,
+        subject: str | None,
+        session_id: str | None,
         top_k: int,
         context_window: int,
     ) -> dict[str, Any]:
@@ -210,6 +218,8 @@ class SearchPipeline:
             embedding=query_embedding,
             user_id=user_id,
             agent_id=agent_id,
+            subject=subject,
+            session_id=session_id,
             limit=top_k,
             window=context_window,
         )

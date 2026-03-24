@@ -17,6 +17,7 @@ class ExtractionRequest:
     session_id: str
     user_id: str
     agent_id: str | None = None
+    sentence_ids: list[str] | None = None  # IDs of sentences stored in this session
 
 
 class ExtractionWorker:
@@ -91,7 +92,8 @@ class ExtractionWorker:
             async with semaphore:
                 try:
                     await self._extractor.extract(
-                        req.messages, req.session_id, req.user_id, req.agent_id
+                        req.messages, req.session_id, req.user_id, req.agent_id,
+                        sentence_ids=req.sentence_ids,
                     )
                 except Exception as e:
                     logger.error(
