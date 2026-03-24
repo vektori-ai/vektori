@@ -162,6 +162,8 @@ class SQLiteBackend(StorageBackend):
             await self._conn.execute("ALTER TABLE facts ADD COLUMN session_id TEXT")
         if "subject" not in cols:
             await self._conn.execute("ALTER TABLE facts ADD COLUMN subject TEXT")
+        if "mentions" not in cols:
+            await self._conn.execute("ALTER TABLE facts ADD COLUMN mentions INTEGER DEFAULT 1")
 
     async def close(self) -> None:
         if self._conn:
@@ -321,6 +323,13 @@ class SQLiteBackend(StorageBackend):
         await self._conn.execute(
             "UPDATE facts SET is_active = 0, superseded_by = ? WHERE id = ?",
             (superseded_by, fact_id),
+        )
+        await self._conn.commit()
+
+    async def increment_fact_mentions(self, fact_id: str) -> None:
+        await self._conn.execute(
+            "UPDATE facts SET mentions = mentions + 1 WHERE id = ?",
+            (fact_id,),
         )
         await self._conn.commit()
 

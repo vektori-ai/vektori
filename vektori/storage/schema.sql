@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS facts (
     is_active BOOLEAN DEFAULT true,
     superseded_by UUID REFERENCES facts(id),  -- conflict resolution chain
     confidence FLOAT DEFAULT 1.0,
+    mentions INTEGER DEFAULT 1,               -- incremented on cross-session semantic dedup
 
     metadata JSONB DEFAULT '{}',
     created_at TIMESTAMPTZ DEFAULT now(),

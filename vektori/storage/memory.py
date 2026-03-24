@@ -134,6 +134,7 @@ class MemoryBackend(StorageBackend):
             "session_id": session_id,
             "subject": subject,
             "confidence": confidence,
+            "mentions": 1,
             "superseded_by": superseded_by_target,
             "is_active": True,
             "metadata": metadata or {},
@@ -182,6 +183,10 @@ class MemoryBackend(StorageBackend):
             if f.get("user_id") == user_id and f.get("is_active", True)
         ]
         return results[offset: offset + limit]
+
+    async def increment_fact_mentions(self, fact_id: str) -> None:
+        if fact_id in self._facts:
+            self._facts[fact_id]["mentions"] = self._facts[fact_id].get("mentions", 1) + 1
 
     async def deactivate_fact(self, fact_id: str, superseded_by: str | None = None) -> None:
         if fact_id in self._facts:

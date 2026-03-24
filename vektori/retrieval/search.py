@@ -32,6 +32,11 @@ class SearchPipeline:
         each source sentence via NEXT edges). Reconstructs the conversational
         flow surrounding each matched moment.
 
+    Sentence fallback:
+        When no facts exist yet (extraction still in-flight), falls through to
+        sentence-level vector search so retrieval degrades gracefully rather
+        than returning empty.
+
     Fast path:
         When the storage backend supports it (postgres.supports_single_query),
         L2 executes as a single CTE round trip instead of 4 separate queries.
@@ -44,12 +49,15 @@ class SearchPipeline:
         embedder: EmbeddingProvider,
         temporal_decay_rate: float = 0.001,
         use_mentions: bool = True,
+        min_score: float = 0.0,
         debug: bool = False,
     ) -> None:
         self.db = db
         self.embedder = embedder
         self.temporal_decay_rate = temporal_decay_rate
         self.use_mentions = use_mentions
+        # Drop facts below this score floor (0.0 = no floor, return everything)
+        self.min_score = min_score
         # debug=True logs score breakdowns for each returned fact
         self.debug = debug
 
@@ -138,15 +146,22 @@ class SearchPipeline:
             active_only=not include_superseded,
         )
 
+        # Sentence fallback: no facts yet (extraction still in-flight)
         if not seed_facts:
-            logger.debug("search: no facts found for user=%s", user_id)
-            return _empty(depth)
+            logger.debug(
+                "search: no facts for user=%s, falling back to sentence search", user_id
+            )
+            return await self._sentence_fallback(query_embedding, user_id, agent_id, top_k, depth)
 
         scored_facts = score_and_rank(
             seed_facts,
             temporal_decay_rate=self.temporal_decay_rate,
             use_mentions=self.use_mentions,
         )
+
+        # Apply min score floor
+        if self.min_score > 0:
+            scored_facts = [f for f in scored_facts if f["score"] >= self.min_score]
 
         if self.debug:
             for f in scored_facts[:top_k]:
@@ -163,6 +178,9 @@ class SearchPipeline:
             user_id=user_id,
             active_only=True,
         )
+
+        # Propagate max linked-fact score to insights so they're relevance-ordered
+        related_insights = _score_insights(related_insights, scored_facts[:top_k])
 
         # ── Step 3: Trace facts → source sentences (L1 + L2) ─────────────────
         source_sentence_ids = await self.db.get_source_sentences(seed_fact_ids)
@@ -230,15 +248,47 @@ class SearchPipeline:
             use_mentions=self.use_mentions,
         )
 
+        if self.min_score > 0:
+            scored_facts = [f for f in scored_facts if f["score"] >= self.min_score]
+
         if self.debug:
             for f in scored_facts[:top_k]:
                 logger.debug(explain_score(f))
 
+        insights = _score_insights(raw.get("insights", []), scored_facts[:top_k])
+
         return {
             "facts": _clean(scored_facts[:top_k]),
-            "insights": raw.get("insights", []),
+            "insights": insights,
             "sentences": _dedup(raw.get("sentences", [])),
         }
+
+    # ── Sentence fallback ─────────────────────────────────────────────────────
+
+    async def _sentence_fallback(
+        self,
+        query_embedding: list[float],
+        user_id: str,
+        agent_id: str | None,
+        top_k: int,
+        depth: str,
+    ) -> dict[str, Any]:
+        """
+        Called when no facts exist yet (extraction still pending).
+        Falls through to sentence-level vector search so early queries still
+        return something useful. Sentences are always available immediately
+        since they're stored synchronously in add().
+        """
+        if depth == "l0":
+            return {"facts": []}
+
+        sentences = await self.db.search_sentences(
+            embedding=query_embedding,
+            user_id=user_id,
+            agent_id=agent_id,
+            limit=top_k,
+        )
+        return {"facts": [], "insights": [], "sentences": sentences}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -271,4 +321,40 @@ def _dedup(sentences: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if sid and sid not in seen:
             seen.add(sid)
             result.append(s)
+    return result
+
+
+def _score_insights(
+    insights: list[dict[str, Any]],
+    scored_facts: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    Propagate max linked-fact score to insights and sort by relevance.
+
+    Insights are discovered via graph traversal from facts, not ranked by
+    vector similarity themselves. Propagating the max score of the facts
+    that link to each insight gives a principled relevance ordering:
+    if the insight was derived from a highly relevant fact, the insight
+    is more relevant to this query.
+    """
+    if not insights or not scored_facts:
+        return insights
+
+    # Build fact_id → score lookup
+    fact_scores: dict[str, float] = {f["id"]: f.get("score", 0.0) for f in scored_facts}
+
+    result = []
+    for ins in insights:
+        # insight_facts join returns fact_ids on the insight dict (if present)
+        linked_ids = ins.get("fact_ids") or []
+        if linked_ids:
+            max_fact_score = max(
+                (fact_scores.get(fid, 0.0) for fid in linked_ids), default=0.0
+            )
+        else:
+            # No explicit links — use global max of returned facts as fallback
+            max_fact_score = max(fact_scores.values(), default=0.0)
+        result.append({**ins, "score": round(max_fact_score, 6)})
+
+    result.sort(key=lambda x: x.get("score", 0.0), reverse=True)
     return result

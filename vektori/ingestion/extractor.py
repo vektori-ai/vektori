@@ -33,6 +33,7 @@ Rules:
 - One fact per statement. Short and crisp.
 - subject: always identify — use 'user' when the fact is about the person speaking
 - source_quotes: copy-paste exact text, do NOT paraphrase or summarize
+- Extract at most {max_facts} facts — pick the most significant ones
 - If nothing factual was stated, return {{"facts": []}}
 
 Return ONLY the JSON."""
@@ -62,6 +63,7 @@ Rules:
 - Must be actionable — what should the agent do differently because of this?
 - Do not repeat, rephrase, or contradict anything in EXISTING INSIGHTS
 - derived_from_fact_ids must reference IDs from the list above
+- Extract at most {max_insights} insights
 - If no clear cross-session pattern exists, return {{"insights": []}}
 
 Return ONLY the JSON."""
@@ -75,19 +77,39 @@ class FactExtractor:
 
     One LLM call per session (facts only):
       - No existing facts sent to LLM — avoids token explosion and hallucination feedback loops
-      - No `contradicts` field — contradiction detection runs in code via embedding similarity
-        after each fact is embedded, using the same vector already computed for storage
+      - No `contradicts` field — deduplication runs in code via embedding similarity
+        after each fact batch is embedded, using the same vectors already computed for storage
 
     Cross-session insights (separate, triggered every Nth session):
       - Facts grouped by session with stable IDs ([F1], [F2], ...)
       - LLM returns derived_from_fact_ids — ID-based, no fragile text matching
       - Existing insights passed in to prevent duplication
+
+    Write-time semantic dedup (PHASE2 item 3):
+      - Same session + sim > 0.92 → skip insert, increment mentions on existing
+      - Different session + sim > 0.85 → insert + increment mentions on older (cross-session IDF signal)
+      - Everything else → insert normally
     """
 
-    def __init__(self, db: StorageBackend, embedder: EmbeddingProvider, llm: LLMProvider) -> None:
+    def __init__(
+        self,
+        db: StorageBackend,
+        embedder: EmbeddingProvider,
+        llm: LLMProvider,
+        max_facts: int = 8,
+        max_insights: int = 3,
+        max_input_tokens: int = 4000,
+        max_output_tokens: int = 1024,
+    ) -> None:
         self.db = db
         self.embedder = embedder
         self.llm = llm
+        self.max_facts = max_facts
+        self.max_insights = max_insights
+        # Token limits: input truncation + hard API output cap
+        # max_input_tokens: ~4 chars/token → 4000 tokens ≈ 16k chars of conversation
+        self._max_input_chars = max_input_tokens * 4
+        self._max_output_tokens = max_output_tokens
 
     async def extract(
         self,
@@ -95,9 +117,10 @@ class FactExtractor:
         session_id: str,
         user_id: str,
         agent_id: str | None = None,
+        sentence_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         """
-        One LLM call: extract facts, run contradiction detection in code, link to sentences.
+        One LLM call: extract facts, run dedup in code, link to sentences.
         Returns {"facts_inserted": N}.
         Cross-session insights trigger every 3rd session.
         """
@@ -130,8 +153,12 @@ class FactExtractor:
     # ── LLM Call ──────────────────────────────────────────────────────────────
 
     async def _extract_facts(self, conversation: str) -> list[dict[str, Any]]:
-        prompt = FACTS_PROMPT.format(conversation=conversation)
-        response = await self.llm.generate(prompt)
+        # Truncate from the END (keep most recent context, drop oldest turns)
+        if len(conversation) > self._max_input_chars:
+            conversation = conversation[-self._max_input_chars:]
+            logger.debug("Conversation truncated to %d chars for extraction", self._max_input_chars)
+        prompt = FACTS_PROMPT.format(conversation=conversation, max_facts=self.max_facts)
+        response = await self.llm.generate(prompt, max_tokens=self._max_output_tokens)
         return _parse_json_response(response).get("facts", [])
 
     # ── Processing ────────────────────────────────────────────────────────────
@@ -146,27 +173,45 @@ class FactExtractor:
     ) -> int:
         """
         For each fact:
-          1. Embed
-          2. Contradiction check via embedding similarity (no LLM, threshold 0.85)
-             Narrows to same subject if available — avoids cross-entity false positives
+          1. Batch embed all fact texts (one embed call for the whole list)
+          2. Write-time semantic dedup:
+             - same session + sim > 0.92 → skip, increment mentions on existing
+             - diff session + sim > 0.85 → insert + increment mentions on older
           3. Insert fact
           4. Link to source sentences
         """
+        if not fact_list:
+            return 0
+
         facts_inserted = 0
 
-        for fact_data in fact_list:
+        # Batch embed — one call instead of N
+        texts = [f["text"] for f in fact_list]
+        try:
+            embeddings = await self.embedder.embed_batch(texts)
+        except Exception as e:
+            logger.error("Batch embed failed for %d facts: %s", len(texts), e)
+            return 0
+
+        for fact_data, fact_embedding in zip(fact_list, embeddings):
             try:
-                fact_embedding = await self.embedder.embed(fact_data["text"])
                 subject = fact_data.get("subject") or None
 
-                # Contradiction detection: purely in code, reuses already-computed embedding
-                supersedes_id = None
-                old_fact = await self._find_contradicted_fact(
-                    fact_embedding, user_id, agent_id, subject
+                # Write-time semantic dedup
+                dedup = await self._check_dedup(
+                    fact_embedding, session_id, user_id, agent_id, subject
                 )
-                if old_fact:
-                    supersedes_id = old_fact["id"]
-                    await self.db.deactivate_fact(old_fact["id"])
+
+                if dedup is not None:
+                    existing_id, same_session = dedup
+                    if same_session:
+                        # Pure dedup: same conversation, skip insert entirely
+                        await self.db.increment_fact_mentions(existing_id)
+                        continue
+                    else:
+                        # Cross-session near-dup: insert new fact, note recurrence on older
+                        await self.db.increment_fact_mentions(existing_id)
+                        # Fall through to insert
 
                 fact_id = await self.db.insert_fact(
                     text=fact_data["text"],
@@ -176,7 +221,6 @@ class FactExtractor:
                     session_id=session_id,
                     subject=subject,
                     confidence=fact_data.get("confidence", 1.0),
-                    superseded_by_target=supersedes_id,
                 )
                 facts_inserted += 1
 
@@ -194,18 +238,23 @@ class FactExtractor:
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    async def _find_contradicted_fact(
+    async def _check_dedup(
         self,
         fact_embedding: list[float],
+        session_id: str,
         user_id: str,
         agent_id: str | None,
         subject: str | None = None,
-    ) -> dict[str, Any] | None:
+    ) -> tuple[str, bool] | None:
         """
-        Find an existing fact that the new fact likely supersedes.
-        Uses the already-computed embedding — no extra embed call.
-        Narrows to same subject when available to prevent cross-entity false positives.
-        Threshold 0.85 — must be clearly the same claim.
+        Check if a near-duplicate fact already exists.
+
+        Returns (existing_fact_id, is_same_session) or None.
+
+        Thresholds:
+          - same session + sim > 0.92 → strong dedup signal (same conversation re-stating same fact)
+          - diff session + sim > 0.85 → cross-session near-dup (fact seen before)
+        Subject-scoped when available to avoid cross-entity false positives.
         """
         try:
             candidates = await self.db.search_facts(
@@ -219,10 +268,15 @@ class FactExtractor:
             if not candidates:
                 return None
             best = candidates[0]
-            if (1 - best["distance"]) >= 0.85:
-                return best
+            sim = 1.0 - best.get("distance", 1.0)
+            same_session = best.get("session_id") == session_id
+
+            if same_session and sim > 0.92:
+                return (best["id"], True)
+            if not same_session and sim > 0.85:
+                return (best["id"], False)
         except Exception as e:
-            logger.warning("Contradiction lookup failed: %s", e)
+            logger.warning("Dedup lookup failed: %s", e)
         return None
 
     async def _link_to_source_sentences(
@@ -310,36 +364,46 @@ class FactExtractor:
         prompt = CROSS_SESSION_INSIGHTS_PROMPT.format(
             facts_by_session=session_summary,
             existing_insights=existing_text,
+            max_insights=self.max_insights,
         )
 
         try:
-            response = await self.llm.generate(prompt)
+            response = await self.llm.generate(prompt, max_tokens=self._max_output_tokens)
             insight_list = _parse_json_response(response).get("insights", [])
         except Exception as e:
             logger.error("Cross-session extraction failed: %s", e)
             return {"insights_inserted": 0, "error": str(e)}
 
         insights_inserted = 0
-        for insight_data in insight_list:
+
+        # Batch embed insight texts
+        if insight_list:
+            insight_texts = [ins["text"] for ins in insight_list]
             try:
-                insight_embedding = await self.embedder.embed(insight_data["text"])
-                insight_id = await self.db.insert_insight(
-                    text=insight_data["text"],
-                    embedding=insight_embedding,
-                    user_id=user_id,
-                    agent_id=agent_id,
-                    confidence=insight_data.get("confidence", 1.0),
-                )
-                insights_inserted += 1
-
-                # ID-based linking — no text matching, no paraphrase failures
-                for fid in insight_data.get("derived_from_fact_ids", []):
-                    fact = fact_id_map.get(fid)
-                    if fact:
-                        await self.db.insert_insight_fact(insight_id, fact["id"])
-
+                insight_embeddings = await self.embedder.embed_batch(insight_texts)
             except Exception as e:
-                logger.warning("Failed to insert cross-session insight: %s", e)
+                logger.error("Batch embed failed for insights: %s", e)
+                return {"insights_inserted": 0, "error": str(e)}
+
+            for insight_data, insight_embedding in zip(insight_list, insight_embeddings):
+                try:
+                    insight_id = await self.db.insert_insight(
+                        text=insight_data["text"],
+                        embedding=insight_embedding,
+                        user_id=user_id,
+                        agent_id=agent_id,
+                        confidence=insight_data.get("confidence", 1.0),
+                    )
+                    insights_inserted += 1
+
+                    # ID-based linking — no text matching, no paraphrase failures
+                    for fid in insight_data.get("derived_from_fact_ids", []):
+                        fact = fact_id_map.get(fid)
+                        if fact:
+                            await self.db.insert_insight_fact(insight_id, fact["id"])
+
+                except Exception as e:
+                    logger.warning("Failed to insert cross-session insight: %s", e)
 
         logger.info(
             "Cross-session extraction for user %s: %d insights", user_id, insights_inserted
