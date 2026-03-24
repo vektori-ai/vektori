@@ -245,6 +245,7 @@ class PostgresBackend(StorageBackend):
         confidence: float = 1.0,
         superseded_by_target: str | None = None,
         metadata: dict[str, Any] | None = None,
+        event_time: datetime | None = None,
     ) -> str:
         self._check_dim(embedding, "insert_fact")
         fact_id = uuid.uuid4()
@@ -253,9 +254,9 @@ class PostgresBackend(StorageBackend):
                 """
                 INSERT INTO facts
                     (id, text, embedding, user_id, agent_id, session_id, subject,
-                     confidence, superseded_by, metadata)
+                     confidence, superseded_by, metadata, event_time)
                 VALUES
-                    ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10)
+                    ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10, $11)
                 """,
                 fact_id,
                 text,
@@ -267,6 +268,7 @@ class PostgresBackend(StorageBackend):
                 confidence,
                 uuid.UUID(superseded_by_target) if superseded_by_target else None,
                 json.dumps(metadata or {}),
+                event_time,
             )
         return str(fact_id)
 
@@ -279,6 +281,8 @@ class PostgresBackend(StorageBackend):
         subject: str | None = None,
         limit: int = 10,
         active_only: bool = True,
+        before_date: datetime | None = None,
+        after_date: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """Vector search over facts using IVFFlat cosine index.
 
@@ -287,9 +291,11 @@ class PostgresBackend(StorageBackend):
         similarity and combines with confidence and recency.
         subject pre-filter: if provided, restricts to facts where subject matches
         before the vector scan — prevents cross-entity bleed.
+        before_date/after_date: filter by event_time for temporal queries.
         """
         query = """
-            SELECT id, text, confidence, mentions, session_id, subject, created_at, metadata,
+            SELECT id, text, confidence, mentions, session_id, subject,
+                   created_at, event_time, metadata,
                    embedding <=> $1::vector AS distance
             FROM facts
             WHERE user_id = $2
@@ -297,8 +303,10 @@ class PostgresBackend(StorageBackend):
               AND ($4::text IS NULL OR session_id = $4)
               AND ($5::text IS NULL OR subject = $5)
               AND ($6::boolean = false OR is_active = true)
+              AND ($7::timestamptz IS NULL OR event_time <= $7)
+              AND ($8::timestamptz IS NULL OR event_time >= $8)
             ORDER BY embedding <=> $1::vector
-            LIMIT $7
+            LIMIT $9
         """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
@@ -309,6 +317,8 @@ class PostgresBackend(StorageBackend):
                 session_id,
                 subject,
                 active_only,
+                before_date,
+                after_date,
                 limit,
             )
         return [_row(r) for r in rows]
@@ -648,12 +658,13 @@ class PostgresBackend(StorageBackend):
         user_id: str,
         agent_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        started_at: datetime | None = None,
     ) -> None:
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO sessions (id, user_id, agent_id, metadata)
-                VALUES ($1, $2, $3, $4)
+                INSERT INTO sessions (id, user_id, agent_id, metadata, started_at)
+                VALUES ($1, $2, $3, $4, COALESCE($5, now()))
                 ON CONFLICT (id) DO UPDATE
                     SET metadata = EXCLUDED.metadata
                 """,
@@ -661,6 +672,7 @@ class PostgresBackend(StorageBackend):
                 user_id,
                 agent_id,
                 json.dumps(metadata or {}),
+                started_at,
             )
 
     async def get_session(
@@ -706,6 +718,8 @@ class PostgresBackend(StorageBackend):
         subject: str | None = None,
         limit: int = 10,
         window: int = 3,
+        before_date: datetime | None = None,
+        after_date: datetime | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
         """Execute the full L2 retrieval in one round trip via a CTE.
 
@@ -716,12 +730,13 @@ class PostgresBackend(StorageBackend):
         Called by SearchPipeline when backend.supports_single_query is True.
         subject: pre-filter facts to a specific entity before vector scan.
         session_id: scope retrieval to a specific session's facts.
+        before_date/after_date: filter by event_time for temporal queries.
         """
         query = """
             WITH
             -- Step 1: Seed facts via vector similarity (L0)
             seed_facts AS (
-                SELECT id, text, confidence, session_id, subject, created_at, metadata,
+                SELECT id, text, confidence, session_id, subject, created_at, event_time, metadata,
                        embedding <=> $1::vector AS distance
                 FROM facts
                 WHERE user_id = $2
@@ -729,6 +744,8 @@ class PostgresBackend(StorageBackend):
                   AND ($4::text IS NULL OR session_id = $4)
                   AND ($5::text IS NULL OR subject = $5)
                   AND is_active = true
+                  AND ($8::timestamptz IS NULL OR event_time <= $8)
+                  AND ($9::timestamptz IS NULL OR event_time >= $9)
                 ORDER BY embedding <=> $1::vector
                 LIMIT $6
             ),
@@ -789,6 +806,8 @@ class PostgresBackend(StorageBackend):
                 subject,
                 limit,
                 window,
+                before_date,
+                after_date,
             )
 
         facts: list[dict[str, Any]] = []
