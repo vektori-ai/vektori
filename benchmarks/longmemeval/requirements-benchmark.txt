@@ -1,0 +1,19 @@
+# LongMemEval Benchmark Requirements
+# Install with: pip install -r benchmarks/longmemeval/requirements-benchmark.txt
+
+# Core dependencies (inherited from vektori)
+spacy>=3.7
+numpy>=1.24
+aiosqlite>=0.19
+httpx>=0.27
+pydantic>=2.5
+
+# Google Gemini API (for LLM/extraction)
+google-generativeai>=0.3.0
+
+# BGE embeddings
+FlagEmbedding>=1.2
+
+# Optional: for PostgreSQL backend
+# asyncpg>=0.29
+# pgvector>=0.2
