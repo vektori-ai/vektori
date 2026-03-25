@@ -101,9 +101,10 @@ class SearchPipeline:
 
         Returns:
             {
-              "facts":     list[dict],   # always present
-              "insights":  list[dict],   # l1 and l2 only
-              "sentences": list[dict],   # l2 only
+              "facts":        list[dict],  # always present
+              "insights":     list[dict],  # l1 and l2 only
+              "sentences":    list[dict],  # l2 only
+              "memory_found": bool,        # False when no facts passed min_score (abstention signal)
             }
 
         Raises:
@@ -197,7 +198,8 @@ class SearchPipeline:
                 logger.debug(explain_score(f))
 
         if depth == "l0":
-            return {"facts": _clean(scored_facts[:top_k])}
+            top = _clean(scored_facts[:top_k])
+            return {"facts": top, "memory_found": len(top) > 0}
 
         # ── Step 2: Discover INSIGHTS via graph traversal (L1) ────────────────
         # NOT vector search. JOIN on insight_facts where fact_id IN seed_fact_ids.
@@ -214,6 +216,9 @@ class SearchPipeline:
         # ── Step 3: Trace facts → source sentences (L1 + L2) ─────────────────
         source_sentence_ids = await self.db.get_source_sentences(seed_fact_ids)
 
+        top_facts = _clean(scored_facts[:top_k])
+        memory_found = len(top_facts) > 0
+
         if not source_sentence_ids:
             # Facts exist but haven't been linked to sentences yet
             # (extraction may still be in-flight). Return what we have.
@@ -222,18 +227,20 @@ class SearchPipeline:
                 seed_fact_ids,
             )
             return {
-                "facts": _clean(scored_facts[:top_k]),
+                "facts": top_facts,
                 "insights": related_insights,
                 "sentences": [],
+                "memory_found": memory_found,
             }
 
         if depth == "l1":
             # L1: source sentences only — exact moments facts came from, no expansion.
             source_sentences = await self.db.get_sentences_by_ids(source_sentence_ids)
             return {
-                "facts": _clean(scored_facts[:top_k]),
+                "facts": top_facts,
                 "insights": related_insights,
                 "sentences": source_sentences,
+                "memory_found": memory_found,
             }
 
         # ── Step 4: Session expansion ±window (L2 only) ───────────────────────
@@ -243,9 +250,10 @@ class SearchPipeline:
         )
 
         return {
-            "facts": _clean(scored_facts[:top_k]),
+            "facts": top_facts,
             "insights": related_insights,
             "sentences": _dedup(expanded_sentences),
+            "memory_found": memory_found,
         }
 
     # ── Single-query fast path (Postgres L2 only) ─────────────────────────────
@@ -288,12 +296,14 @@ class SearchPipeline:
             for f in scored_facts[:top_k]:
                 logger.debug(explain_score(f))
 
+        top_facts = _clean(scored_facts[:top_k])
         insights = _score_insights(raw.get("insights", []), scored_facts[:top_k])
 
         return {
-            "facts": _clean(scored_facts[:top_k]),
+            "facts": top_facts,
             "insights": insights,
             "sentences": _dedup(raw.get("sentences", [])),
+            "memory_found": len(top_facts) > 0,
         }
 
     # ── Expanded search path (L1 only) ───────────────────────────────────────
@@ -324,7 +334,7 @@ class SearchPipeline:
         would be redundant and expensive.
         """
         if not queries:
-            return {"facts": [], "insights": [], "sentences": []}
+            return {"facts": [], "insights": [], "sentences": [], "memory_found": False}
 
         # Single embed_batch call for all query variants
         embeddings = await self.embedder.embed_batch(queries)
@@ -390,6 +400,7 @@ class SearchPipeline:
             "facts": _clean(top_facts),
             "insights": related_insights,
             "sentences": source_sentences,
+            "memory_found": len(top_facts) > 0,
         }
 
     # ── Sentence fallback ─────────────────────────────────────────────────────
@@ -409,7 +420,7 @@ class SearchPipeline:
         since they're stored synchronously in add().
         """
         if depth == "l0":
-            return {"facts": []}
+            return {"facts": [], "memory_found": False}
 
         sentences = await self.db.search_sentences(
             embedding=query_embedding,
@@ -417,7 +428,7 @@ class SearchPipeline:
             agent_id=agent_id,
             limit=top_k,
         )
-        return {"facts": [], "insights": [], "sentences": sentences}
+        return {"facts": [], "insights": [], "sentences": sentences, "memory_found": False}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
