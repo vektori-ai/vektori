@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
@@ -262,102 +261,6 @@ class SearchPipeline:
             "facts": _clean(scored_facts[:top_k]),
             "insights": insights,
             "sentences": _dedup(raw.get("sentences", [])),
-        }
-
-    # ── Expanded search path (L1 only) ───────────────────────────────────────
-
-    async def search_expanded(
-        self,
-        queries: list[str],
-        user_id: str,
-        agent_id: str | None = None,
-        subject: str | None = None,
-        top_k: int = 10,
-    ) -> dict[str, Any]:
-        """
-        Expanded retrieval: concurrent L0 fact searches across multiple query
-        variants, merged into a single L1 result.
-
-        Flow:
-          embed_batch(queries)
-            → concurrent search_facts() per embedding          (L0 × N)
-            → merge by fact ID, keep min distance per fact
-            → score_and_rank(merged_facts)
-            → get_insights_from_facts(top_fact_ids)            (L1 graph)
-            → get_source_sentences(top_fact_ids)               (L1 graph)
-            → return {facts, insights, sentences}
-
-        Always returns L1 depth. L2 context expansion is intentionally excluded
-        — expansion already widens fact recall; adding window expansion on top
-        would be redundant and expensive.
-        """
-        if not queries:
-            return {"facts": [], "insights": [], "sentences": []}
-
-        # Single embed_batch call for all query variants
-        embeddings = await self.embedder.embed_batch(queries)
-
-        # Concurrent L0 fact searches — one per query variant
-        async def _search_one(embedding: list[float]) -> list[dict[str, Any]]:
-            return await self.db.search_facts(
-                embedding=embedding,
-                user_id=user_id,
-                agent_id=agent_id,
-                subject=subject,
-                limit=top_k,
-                active_only=True,
-            )
-
-        all_results = await asyncio.gather(*[_search_one(emb) for emb in embeddings])
-
-        # Merge: per fact ID keep minimum distance (closest match across all variants)
-        best_by_id: dict[str, dict[str, Any]] = {}
-        for result_set in all_results:
-            for fact in result_set:
-                fid = fact["id"]
-                if fid not in best_by_id or fact.get("distance", 1.0) < best_by_id[fid].get("distance", 1.0):
-                    best_by_id[fid] = fact
-
-        merged_facts = list(best_by_id.values())
-
-        if not merged_facts:
-            logger.debug("search_expanded: no facts found, falling back to sentence search")
-            return await self._sentence_fallback(embeddings[0], user_id, agent_id, top_k, "l1")
-
-        # Score the merged set
-        scored_facts = score_and_rank(
-            merged_facts,
-            temporal_decay_rate=self.temporal_decay_rate,
-            use_mentions=self.use_mentions,
-        )
-
-        if self.min_score > 0:
-            scored_facts = [f for f in scored_facts if f["score"] >= self.min_score]
-
-        if self.debug:
-            for f in scored_facts[:top_k]:
-                logger.debug(explain_score(f))
-
-        top_facts = scored_facts[:top_k]
-        fact_ids = [f["id"] for f in top_facts]
-
-        # L1 graph traversal — runs ONCE on the full merged fact set
-        related_insights = await self.db.get_insights_from_facts(
-            fact_ids=fact_ids,
-            user_id=user_id,
-            active_only=True,
-        )
-        related_insights = _score_insights(related_insights, top_facts)
-
-        source_sentence_ids = await self.db.get_source_sentences(fact_ids)
-        source_sentences = []
-        if source_sentence_ids:
-            source_sentences = await self.db.get_sentences_by_ids(source_sentence_ids)
-
-        return {
-            "facts": _clean(top_facts),
-            "insights": related_insights,
-            "sentences": source_sentences,
         }
 
     # ── Sentence fallback ─────────────────────────────────────────────────────

@@ -53,9 +53,6 @@ class VektoriConfig:
     # Retrieval gate — cheap heuristic, no LLM, runs before any DB query
     enable_retrieval_gate: bool = True
 
-    # Query expansion — LLM-generated paraphrase variants (expand=True in search())
-    expansion_queries: int = 2          # variants to generate (total searches = this + 1 original)
-
     # Min score floor — facts below this are dropped from results (0.0 = disabled)
     min_retrieval_score: float = 0.0
 
