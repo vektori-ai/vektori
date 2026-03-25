@@ -6,6 +6,9 @@ import logging
 from typing import Any
 
 from vektori.config import QualityConfig, VektoriConfig
+from vektori.ingestion.filter import is_quality_sentence
+from vektori.ingestion.hasher import generate_sentence_id
+from vektori.ingestion.splitter import split_sentences
 
 logger = logging.getLogger(__name__)
 
@@ -65,19 +68,19 @@ class Vektori:
         self.llm = None
         self._extractor = None
         self._search = None
-        self._pipeline = None
+        self._worker = None
 
     async def _ensure_initialized(self) -> None:
         if not self._initialized:
             await self._initialize()
 
     async def _initialize(self) -> None:
-        """Initialize storage, embedder, LLM providers, pipeline, and search."""
+        """Initialize storage, embedder, and LLM providers."""
         from vektori.ingestion.extractor import FactExtractor
-        from vektori.ingestion.pipeline import IngestionPipeline
         from vektori.models.factory import create_embedder, create_llm
         from vektori.retrieval.search import SearchPipeline
         from vektori.storage.factory import create_storage
+        from vektori.utils.async_worker import AsyncExtractionWorker
 
         self.db = await create_storage(self.config)
         self.embedder = create_embedder(self.config.embedding_model)
@@ -88,13 +91,8 @@ class Vektori:
             embedder=self.embedder,
             temporal_decay_rate=self.config.temporal_decay_rate,
         )
-        self._pipeline = IngestionPipeline(
-            db=self.db,
-            embedder=self.embedder,
-            extractor=self._extractor,
-            quality_config=self.config.quality_config,
-            async_extraction=self.config.async_extraction,
-        )
+        if self.config.async_extraction:
+            self._worker = AsyncExtractionWorker(extractor=self._extractor)
 
         self._initialized = True
         logger.info("Vektori initialized (backend=%s)", self.config.storage_backend)
@@ -124,10 +122,68 @@ class Vektori:
             metadata: Arbitrary metadata stored with the session.
 
         Returns:
-            {"status": "ok", "sentences_stored": N, "extraction": "queued"|"done"|"skipped"}
+            {"status": "ok", "sentences_stored": N, "extraction": "processing"|"done"|"skipped"}
         """
         await self._ensure_initialized()
-        return await self._pipeline.ingest(messages, session_id, user_id, agent_id, metadata)
+
+        all_sentences = []
+        for turn_num, msg in enumerate(messages):
+            raw_sents = split_sentences(msg["content"])
+            for idx, text in enumerate(raw_sents):
+                # Only user sentences go into the sentence graph.
+                # Assistant messages are used during fact extraction but not stored as nodes.
+                if msg["role"] == "user" and (
+                    not self.config.quality_config.enabled
+                    or is_quality_sentence(text, self.config.quality_config)
+                ):
+                    all_sentences.append({
+                        "text": text,
+                        "session_id": session_id,
+                        "turn_number": turn_num,
+                        "sentence_index": idx,
+                        "role": msg["role"],
+                        "id": generate_sentence_id(session_id, f"{turn_num}_{idx}", text),
+                    })
+
+        if not all_sentences:
+            return {"status": "ok", "sentences_stored": 0, "extraction": "skipped"}
+
+        # Batch embed all sentences in one API call
+        texts = [s["text"] for s in all_sentences]
+        embeddings = await self.embedder.embed_batch(texts)
+
+        # Upsert — ON CONFLICT increments mentions counter (IDF weighting)
+        await self.db.upsert_sentences(all_sentences, embeddings, user_id, agent_id)
+
+        # Create sequential NEXT edges within this session
+        edges = [
+            {
+                "source_id": all_sentences[i]["id"],
+                "target_id": all_sentences[i + 1]["id"],
+                "edge_type": "next",
+                "weight": 1.0,
+            }
+            for i in range(len(all_sentences) - 1)
+        ]
+        if edges:
+            await self.db.insert_edges(edges)
+
+        await self.db.upsert_session(session_id, user_id, agent_id, metadata or {})
+
+        # Trigger fact + insight extraction
+        extraction_status = "skipped"
+        if self._worker is not None:
+            self._worker.schedule(messages, session_id, user_id, agent_id)
+            extraction_status = "processing"
+        elif not self.config.async_extraction:
+            await self._extractor.extract(messages, session_id, user_id, agent_id)
+            extraction_status = "done"
+
+        return {
+            "status": "ok",
+            "sentences_stored": len(all_sentences),
+            "extraction": extraction_status,
+        }
 
     async def search(
         self,
@@ -210,19 +266,10 @@ class Vektori:
         await self._ensure_initialized()
         return await self.db.delete_user(user_id)
 
-    async def generate_insights(
-        self,
-        user_id: str,
-        agent_id: str | None = None,
-    ) -> dict[str, Any]:
-        """Manually trigger cross-session insight generation for a user."""
-        await self._ensure_initialized()
-        return await self._extractor.extract_cross_session_insights(user_id, agent_id)
-
     async def close(self) -> None:
         """Close database connections and gracefully shut down background workers."""
-        if self._pipeline and self._pipeline.worker:
-            await self._pipeline.worker.shutdown()
+        if self._worker:
+            await self._worker.shutdown()
         if self.db:
             await self.db.close()
 

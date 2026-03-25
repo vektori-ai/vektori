@@ -59,7 +59,6 @@ class SQLiteBackend(StorageBackend):
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.execute("PRAGMA foreign_keys=ON")
         await self._create_tables()
-        await self._migrate()
         await self._conn.commit()
         logger.info("SQLite backend initialized at %s", self.db_path)
 
@@ -88,7 +87,6 @@ class SQLiteBackend(StorageBackend):
                 embedding TEXT,
                 user_id TEXT NOT NULL,
                 agent_id TEXT,
-                session_id TEXT,
                 is_active INTEGER DEFAULT 1,
                 superseded_by TEXT REFERENCES facts(id),
                 confidence REAL DEFAULT 1.0,
@@ -152,13 +150,6 @@ class SQLiteBackend(StorageBackend):
             CREATE INDEX IF NOT EXISTS idx_insight_facts_fact ON insight_facts (fact_id);
             CREATE INDEX IF NOT EXISTS idx_fact_sources_fact ON fact_sources (fact_id);
         """)
-
-    async def _migrate(self) -> None:
-        """Apply additive migrations for existing DBs. Safe to run on every init."""
-        async with self._conn.execute("PRAGMA table_info(facts)") as cursor:
-            cols = {row[1] for row in await cursor.fetchall()}
-        if "session_id" not in cols:
-            await self._conn.execute("ALTER TABLE facts ADD COLUMN session_id TEXT")
 
     async def close(self) -> None:
         if self._conn:
@@ -229,18 +220,6 @@ class SQLiteBackend(StorageBackend):
         # TODO: embed each quote (requires access to embedder — wire in later)
         return []
 
-    async def find_sentence_containing(
-        self,
-        session_id: str,
-        quote: str,
-    ) -> dict[str, Any] | None:
-        async with self._conn.execute(
-            "SELECT * FROM sentences WHERE session_id = ? AND text LIKE ? LIMIT 1",
-            (session_id, f"%{quote}%"),
-        ) as cursor:
-            row = await cursor.fetchone()
-        return dict(row) if row else None
-
     # ── Facts ──
 
     async def insert_fact(
@@ -249,17 +228,15 @@ class SQLiteBackend(StorageBackend):
         embedding: list[float],
         user_id: str,
         agent_id: str | None = None,
-        session_id: str | None = None,
         confidence: float = 1.0,
         superseded_by_target: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> str:
         fact_id = str(uuid.uuid4())
         await self._conn.execute(
-            """INSERT INTO facts
-               (id, text, embedding, user_id, agent_id, session_id, confidence, superseded_by, metadata)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (fact_id, text, json.dumps(embedding), user_id, agent_id, session_id,
+            """INSERT INTO facts (id, text, embedding, user_id, agent_id, confidence, superseded_by, metadata)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (fact_id, text, json.dumps(embedding), user_id, agent_id,
              confidence, superseded_by_target, json.dumps(metadata or {})),
         )
         await self._conn.commit()
@@ -519,20 +496,6 @@ class SQLiteBackend(StorageBackend):
             sents = await cursor.fetchall()
         session["sentences"] = [dict(s) for s in sents]
         return session
-
-    async def count_sessions(
-        self,
-        user_id: str,
-        agent_id: str | None = None,
-    ) -> int:
-        query = "SELECT COUNT(*) FROM sessions WHERE user_id = ?"
-        params: list[Any] = [user_id]
-        if agent_id is not None:
-            query += " AND agent_id = ?"
-            params.append(agent_id)
-        async with self._conn.execute(query, params) as cursor:
-            row = await cursor.fetchone()
-        return row[0] if row else 0
 
     # ── Lifecycle ──
 

@@ -99,17 +99,6 @@ class MemoryBackend(StorageBackend):
         # For now returns empty — fact-source linking will be incomplete in memory backend
         return []
 
-    async def find_sentence_containing(
-        self,
-        session_id: str,
-        quote: str,
-    ) -> dict[str, Any] | None:
-        q = quote.lower()
-        for s in self._sentences.values():
-            if s.get("session_id") == session_id and q in s["text"].lower():
-                return s
-        return None
-
     # ── Facts ──
 
     async def insert_fact(
@@ -118,7 +107,6 @@ class MemoryBackend(StorageBackend):
         embedding: list[float],
         user_id: str,
         agent_id: str | None = None,
-        session_id: str | None = None,
         confidence: float = 1.0,
         superseded_by_target: str | None = None,
         metadata: dict[str, Any] | None = None,
@@ -130,7 +118,6 @@ class MemoryBackend(StorageBackend):
             "embedding": embedding,
             "user_id": user_id,
             "agent_id": agent_id,
-            "session_id": session_id,
             "confidence": confidence,
             "superseded_by": superseded_by_target,
             "is_active": True,
@@ -355,20 +342,6 @@ class MemoryBackend(StorageBackend):
             key=lambda x: (x.get("turn_number", 0), x.get("sentence_index", 0)),
         )
         return {**session, "sentences": sentences}
-
-    async def count_sessions(
-        self,
-        user_id: str,
-        agent_id: str | None = None,
-    ) -> int:
-        count = 0
-        for s in self._sessions.values():
-            if s.get("user_id") != user_id:
-                continue
-            if agent_id is not None and s.get("agent_id") != agent_id:
-                continue
-            count += 1
-        return count
 
     # ── Lifecycle ──
 

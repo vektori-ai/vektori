@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock, MagicMock
 from vektori import Vektori
 from vektori.storage.memory import MemoryBackend
 from vektori.ingestion.extractor import FactExtractor
-from vektori.ingestion.pipeline import IngestionPipeline
 from vektori.retrieval.search import SearchPipeline
 
 
@@ -20,12 +19,6 @@ def _mock_vektori() -> Vektori:
     v.db = MemoryBackend()
     v._extractor = FactExtractor(db=v.db, embedder=v.embedder, llm=v.llm)
     v._search = SearchPipeline(db=v.db, embedder=v.embedder)
-    v._pipeline = IngestionPipeline(
-        db=v.db,
-        embedder=v.embedder,
-        extractor=v._extractor,
-        async_extraction=False,
-    )
     v._initialized = True
     return v
 

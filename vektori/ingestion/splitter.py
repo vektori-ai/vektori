@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+_nlp = None
+
 MERGE_STARTERS = {
     "and", "but", "or", "nor", "yet", "so", "for",
     "on", "in", "at", "by", "to", "from", "with",
@@ -9,20 +11,40 @@ MERGE_STARTERS = {
 }
 
 
+def _get_nlp():
+    """Lazy-load spacy model. Falls back gracefully if unavailable."""
+    global _nlp
+    if _nlp is None:
+        try:
+            import spacy
+            _nlp = spacy.load("en_core_web_sm")
+        except (ImportError, OSError):
+            _nlp = False  # mark as unavailable so we don't retry
+    return _nlp if _nlp is not False else None
+
+
 def split_sentences(text: str) -> list[str]:
     """
     Split text into sentences, merging short fragments back into parents.
 
-    Uses NLTK punkt_tab (auto-downloads ~2MB on first use).
-    Falls back to naive period split if NLTK is unavailable.
+    Uses spacy (en_core_web_sm) if available, falls back to nltk, then
+    naive period splitting.
     """
     if not text or not text.strip():
         return []
-    return _merge_short_sentences(_nltk_split(text))
+
+    nlp = _get_nlp()
+    if nlp is not None:
+        doc = nlp(text)
+        raw = [sent.text.strip() for sent in doc.sents if sent.text.strip()]
+    else:
+        raw = _nltk_split(text)
+
+    return _merge_short_sentences(raw)
 
 
 def _nltk_split(text: str) -> list[str]:
-    """Split via NLTK punkt tokenizer. Downloads punkt_tab on first use."""
+    """Fallback: nltk sentence tokenizer."""
     try:
         import nltk
         try:

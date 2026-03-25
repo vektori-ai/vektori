@@ -62,19 +62,6 @@ class StorageBackend(ABC):
         """Find sentence IDs semantically similar to given quotes. Used to link facts/insights to source sentences."""
         ...
 
-    @abstractmethod
-    async def find_sentence_containing(
-        self,
-        session_id: str,
-        quote: str,
-    ) -> dict[str, Any] | None:
-        """
-        Find first sentence in session whose text contains quote as substring.
-        Case-insensitive. Returns sentence dict or None.
-        Used by extractor for source quote validation before falling back to similarity.
-        """
-        ...
-
     # ── Facts ──
 
     @abstractmethod
@@ -84,7 +71,6 @@ class StorageBackend(ABC):
         embedding: list[float],
         user_id: str,
         agent_id: str | None = None,
-        session_id: str | None = None,
         confidence: float = 1.0,
         superseded_by_target: str | None = None,
         metadata: dict[str, Any] | None = None,
@@ -251,15 +237,6 @@ class StorageBackend(ABC):
         session_id: str,
         user_id: str,
     ) -> dict[str, Any] | None:
-        ...
-
-    @abstractmethod
-    async def count_sessions(
-        self,
-        user_id: str,
-        agent_id: str | None = None,
-    ) -> int:
-        """Count distinct sessions for a user. Used to trigger cross-session insight generation."""
         ...
 
     # ── Lifecycle ──
