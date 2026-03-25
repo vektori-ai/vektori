@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from datetime import datetime
 from typing import Any
 
 
@@ -90,13 +89,8 @@ class StorageBackend(ABC):
         confidence: float = 1.0,
         superseded_by_target: str | None = None,
         metadata: dict[str, Any] | None = None,
-        event_time: datetime | None = None,
     ) -> str:
-        """Insert a fact and return its UUID.
-
-        event_time: when the source conversation happened (session started_at),
-        distinct from created_at (extraction time). Used for temporal filtering.
-        """
+        """Insert a fact and return its UUID."""
         ...
 
     @abstractmethod
@@ -109,12 +103,9 @@ class StorageBackend(ABC):
         subject: str | None = None,
         limit: int = 10,
         active_only: bool = True,
-        before_date: datetime | None = None,
-        after_date: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """Vector search over facts. Results include a 'distance' field (cosine distance).
-        subject: pre-filter to facts about this entity before the vector scan.
-        before_date/after_date: filter by event_time for temporal queries."""
+        subject: pre-filter to facts about this entity before the vector scan."""
         ...
 
     @abstractmethod
@@ -260,10 +251,7 @@ class StorageBackend(ABC):
         user_id: str,
         agent_id: str | None = None,
         metadata: dict[str, Any] | None = None,
-        started_at: datetime | None = None,
     ) -> None:
-        """Upsert a session record. started_at overrides the DB default when provided
-        (used by LongMemEval and other benchmarks that supply historical timestamps)."""
         ...
 
     @abstractmethod

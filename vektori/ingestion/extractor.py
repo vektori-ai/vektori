@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
 from typing import Any
 
 from vektori.models.base import EmbeddingProvider, LLMProvider
@@ -12,36 +11,30 @@ logger = logging.getLogger(__name__)
 
 # ── Prompts ──────────────────────────────────────────────────────────────────
 
-FACTS_PROMPT = """Extract FACTS about the USER from this conversation.
+FACTS_PROMPT = """Extract FACTS from this conversation.
 
-CONVERSATION (USER turns are the source of truth; ASSISTANT turns provide context only):
+CONVERSATION:
 {conversation}
 
 Return JSON:
 {{
   "facts": [
     {{
-      "text": "short factual statement under 20 words",
-      "subject": "'user' or the named person/entity this fact is about",
+      "text": "short, explicit factual statement (under 20 words)",
+      "subject": "entity this is about — 'user', or a specific named person/entity",
       "confidence": 0.95,
-      "source_quotes": ["verbatim text copied from a USER turn — never from ASSISTANT"],
-      "temporal_expr": "optional — only if the fact has an explicit time anchor, e.g. '3 years ago', 'since 2021', 'last month'. Omit if no temporal info."
+      "source_quotes": ["verbatim substring copied from the conversation above"]
     }}
   ]
 }}
 
 Rules:
-- Extract only facts about the USER or entities the user mentions — never about the world, technology, or what the assistant said
-- ASSISTANT turns are probes/context only. When the user gives a short response ("yes", "yeah", "nope", "exactly"), use the preceding ASSISTANT turn to understand what they confirmed or denied, but the source_quote must still be the USER's words
-- source_quotes: verbatim text from USER turns ONLY. Never quote ASSISTANT turns.
-- subject: 'user' when the fact is about the person speaking; a named entity (person, company) when the fact is about someone/something they explicitly mention
-- confidence:
-    0.9–1.0  → user volunteers information unprompted ("I work at Google")
-    0.7–0.89 → user confirms or agrees with assistant's suggestion ("yeah exactly", "yes that's right")
-    0.5–0.69 → inferred from indirect user statement
+- Only explicit, verifiable information stated in the conversation. No inference.
 - One fact per statement. Short and crisp.
-- Extract at most {max_facts} facts — prioritize high-confidence, significant ones
-- If nothing factual about the user was stated, return {{"facts": []}}
+- subject: always identify — use 'user' when the fact is about the person speaking
+- source_quotes: copy-paste exact text, do NOT paraphrase or summarize
+- Extract at most {max_facts} facts — pick the most significant ones
+- If nothing factual was stated, return {{"facts": []}}
 
 Return ONLY the JSON."""
 
@@ -113,10 +106,9 @@ class FactExtractor:
         self.llm = llm
         self.max_facts = max_facts
         self.max_insights = max_insights
-        # ~4 chars/token → 4000 tokens ≈ 16k chars per chunk
-        # Long conversations are chunked (not truncated) so facts are extracted
-        # from the full history, not just the most recent window.
-        self._max_chunk_chars = max_input_tokens * 4
+        # Token limits: input truncation + hard API output cap
+        # max_input_tokens: ~4 chars/token → 4000 tokens ≈ 16k chars of conversation
+        self._max_input_chars = max_input_tokens * 4
         self._max_output_tokens = max_output_tokens
 
     async def extract(
@@ -126,32 +118,25 @@ class FactExtractor:
         user_id: str,
         agent_id: str | None = None,
         sentence_ids: list[str] | None = None,
-        session_time: datetime | None = None,
     ) -> dict[str, Any]:
         """
         One LLM call: extract facts, run dedup in code, link to sentences.
         Returns {"facts_inserted": N}.
         Cross-session insights trigger every 3rd session.
-
-        session_time: when the conversation happened (session started_at).
-        Stored as event_time on each fact for temporal filtering at retrieval.
         """
         conversation = "\n".join(
             f"{msg['role'].upper()}: {msg['content']}" for msg in messages
         )
 
-        # ── Extract facts — chunk long conversations so early facts aren't lost ──
+        # ── Extract facts (one LLM call, no existing facts in prompt) ──
         try:
-            if len(conversation) <= self._max_chunk_chars:
-                new_facts = await self._extract_facts(conversation)
-            else:
-                new_facts = await self._extract_facts_chunked(messages, conversation)
+            new_facts = await self._extract_facts(conversation)
         except Exception as e:
             logger.error("Fact extraction failed for session %s: %s", session_id, e)
             return {"facts_inserted": 0, "error": str(e)}
 
         facts_inserted = await self._process_facts(
-            new_facts, session_id, user_id, agent_id, conversation, session_time
+            new_facts, session_id, user_id, agent_id, conversation
         )
 
         # ── Cross-session trigger: every 3rd session ──
@@ -168,72 +153,13 @@ class FactExtractor:
     # ── LLM Call ──────────────────────────────────────────────────────────────
 
     async def _extract_facts(self, conversation: str) -> list[dict[str, Any]]:
+        # Truncate from the END (keep most recent context, drop oldest turns)
+        if len(conversation) > self._max_input_chars:
+            conversation = conversation[-self._max_input_chars:]
+            logger.debug("Conversation truncated to %d chars for extraction", self._max_input_chars)
         prompt = FACTS_PROMPT.format(conversation=conversation, max_facts=self.max_facts)
         response = await self.llm.generate(prompt, max_tokens=self._max_output_tokens)
         return _parse_json_response(response).get("facts", [])
-
-    async def _extract_facts_chunked(
-        self,
-        messages: list[dict[str, str]],
-        full_conversation: str,
-    ) -> list[dict[str, Any]]:
-        """Chunk a long conversation and extract facts from each chunk.
-
-        Chunking at message boundaries (not character boundaries) preserves
-        turn structure. The last message of each chunk is carried into the
-        next chunk as overlap to maintain context across boundaries.
-
-        All chunks share the same max_facts budget to avoid penalising long
-        histories — total facts are deduplicated by the vector-space dedup
-        in _process_facts, not here.
-        """
-        chunks = self._chunk_messages(messages)
-        logger.debug(
-            "Long conversation (%d chars) split into %d chunks for extraction",
-            len(full_conversation), len(chunks),
-        )
-        all_facts: list[dict[str, Any]] = []
-        for chunk in chunks:
-            chunk_conv = "\n".join(
-                f"{m['role'].upper()}: {m['content']}" for m in chunk
-            )
-            try:
-                chunk_facts = await self._extract_facts(chunk_conv)
-                all_facts.extend(chunk_facts)
-            except Exception as e:
-                logger.warning("Chunk extraction failed (%d messages): %s", len(chunk), e)
-        return all_facts
-
-    def _chunk_messages(
-        self, messages: list[dict[str, str]]
-    ) -> list[list[dict[str, str]]]:
-        """Split messages into chunks where each chunk's text fits in one LLM call.
-
-        Carries the last message of each chunk into the next as overlap so the
-        model has context when a turn spans a chunk boundary.
-        """
-        chunks: list[list[dict[str, str]]] = []
-        current: list[dict[str, str]] = []
-        current_chars = 0
-
-        for msg in messages:
-            # +10 for "ROLE: \n" overhead
-            msg_chars = len(msg.get("role", "")) + len(msg.get("content", "")) + 10
-            if current and current_chars + msg_chars > self._max_chunk_chars:
-                chunks.append(current)
-                overlap = current[-1]
-                current = [overlap, msg]
-                current_chars = (
-                    len(overlap.get("role", "")) + len(overlap.get("content", "")) + 10
-                    + msg_chars
-                )
-            else:
-                current.append(msg)
-                current_chars += msg_chars
-
-        if current:
-            chunks.append(current)
-        return chunks
 
     # ── Processing ────────────────────────────────────────────────────────────
 
@@ -244,7 +170,6 @@ class FactExtractor:
         user_id: str,
         agent_id: str | None,
         conversation: str,
-        session_time: datetime | None = None,
     ) -> int:
         """
         For each fact:
@@ -288,11 +213,6 @@ class FactExtractor:
                         await self.db.increment_fact_mentions(existing_id)
                         # Fall through to insert
 
-                # Carry temporal expression in metadata for display / future resolution
-                meta: dict[str, Any] = {}
-                if fact_data.get("temporal_expr"):
-                    meta["temporal_expr"] = fact_data["temporal_expr"]
-
                 fact_id = await self.db.insert_fact(
                     text=fact_data["text"],
                     embedding=fact_embedding,
@@ -301,8 +221,6 @@ class FactExtractor:
                     session_id=session_id,
                     subject=subject,
                     confidence=fact_data.get("confidence", 1.0),
-                    metadata=meta or None,
-                    event_time=session_time,
                 )
                 facts_inserted += 1
 
