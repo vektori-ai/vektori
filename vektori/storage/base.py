@@ -128,11 +128,6 @@ class StorageBackend(ABC):
         ...
 
     @abstractmethod
-    async def increment_fact_mentions(self, fact_id: str) -> None:
-        """Increment the mentions counter on an existing fact (write-time semantic dedup)."""
-        ...
-
-    @abstractmethod
     async def find_fact_by_text(
         self,
         user_id: str,

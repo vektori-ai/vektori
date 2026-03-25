@@ -39,22 +39,5 @@ class VektoriConfig:
     context_window: int = 3             # ±N sentences around matched sentence (L2)
     temporal_decay_rate: float = 0.001  # per day
 
-    # Extraction limits (per extraction batch)
-    max_facts: int = 8                  # max facts the LLM may return per session (prompt-level)
-    max_insights: int = 3               # max insights per cross-session run (prompt-level)
-
-    # Token-threshold batching — fire extraction once buffered input exceeds this
-    token_batch_threshold: int = 800    # ~800 tokens ≈ 3-4 turns before extraction fires
-
-    # Hard token limits for extraction LLM calls (API-level, not prompt hints)
-    max_extraction_input_tokens: int = 4000   # truncate conversation before sending to LLM
-    max_extraction_output_tokens: int = 1024  # cap output — facts JSON is small, 1k is plenty
-
-    # Retrieval gate — cheap heuristic, no LLM, runs before any DB query
-    enable_retrieval_gate: bool = True
-
-    # Min score floor — facts below this are dropped from results (0.0 = disabled)
-    min_retrieval_score: float = 0.0
-
     # Processing
     async_extraction: bool = True       # False = block until facts extracted (slower but simpler)

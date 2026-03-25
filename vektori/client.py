@@ -82,20 +82,11 @@ class Vektori:
         self.db = await create_storage(self.config)
         self.embedder = create_embedder(self.config.embedding_model)
         self.llm = create_llm(self.config.extraction_model)
-        self._extractor = FactExtractor(
-            db=self.db,
-            embedder=self.embedder,
-            llm=self.llm,
-            max_facts=self.config.max_facts,
-            max_insights=self.config.max_insights,
-            max_input_tokens=self.config.max_extraction_input_tokens,
-            max_output_tokens=self.config.max_extraction_output_tokens,
-        )
+        self._extractor = FactExtractor(db=self.db, embedder=self.embedder, llm=self.llm)
         self._search = SearchPipeline(
             db=self.db,
             embedder=self.embedder,
             temporal_decay_rate=self.config.temporal_decay_rate,
-            min_score=self.config.min_retrieval_score,
         )
         self._pipeline = IngestionPipeline(
             db=self.db,
@@ -103,7 +94,6 @@ class Vektori:
             extractor=self._extractor,
             quality_config=self.config.quality_config,
             async_extraction=self.config.async_extraction,
-            token_batch_threshold=self.config.token_batch_threshold,
         )
 
         self._initialized = True
@@ -169,17 +159,6 @@ class Vektori:
             }
         """
         await self._ensure_initialized()
-
-        if self.config.enable_retrieval_gate:
-            from vektori.retrieval.gate import should_retrieve
-            if not should_retrieve(query):
-                logger.debug("Retrieval gate: skipping DB lookup for query=%r", query[:60])
-                result: dict[str, Any] = {"facts": []}
-                if depth in ("l1", "l2"):
-                    result["insights"] = []
-                    result["sentences"] = []
-                return result
-
         return await self._search.search(
             query=query,
             user_id=user_id,

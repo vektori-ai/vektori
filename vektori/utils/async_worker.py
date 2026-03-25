@@ -1,19 +1,14 @@
-"""Token-threshold batched background worker for LLM fact + insight extraction."""
+"""Debounced, batched background worker for LLM fact + insight extraction."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
-
-
-def _count_tokens(messages: list[dict[str, str]]) -> int:
-    """Rough token estimate: total characters / 4 (GPT-style approximation)."""
-    return sum(len(m.get("content", "")) for m in messages) // 4
 
 
 @dataclass
@@ -25,45 +20,32 @@ class ExtractionRequest:
     sentence_ids: list[str] | None = None  # IDs of sentences stored in this session
 
 
-@dataclass
-class _UserBuffer:
-    requests: list[ExtractionRequest] = field(default_factory=list)
-    token_count: int = 0
-
-
 class ExtractionWorker:
     """
-    Token-threshold batched background worker.
+    Debounced, per-user batched extraction worker.
 
-    Accumulates requests per user key (user_id:agent_id) until:
-      - buffered input tokens exceed token_threshold (default ~800), OR
-      - debounce_seconds of silence pass (fallback for low-traffic users)
-
+    Queues requests per user key (user_id:agent_id).
+    Fires after debounce_seconds of quiet OR when max_batch_size requests
+    accumulate for one user — whichever comes first.
     Max 3 concurrent LLM calls via semaphore.
-    schedule() returns immediately. Extraction runs in the background.
 
-    Why token-threshold instead of message-count:
-      Single "ok" turns contribute ~1 token — no extraction fires.
-      3-4 real conversation turns (~800 tokens) → extraction fires naturally.
-      This matches Honcho's batching design and prevents junk fact extraction.
+    add() returns immediately. Extraction runs in the background.
     """
 
     def __init__(
         self,
         extractor: Any,
-        token_threshold: int = 800,
-        debounce_seconds: float = 30.0,
-        max_batch_size: int = 10,
+        debounce_seconds: float = 3.0,
+        max_batch_size: int = 5,
     ) -> None:
         self._extractor = extractor
-        self.token_threshold = token_threshold
         self.debounce_seconds = debounce_seconds
         self.max_batch_size = max_batch_size
-        self._buffers: dict[str, _UserBuffer] = defaultdict(_UserBuffer)
+        self._queue: dict[str, list[ExtractionRequest]] = defaultdict(list)
         self._timers: dict[str, asyncio.Task] = {}
 
     def schedule(self, request: ExtractionRequest) -> None:
-        """Queue an extraction job. Non-blocking. Token-threshold per user."""
+        """Queue an extraction job. Non-blocking. Debounced per user."""
         try:
             loop = asyncio.get_event_loop()
             if not loop.is_running():
@@ -80,20 +62,18 @@ class ExtractionWorker:
             return
 
         key = f"{request.user_id}:{request.agent_id or ''}"
-        buf = self._buffers[key]
-        buf.requests.append(request)
-        buf.token_count += _count_tokens(request.messages)
+        self._queue[key].append(request)
 
-        # Cancel existing debounce timer
+        # Cancel existing debounce timer for this user
         existing = self._timers.get(key)
         if existing and not existing.done():
             existing.cancel()
 
-        if buf.token_count >= self.token_threshold or len(buf.requests) >= self.max_batch_size:
-            # Threshold reached — fire immediately
+        if len(self._queue[key]) >= self.max_batch_size:
+            # Batch full — fire immediately
             self._timers[key] = asyncio.create_task(self._process(key))
         else:
-            # Not enough signal yet — wait for debounce window (low-traffic fallback)
+            # Wait for debounce window
             self._timers[key] = asyncio.create_task(self._debounced_process(key))
 
     async def _debounced_process(self, key: str) -> None:
@@ -101,15 +81,10 @@ class ExtractionWorker:
         await self._process(key)
 
     async def _process(self, key: str) -> None:
-        buf = self._buffers.pop(key, None)
+        requests = self._queue.pop(key, [])
         self._timers.pop(key, None)
-        if not buf or not buf.requests:
+        if not requests:
             return
-
-        logger.debug(
-            "Extraction firing for key=%s: %d requests, ~%d tokens",
-            key, len(buf.requests), buf.token_count,
-        )
 
         semaphore = asyncio.Semaphore(3)
 
@@ -125,7 +100,7 @@ class ExtractionWorker:
                         "Extraction failed for session %s: %s", req.session_id, e
                     )
 
-        await asyncio.gather(*[_extract_one(r) for r in buf.requests])
+        await asyncio.gather(*[_extract_one(r) for r in requests])
 
     async def shutdown(self, timeout: float = 30.0) -> None:
         """Cancel pending timers and wait for any in-flight tasks."""
@@ -140,5 +115,5 @@ class ExtractionWorker:
                 )
             except asyncio.TimeoutError:
                 logger.warning("Extraction worker shutdown timed out")
-        self._buffers.clear()
+        self._queue.clear()
         self._timers.clear()

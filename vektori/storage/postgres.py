@@ -112,8 +112,6 @@ class PostgresBackend(StorageBackend):
                 "CREATE INDEX IF NOT EXISTS idx_facts_subject ON facts (user_id, subject) "
                 "WHERE subject IS NOT NULL"
             )
-        if "mentions" not in existing:
-            await conn.execute("ALTER TABLE facts ADD COLUMN mentions INTEGER DEFAULT 1")
 
     async def close(self) -> None:
         if self._pool:
@@ -289,7 +287,7 @@ class PostgresBackend(StorageBackend):
         before the vector scan — prevents cross-entity bleed.
         """
         query = """
-            SELECT id, text, confidence, mentions, session_id, subject, created_at, metadata,
+            SELECT id, text, confidence, session_id, subject, created_at, metadata,
                    embedding <=> $1::vector AS distance
             FROM facts
             WHERE user_id = $2
@@ -351,13 +349,6 @@ class PostgresBackend(StorageBackend):
                 """,
                 uuid.UUID(fact_id),
                 uuid.UUID(superseded_by) if superseded_by else None,
-            )
-
-    async def increment_fact_mentions(self, fact_id: str) -> None:
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE facts SET mentions = mentions + 1, updated_at = now() WHERE id = $1",
-                uuid.UUID(fact_id),
             )
 
     async def find_fact_by_text(
