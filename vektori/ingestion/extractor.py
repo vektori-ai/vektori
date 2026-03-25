@@ -54,9 +54,9 @@ General:
 Return ONLY the JSON."""
 
 
-CROSS_SESSION_INSIGHTS_PROMPT = """Analyze facts across multiple sessions to extract CROSS-SESSION PATTERNS about the USER.
+CROSS_SESSION_INSIGHTS_PROMPT = """Analyze facts across multiple sessions to extract CROSS-SESSION PATTERNS.
 
-FACTS BY SESSION (each fact has a stable ID and a source tag — [user] or [assistant]):
+FACTS BY SESSION (each fact has a stable ID like [F1], [F2] ...):
 {facts_by_session}
 
 EXISTING INSIGHTS (do not repeat or rephrase these):
@@ -76,7 +76,6 @@ Return JSON:
 Rules:
 - Only extract patterns with clear evidence spanning 2+ sessions
 - Must be actionable — what should the agent do differently because of this?
-- Insights are about USER patterns and preferences. [assistant] facts may be used as supporting evidence (e.g. user keeps asking about X → assistant keeps addressing X) but must never be the sole basis of an insight
 - Do not repeat, rephrase, or contradict anything in EXISTING INSIGHTS
 - derived_from_fact_ids must reference IDs from the list above
 - Extract at most {max_insights} insights
@@ -433,13 +432,11 @@ class FactExtractor:
             f"F{i + 1}": fact for i, fact in enumerate(all_facts)
         }
 
-        # Group by session for the prompt — include source tag so insights LLM
-        # knows which facts came from the user vs. the assistant
+        # Group by session for the prompt
         facts_by_session: dict[str, list[str]] = {}
         for fid, fact in fact_id_map.items():
             sid = fact.get("session_id") or "unknown"
-            source = (fact.get("metadata") or {}).get("source", "user")
-            facts_by_session.setdefault(sid, []).append(f"[{fid}][{source}] {fact['text']}")
+            facts_by_session.setdefault(sid, []).append(f"[{fid}] {fact['text']}")
 
         if len(facts_by_session) < 2:
             return {"insights_inserted": 0}
