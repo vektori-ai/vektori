@@ -34,7 +34,6 @@ class IngestionPipeline:
         extractor: Any,
         quality_config: QualityConfig | None = None,
         async_extraction: bool = True,
-        token_batch_threshold: int = 800,
     ) -> None:
         self.db = db
         self.embedder = embedder
@@ -42,8 +41,7 @@ class IngestionPipeline:
         self.quality_config = quality_config or QualityConfig()
         self.async_extraction = async_extraction
         self.worker: ExtractionWorker | None = (
-            ExtractionWorker(extractor, token_threshold=token_batch_threshold)
-            if async_extraction else None
+            ExtractionWorker(extractor) if async_extraction else None
         )
 
     async def ingest(
