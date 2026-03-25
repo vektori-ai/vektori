@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from typing import Any
 
 from vektori.models.base import EmbeddingProvider, LLMProvider
@@ -11,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 # ── Prompts ──────────────────────────────────────────────────────────────────
 
-FACTS_PROMPT = """Extract FACTS from this conversation.
+FACTS_PROMPT = """Extract facts from this conversation — both facts about the USER and notable things the ASSISTANT said.
 
 CONVERSATION:
 {conversation}
@@ -20,27 +21,42 @@ Return JSON:
 {{
   "facts": [
     {{
-      "text": "short, explicit factual statement (under 20 words)",
-      "subject": "entity this is about — 'user', or a specific named person/entity",
+      "text": "short factual statement under 20 words",
+      "source": "'user' for facts about the user, 'assistant' for notable things the assistant said",
+      "subject": "'user' or a named person/entity (for user facts); 'assistant' for assistant facts",
       "confidence": 0.95,
-      "source_quotes": ["verbatim substring copied from the conversation above"]
+      "source_quotes": ["verbatim text copied from the turn this fact came from"],
+      "temporal_expr": "optional — only if the fact has an explicit time anchor, e.g. '3 years ago', 'since 2021', 'last month'. Omit if no temporal info."
     }}
   ]
 }}
 
-Rules:
-- Only explicit, verifiable information stated in the conversation. No inference.
+USER facts (source: "user"):
+- Extract facts about the USER or entities they explicitly mention
+- When the user gives a short response ("yes", "yeah", "nope", "exactly"), use the preceding ASSISTANT turn to understand what they confirmed or denied, but source_quotes must still be the USER's words
+- confidence:
+    0.9–1.0  → user volunteers information unprompted ("I work at Google")
+    0.7–0.89 → user confirms or agrees with assistant's suggestion ("yeah exactly", "yes that's right")
+    0.5–0.69 → inferred from indirect user statement
+
+ASSISTANT facts (source: "assistant"):
+- Extract only notable things the assistant said that are worth remembering: recommendations made, advice given, information provided, resources or options presented
+- Do NOT extract generic filler ("Sure, I can help", "Great question", "Let me know if you need anything")
+- confidence: always 1.0
+- source_quotes: verbatim text from the ASSISTANT turn
+
+General:
 - One fact per statement. Short and crisp.
-- subject: always identify — use 'user' when the fact is about the person speaking
-- source_quotes: copy-paste exact text, do NOT paraphrase or summarize
+- subject: 'user' when about the person speaking; a named entity when about someone/something they mention; 'assistant' for assistant facts
+- Extract at most {max_facts} facts total — prioritize high-confidence, significant ones
 - If nothing factual was stated, return {{"facts": []}}
 
 Return ONLY the JSON."""
 
 
-CROSS_SESSION_INSIGHTS_PROMPT = """Analyze facts across multiple sessions to extract CROSS-SESSION PATTERNS.
+CROSS_SESSION_INSIGHTS_PROMPT = """Analyze facts across multiple sessions to extract CROSS-SESSION PATTERNS about the USER.
 
-FACTS BY SESSION (each fact has a stable ID like [F1], [F2] ...):
+FACTS BY SESSION (each fact has a stable ID and a source tag — [user] or [assistant]):
 {facts_by_session}
 
 EXISTING INSIGHTS (do not repeat or rephrase these):
@@ -60,8 +76,10 @@ Return JSON:
 Rules:
 - Only extract patterns with clear evidence spanning 2+ sessions
 - Must be actionable — what should the agent do differently because of this?
+- Insights are about USER patterns and preferences. [assistant] facts may be used as supporting evidence (e.g. user keeps asking about X → assistant keeps addressing X) but must never be the sole basis of an insight
 - Do not repeat, rephrase, or contradict anything in EXISTING INSIGHTS
 - derived_from_fact_ids must reference IDs from the list above
+- Extract at most {max_insights} insights
 - If no clear cross-session pattern exists, return {{"insights": []}}
 
 Return ONLY the JSON."""
@@ -75,19 +93,40 @@ class FactExtractor:
 
     One LLM call per session (facts only):
       - No existing facts sent to LLM — avoids token explosion and hallucination feedback loops
-      - No `contradicts` field — contradiction detection runs in code via embedding similarity
-        after each fact is embedded, using the same vector already computed for storage
+      - No `contradicts` field — deduplication runs in code via embedding similarity
+        after each fact batch is embedded, using the same vectors already computed for storage
 
     Cross-session insights (separate, triggered every Nth session):
       - Facts grouped by session with stable IDs ([F1], [F2], ...)
       - LLM returns derived_from_fact_ids — ID-based, no fragile text matching
       - Existing insights passed in to prevent duplication
+
+    Write-time semantic dedup (PHASE2 item 3):
+      - Same session + sim > 0.92 → skip insert, increment mentions on existing
+      - Different session + sim > 0.85 → insert + increment mentions on older (cross-session IDF signal)
+      - Everything else → insert normally
     """
 
-    def __init__(self, db: StorageBackend, embedder: EmbeddingProvider, llm: LLMProvider) -> None:
+    def __init__(
+        self,
+        db: StorageBackend,
+        embedder: EmbeddingProvider,
+        llm: LLMProvider,
+        max_facts: int = 8,
+        max_insights: int = 3,
+        max_input_tokens: int = 4000,
+        max_output_tokens: int = 1024,
+    ) -> None:
         self.db = db
         self.embedder = embedder
         self.llm = llm
+        self.max_facts = max_facts
+        self.max_insights = max_insights
+        # ~4 chars/token → 4000 tokens ≈ 16k chars per chunk
+        # Long conversations are chunked (not truncated) so facts are extracted
+        # from the full history, not just the most recent window.
+        self._max_chunk_chars = max_input_tokens * 4
+        self._max_output_tokens = max_output_tokens
 
     async def extract(
         self,
@@ -95,25 +134,33 @@ class FactExtractor:
         session_id: str,
         user_id: str,
         agent_id: str | None = None,
+        sentence_ids: list[str] | None = None,
+        session_time: datetime | None = None,
     ) -> dict[str, Any]:
         """
-        One LLM call: extract facts, run contradiction detection in code, link to sentences.
+        One LLM call: extract facts, run dedup in code, link to sentences.
         Returns {"facts_inserted": N}.
         Cross-session insights trigger every 3rd session.
+
+        session_time: when the conversation happened (session started_at).
+        Stored as event_time on each fact for temporal filtering at retrieval.
         """
         conversation = "\n".join(
             f"{msg['role'].upper()}: {msg['content']}" for msg in messages
         )
 
-        # ── Extract facts (one LLM call, no existing facts in prompt) ──
+        # ── Extract facts — chunk long conversations so early facts aren't lost ──
         try:
-            new_facts = await self._extract_facts(conversation)
+            if len(conversation) <= self._max_chunk_chars:
+                new_facts = await self._extract_facts(conversation)
+            else:
+                new_facts = await self._extract_facts_chunked(messages, conversation)
         except Exception as e:
             logger.error("Fact extraction failed for session %s: %s", session_id, e)
             return {"facts_inserted": 0, "error": str(e)}
 
         facts_inserted = await self._process_facts(
-            new_facts, session_id, user_id, agent_id, conversation
+            new_facts, session_id, user_id, agent_id, conversation, session_time
         )
 
         # ── Cross-session trigger: every 3rd session ──
@@ -130,9 +177,72 @@ class FactExtractor:
     # ── LLM Call ──────────────────────────────────────────────────────────────
 
     async def _extract_facts(self, conversation: str) -> list[dict[str, Any]]:
-        prompt = FACTS_PROMPT.format(conversation=conversation)
-        response = await self.llm.generate(prompt)
+        prompt = FACTS_PROMPT.format(conversation=conversation, max_facts=self.max_facts)
+        response = await self.llm.generate(prompt, max_tokens=self._max_output_tokens)
         return _parse_json_response(response).get("facts", [])
+
+    async def _extract_facts_chunked(
+        self,
+        messages: list[dict[str, str]],
+        full_conversation: str,
+    ) -> list[dict[str, Any]]:
+        """Chunk a long conversation and extract facts from each chunk.
+
+        Chunking at message boundaries (not character boundaries) preserves
+        turn structure. The last message of each chunk is carried into the
+        next chunk as overlap to maintain context across boundaries.
+
+        All chunks share the same max_facts budget to avoid penalising long
+        histories — total facts are deduplicated by the vector-space dedup
+        in _process_facts, not here.
+        """
+        chunks = self._chunk_messages(messages)
+        logger.debug(
+            "Long conversation (%d chars) split into %d chunks for extraction",
+            len(full_conversation), len(chunks),
+        )
+        all_facts: list[dict[str, Any]] = []
+        for chunk in chunks:
+            chunk_conv = "\n".join(
+                f"{m['role'].upper()}: {m['content']}" for m in chunk
+            )
+            try:
+                chunk_facts = await self._extract_facts(chunk_conv)
+                all_facts.extend(chunk_facts)
+            except Exception as e:
+                logger.warning("Chunk extraction failed (%d messages): %s", len(chunk), e)
+        return all_facts
+
+    def _chunk_messages(
+        self, messages: list[dict[str, str]]
+    ) -> list[list[dict[str, str]]]:
+        """Split messages into chunks where each chunk's text fits in one LLM call.
+
+        Carries the last message of each chunk into the next as overlap so the
+        model has context when a turn spans a chunk boundary.
+        """
+        chunks: list[list[dict[str, str]]] = []
+        current: list[dict[str, str]] = []
+        current_chars = 0
+
+        for msg in messages:
+            # +10 for "ROLE: \n" overhead
+            msg_chars = len(msg.get("role", "")) + len(msg.get("content", "")) + 10
+            if current and current_chars + msg_chars > self._max_chunk_chars:
+                chunks.append(current)
+                overlap = current[-1]
+                current = [overlap, msg]
+                current_chars = (
+                    len(overlap.get("role", "")) + len(overlap.get("content", "")) + 10
+                    + msg_chars
+                )
+            else:
+                current.append(msg)
+                current_chars += msg_chars
+
+        if current:
+            chunks.append(current)
+        return chunks
 
     # ── Processing ────────────────────────────────────────────────────────────
 
@@ -143,30 +253,56 @@ class FactExtractor:
         user_id: str,
         agent_id: str | None,
         conversation: str,
+        session_time: datetime | None = None,
     ) -> int:
         """
         For each fact:
-          1. Embed
-          2. Contradiction check via embedding similarity (no LLM, threshold 0.85)
-             Narrows to same subject if available — avoids cross-entity false positives
+          1. Batch embed all fact texts (one embed call for the whole list)
+          2. Write-time semantic dedup:
+             - same session + sim > 0.92 → skip, increment mentions on existing
+             - diff session + sim > 0.85 → insert + increment mentions on older
           3. Insert fact
           4. Link to source sentences
         """
+        if not fact_list:
+            return 0
+
         facts_inserted = 0
 
-        for fact_data in fact_list:
+        # Batch embed — one call instead of N
+        texts = [f["text"] for f in fact_list]
+        try:
+            embeddings = await self.embedder.embed_batch(texts)
+        except Exception as e:
+            logger.error("Batch embed failed for %d facts: %s", len(texts), e)
+            return 0
+
+        for fact_data, fact_embedding in zip(fact_list, embeddings):
             try:
-                fact_embedding = await self.embedder.embed(fact_data["text"])
                 subject = fact_data.get("subject") or None
 
-                # Contradiction detection: purely in code, reuses already-computed embedding
-                supersedes_id = None
-                old_fact = await self._find_contradicted_fact(
-                    fact_embedding, user_id, agent_id, subject
+                # Write-time semantic dedup
+                dedup = await self._check_dedup(
+                    fact_embedding, session_id, user_id, agent_id, subject
                 )
-                if old_fact:
-                    supersedes_id = old_fact["id"]
-                    await self.db.deactivate_fact(old_fact["id"])
+
+                if dedup is not None:
+                    existing_id, same_session = dedup
+                    if same_session:
+                        # Pure dedup: same conversation, skip insert entirely
+                        await self.db.increment_fact_mentions(existing_id)
+                        continue
+                    else:
+                        # Cross-session near-dup: insert new fact, note recurrence on older
+                        await self.db.increment_fact_mentions(existing_id)
+                        # Fall through to insert
+
+                # Carry temporal expression and source role in metadata
+                meta: dict[str, Any] = {}
+                if fact_data.get("temporal_expr"):
+                    meta["temporal_expr"] = fact_data["temporal_expr"]
+                if fact_data.get("source"):
+                    meta["source"] = fact_data["source"]
 
                 fact_id = await self.db.insert_fact(
                     text=fact_data["text"],
@@ -176,7 +312,8 @@ class FactExtractor:
                     session_id=session_id,
                     subject=subject,
                     confidence=fact_data.get("confidence", 1.0),
-                    superseded_by_target=supersedes_id,
+                    metadata=meta or None,
+                    event_time=session_time,
                 )
                 facts_inserted += 1
 
@@ -194,18 +331,23 @@ class FactExtractor:
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    async def _find_contradicted_fact(
+    async def _check_dedup(
         self,
         fact_embedding: list[float],
+        session_id: str,
         user_id: str,
         agent_id: str | None,
         subject: str | None = None,
-    ) -> dict[str, Any] | None:
+    ) -> tuple[str, bool] | None:
         """
-        Find an existing fact that the new fact likely supersedes.
-        Uses the already-computed embedding — no extra embed call.
-        Narrows to same subject when available to prevent cross-entity false positives.
-        Threshold 0.85 — must be clearly the same claim.
+        Check if a near-duplicate fact already exists.
+
+        Returns (existing_fact_id, is_same_session) or None.
+
+        Thresholds:
+          - same session + sim > 0.92 → strong dedup signal (same conversation re-stating same fact)
+          - diff session + sim > 0.85 → cross-session near-dup (fact seen before)
+        Subject-scoped when available to avoid cross-entity false positives.
         """
         try:
             candidates = await self.db.search_facts(
@@ -219,10 +361,15 @@ class FactExtractor:
             if not candidates:
                 return None
             best = candidates[0]
-            if (1 - best["distance"]) >= 0.85:
-                return best
+            sim = 1.0 - best.get("distance", 1.0)
+            same_session = best.get("session_id") == session_id
+
+            if same_session and sim > 0.92:
+                return (best["id"], True)
+            if not same_session and sim > 0.85:
+                return (best["id"], False)
         except Exception as e:
-            logger.warning("Contradiction lookup failed: %s", e)
+            logger.warning("Dedup lookup failed: %s", e)
         return None
 
     async def _link_to_source_sentences(
@@ -286,11 +433,13 @@ class FactExtractor:
             f"F{i + 1}": fact for i, fact in enumerate(all_facts)
         }
 
-        # Group by session for the prompt
+        # Group by session for the prompt — include source tag so insights LLM
+        # knows which facts came from the user vs. the assistant
         facts_by_session: dict[str, list[str]] = {}
         for fid, fact in fact_id_map.items():
             sid = fact.get("session_id") or "unknown"
-            facts_by_session.setdefault(sid, []).append(f"[{fid}] {fact['text']}")
+            source = (fact.get("metadata") or {}).get("source", "user")
+            facts_by_session.setdefault(sid, []).append(f"[{fid}][{source}] {fact['text']}")
 
         if len(facts_by_session) < 2:
             return {"insights_inserted": 0}
@@ -310,36 +459,46 @@ class FactExtractor:
         prompt = CROSS_SESSION_INSIGHTS_PROMPT.format(
             facts_by_session=session_summary,
             existing_insights=existing_text,
+            max_insights=self.max_insights,
         )
 
         try:
-            response = await self.llm.generate(prompt)
+            response = await self.llm.generate(prompt, max_tokens=self._max_output_tokens)
             insight_list = _parse_json_response(response).get("insights", [])
         except Exception as e:
             logger.error("Cross-session extraction failed: %s", e)
             return {"insights_inserted": 0, "error": str(e)}
 
         insights_inserted = 0
-        for insight_data in insight_list:
+
+        # Batch embed insight texts
+        if insight_list:
+            insight_texts = [ins["text"] for ins in insight_list]
             try:
-                insight_embedding = await self.embedder.embed(insight_data["text"])
-                insight_id = await self.db.insert_insight(
-                    text=insight_data["text"],
-                    embedding=insight_embedding,
-                    user_id=user_id,
-                    agent_id=agent_id,
-                    confidence=insight_data.get("confidence", 1.0),
-                )
-                insights_inserted += 1
-
-                # ID-based linking — no text matching, no paraphrase failures
-                for fid in insight_data.get("derived_from_fact_ids", []):
-                    fact = fact_id_map.get(fid)
-                    if fact:
-                        await self.db.insert_insight_fact(insight_id, fact["id"])
-
+                insight_embeddings = await self.embedder.embed_batch(insight_texts)
             except Exception as e:
-                logger.warning("Failed to insert cross-session insight: %s", e)
+                logger.error("Batch embed failed for insights: %s", e)
+                return {"insights_inserted": 0, "error": str(e)}
+
+            for insight_data, insight_embedding in zip(insight_list, insight_embeddings):
+                try:
+                    insight_id = await self.db.insert_insight(
+                        text=insight_data["text"],
+                        embedding=insight_embedding,
+                        user_id=user_id,
+                        agent_id=agent_id,
+                        confidence=insight_data.get("confidence", 1.0),
+                    )
+                    insights_inserted += 1
+
+                    # ID-based linking — no text matching, no paraphrase failures
+                    for fid in insight_data.get("derived_from_fact_ids", []):
+                        fact = fact_id_map.get(fid)
+                        if fact:
+                            await self.db.insert_insight_fact(insight_id, fact["id"])
+
+                except Exception as e:
+                    logger.warning("Failed to insert cross-session insight: %s", e)
 
         logger.info(
             "Cross-session extraction for user %s: %d insights", user_id, insights_inserted

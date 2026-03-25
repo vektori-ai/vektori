@@ -66,6 +66,7 @@ class Vektori:
         self._extractor = None
         self._search = None
         self._pipeline = None
+        self._expander = None
 
     async def _ensure_initialized(self) -> None:
         if not self._initialized:
@@ -82,11 +83,20 @@ class Vektori:
         self.db = await create_storage(self.config)
         self.embedder = create_embedder(self.config.embedding_model)
         self.llm = create_llm(self.config.extraction_model)
-        self._extractor = FactExtractor(db=self.db, embedder=self.embedder, llm=self.llm)
+        self._extractor = FactExtractor(
+            db=self.db,
+            embedder=self.embedder,
+            llm=self.llm,
+            max_facts=self.config.max_facts,
+            max_insights=self.config.max_insights,
+            max_input_tokens=self.config.max_extraction_input_tokens,
+            max_output_tokens=self.config.max_extraction_output_tokens,
+        )
         self._search = SearchPipeline(
             db=self.db,
             embedder=self.embedder,
             temporal_decay_rate=self.config.temporal_decay_rate,
+            min_score=self.config.min_retrieval_score,
         )
         self._pipeline = IngestionPipeline(
             db=self.db,
@@ -94,6 +104,13 @@ class Vektori:
             extractor=self._extractor,
             quality_config=self.config.quality_config,
             async_extraction=self.config.async_extraction,
+            token_batch_threshold=self.config.token_batch_threshold,
+        )
+
+        from vektori.retrieval.expander import QueryExpander
+        self._expander = QueryExpander(
+            llm=self.llm,
+            n_variants=self.config.expansion_queries,
         )
 
         self._initialized = True
@@ -138,6 +155,7 @@ class Vektori:
         top_k: int | None = None,
         context_window: int | None = None,
         include_superseded: bool = False,
+        expand: bool = False,
     ) -> dict[str, Any]:
         """
         Retrieve relevant memories for a query.
@@ -146,25 +164,51 @@ class Vektori:
             query: Natural language query.
             user_id: Whose memories to search.
             agent_id: Optional agent scoping.
-            depth: "l0" facts only | "l1" facts+insights+sentences | "l2" full story with context window.
+            depth: "l0" | "l1" | "l2". Ignored when expand=True (always L1).
             top_k: Max facts to return.
             context_window: ±N sentences around source sentences (L2 only).
             include_superseded: Include overridden/outdated facts.
+            expand: If True, use LLM to generate query variants and search
+                    concurrently. Results are merged then returned at L1.
+                    Use for vague/indirect queries. Adds one LLM call.
 
         Returns:
             {
-              "facts": [...],           # always present
-              "insights": [...],        # l1 and l2
-              "sentences": [...]        # l1 (source sentences) and l2 (expanded context)
+              "facts": [...],
+              "insights": [...],        # l1, l2, and expand=True
+              "sentences": [...]        # l1, l2, and expand=True
             }
         """
         await self._ensure_initialized()
+
+        if self.config.enable_retrieval_gate:
+            from vektori.retrieval.gate import should_retrieve
+            if not should_retrieve(query):
+                logger.debug("Retrieval gate: skipping DB lookup for query=%r", query[:60])
+                result: dict[str, Any] = {"facts": []}
+                if depth in ("l1", "l2") or expand:
+                    result["insights"] = []
+                    result["sentences"] = []
+                return result
+
+        k = top_k or self.config.default_top_k
+
+        if expand:
+            # Generate paraphrase variants → concurrent L0 searches → single L1 graph pass
+            queries = await self._expander.expand(query)
+            return await self._search.search_expanded(
+                queries=queries,
+                user_id=user_id,
+                agent_id=agent_id,
+                top_k=k,
+            )
+
         return await self._search.search(
             query=query,
             user_id=user_id,
             agent_id=agent_id,
             depth=depth,
-            top_k=top_k or self.config.default_top_k,
+            top_k=k,
             context_window=context_window or self.config.context_window,
             include_superseded=include_superseded,
         )

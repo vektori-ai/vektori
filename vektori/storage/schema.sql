@@ -61,12 +61,18 @@ CREATE TABLE IF NOT EXISTS facts (
     is_active BOOLEAN DEFAULT true,
     superseded_by UUID REFERENCES facts(id),  -- conflict resolution chain
     confidence FLOAT DEFAULT 1.0,
+    mentions INTEGER DEFAULT 1,               -- incremented on cross-session semantic dedup
+
+    -- Temporal anchor: when the conversation happened (session started_at),
+    -- not when extraction ran. Used for time-aware retrieval filtering.
+    event_time TIMESTAMPTZ,
 
     metadata JSONB DEFAULT '{}',
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
 );
 
+CREATE INDEX IF NOT EXISTS idx_facts_event_time ON facts (user_id, event_time) WHERE event_time IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_facts_embedding ON facts
     USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 CREATE INDEX IF NOT EXISTS idx_facts_user ON facts (user_id);
