@@ -16,6 +16,9 @@ MODEL_DIMENSIONS = {
     "all-mpnet-base-v2": 768,
     "all-MiniLM-L12-v2": 384,
     "paraphrase-multilingual-MiniLM-L12-v2": 384,
+    "BAAI/bge-m3": 1024,
+    "BAAI/bge-large-en-v1.5": 1024,
+    "BAAI/bge-base-en-v1.5": 768,
 }
 
 

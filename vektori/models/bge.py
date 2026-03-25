@@ -45,9 +45,11 @@ class BGEEmbedder(EmbeddingProvider):
             try:
                 from FlagEmbedding import BGEM3FlagModel
             except ImportError as e:
-                raise ImportError(
-                    "FlagEmbedding required: pip install FlagEmbedding"
-                ) from e
+                if "FlagEmbedding" in str(e) or "No module named" in str(e):
+                    raise ImportError(
+                        "FlagEmbedding required: pip install FlagEmbedding"
+                    ) from e
+                raise  # surface real errors (e.g. transformers version conflicts)
             self._model = BGEM3FlagModel(self.model_name, use_fp16=self.use_fp16)
         return self._model
 

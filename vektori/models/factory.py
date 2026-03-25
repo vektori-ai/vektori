@@ -20,6 +20,7 @@ LLM_REGISTRY: dict[str, str] = {
     "openai": "vektori.models.openai.OpenAILLM",
     "anthropic": "vektori.models.anthropic.AnthropicLLM",
     "ollama": "vektori.models.ollama.OllamaLLM",
+    "gemini": "vektori.models.gemini.GeminiLLM",  # Direct Gemini API
     # LiteLLM: single interface for 100+ providers — recommended for extraction
     "litellm": "vektori.models.litellm_provider.LiteLLMProvider",
 }

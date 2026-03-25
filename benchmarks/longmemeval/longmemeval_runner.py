@@ -35,21 +35,25 @@ class BenchmarkConfig:
     # Vektori configuration
     storage_backend: str = "sqlite"
     database_url: str | None = None
-    embedding_model: str = "bge:bge-large-en-v1.5"  # BGE embedding model
-    extraction_model: str = "gemini:gemini-2.0-flash-lite"  # Google Gemini Flash 2.5 Lite
+    embedding_model: str = "sentence-transformers:BAAI/bge-m3"  # BGE-M3 via sentence-transformers (local, 1024-dim)
+    extraction_model: str = "gemini:gemini-2.5-flash-lite"
     
     # Retrieval configuration
     retrieval_depth: str = "l1"  # l0|l1|l2
     top_k: int = 10
     context_window: int = 3
     
+    # Processing
+    batch_size: int = 8
+    max_workers: int = 4
+
     # Output configuration
     output_dir: str = "benchmark_results"
     run_name: str | None = None
-    
+
     # Evaluation
     eval_api_key: str | None = None
-    eval_model: str = "gemini:gemini-2.0-flash-lite"
+    eval_model: str = "gemini:gemini-2.5-flash-lite"
 
 
 class LongMemEvalBenchmark:
@@ -107,6 +111,7 @@ class LongMemEvalBenchmark:
             extraction_model=self.config.extraction_model,
             default_top_k=self.config.top_k,
             context_window=self.config.context_window,
+            async_extraction=False,
         )
         
         await self.vektori_client._ensure_initialized()
@@ -125,7 +130,7 @@ class LongMemEvalBenchmark:
             await self._download_dataset(dataset_filename)
         
         logger.info("Loading dataset from %s", self.dataset_path)
-        with open(self.dataset_path) as f:
+        with open(self.dataset_path, encoding="utf-8") as f:
             self.dataset = json.load(f)
         
         logger.info("Loaded %d test instances", len(self.dataset))
@@ -139,7 +144,7 @@ class LongMemEvalBenchmark:
         
         self.dataset_path.parent.mkdir(parents=True, exist_ok=True)
         
-        async with httpx.AsyncClient(timeout=600.0) as client:
+        async with httpx.AsyncClient(timeout=600.0, follow_redirects=True) as client:
             response = await client.get(url)
             response.raise_for_status()
             
@@ -175,7 +180,7 @@ class LongMemEvalBenchmark:
                     messages=all_messages,
                     session_id=question_id,
                     user_id=question_id,
-                    timestamp=haystack_dates[-1] if haystack_dates else None,
+                    metadata={"timestamp": haystack_dates[-1]} if haystack_dates else None,
                 )
                 
                 ingestion_results["successful"] += 1

@@ -120,8 +120,6 @@ class ExtractionWorker:
                 try:
                     await self._extractor.extract(
                         req.messages, req.session_id, req.user_id, req.agent_id,
-                        sentence_ids=req.sentence_ids,
-                        session_time=req.session_time,
                     )
                 except Exception as e:
                     logger.error(

@@ -55,3 +55,7 @@ plans/
 .DS_Store
 Thumbs.db
 CODEBASE_MAP.md
+.claude/settings.local.json
+benchmark_results/longmemeval_s_run_full_results.json
+benchmark_results/longmemeval_s_run_summary.json
+data/longmemeval_s_cleaned.json
