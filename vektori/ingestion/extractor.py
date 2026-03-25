@@ -12,9 +12,9 @@ logger = logging.getLogger(__name__)
 
 # ── Prompts ──────────────────────────────────────────────────────────────────
 
-FACTS_PROMPT = """Extract facts from this conversation — both facts about the USER and notable things the ASSISTANT said.
+FACTS_PROMPT = """Extract FACTS about the USER from this conversation.
 
-CONVERSATION:
+CONVERSATION (USER turns are the source of truth; ASSISTANT turns provide context only):
 {conversation}
 
 Return JSON:
@@ -22,34 +22,26 @@ Return JSON:
   "facts": [
     {{
       "text": "short factual statement under 20 words",
-      "source": "'user' for facts about the user, 'assistant' for notable things the assistant said",
-      "subject": "'user' or a named person/entity (for user facts); 'assistant' for assistant facts",
+      "subject": "'user' or the named person/entity this fact is about",
       "confidence": 0.95,
-      "source_quotes": ["verbatim text copied from the turn this fact came from"],
+      "source_quotes": ["verbatim text copied from a USER turn — never from ASSISTANT"],
       "temporal_expr": "optional — only if the fact has an explicit time anchor, e.g. '3 years ago', 'since 2021', 'last month'. Omit if no temporal info."
     }}
   ]
 }}
 
-USER facts (source: "user"):
-- Extract facts about the USER or entities they explicitly mention
-- When the user gives a short response ("yes", "yeah", "nope", "exactly"), use the preceding ASSISTANT turn to understand what they confirmed or denied, but source_quotes must still be the USER's words
+Rules:
+- Extract only facts about the USER or entities the user mentions — never about the world, technology, or what the assistant said
+- ASSISTANT turns are probes/context only. When the user gives a short response ("yes", "yeah", "nope", "exactly"), use the preceding ASSISTANT turn to understand what they confirmed or denied, but the source_quote must still be the USER's words
+- source_quotes: verbatim text from USER turns ONLY. Never quote ASSISTANT turns.
+- subject: 'user' when the fact is about the person speaking; a named entity (person, company) when the fact is about someone/something they explicitly mention
 - confidence:
     0.9–1.0  → user volunteers information unprompted ("I work at Google")
     0.7–0.89 → user confirms or agrees with assistant's suggestion ("yeah exactly", "yes that's right")
     0.5–0.69 → inferred from indirect user statement
-
-ASSISTANT facts (source: "assistant"):
-- Extract only notable things the assistant said that are worth remembering: recommendations made, advice given, information provided, resources or options presented
-- Do NOT extract generic filler ("Sure, I can help", "Great question", "Let me know if you need anything")
-- confidence: always 1.0
-- source_quotes: verbatim text from the ASSISTANT turn
-
-General:
 - One fact per statement. Short and crisp.
-- subject: 'user' when about the person speaking; a named entity when about someone/something they mention; 'assistant' for assistant facts
-- Extract at most {max_facts} facts total — prioritize high-confidence, significant ones
-- If nothing factual was stated, return {{"facts": []}}
+- Extract at most {max_facts} facts — prioritize high-confidence, significant ones
+- If nothing factual about the user was stated, return {{"facts": []}}
 
 Return ONLY the JSON."""
 
@@ -296,12 +288,10 @@ class FactExtractor:
                         await self.db.increment_fact_mentions(existing_id)
                         # Fall through to insert
 
-                # Carry temporal expression and source role in metadata
+                # Carry temporal expression in metadata for display / future resolution
                 meta: dict[str, Any] = {}
                 if fact_data.get("temporal_expr"):
                     meta["temporal_expr"] = fact_data["temporal_expr"]
-                if fact_data.get("source"):
-                    meta["source"] = fact_data["source"]
 
                 fact_id = await self.db.insert_fact(
                     text=fact_data["text"],
