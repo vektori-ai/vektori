@@ -94,7 +94,6 @@ class SQLiteBackend(StorageBackend):
                 superseded_by TEXT REFERENCES facts(id),
                 confidence REAL DEFAULT 1.0,
                 metadata TEXT DEFAULT '{}',
-                event_time TEXT,
                 created_at TEXT DEFAULT (datetime('now'))
             );
 
@@ -260,18 +259,15 @@ class SQLiteBackend(StorageBackend):
         confidence: float = 1.0,
         superseded_by_target: str | None = None,
         metadata: dict[str, Any] | None = None,
-        event_time: datetime | None = None,
     ) -> str:
         fact_id = str(uuid.uuid4())
-        event_time_str = event_time.isoformat() if event_time else None
         await self._conn.execute(
             """INSERT INTO facts
                (id, text, embedding, user_id, agent_id, session_id, subject,
-                confidence, superseded_by, metadata, event_time)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                confidence, superseded_by, metadata)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (fact_id, text, json.dumps(embedding), user_id, agent_id, session_id,
-             subject, confidence, superseded_by_target, json.dumps(metadata or {}),
-             event_time_str),
+             subject, confidence, superseded_by_target, json.dumps(metadata or {})),
         )
         await self._conn.commit()
         return fact_id
@@ -285,8 +281,6 @@ class SQLiteBackend(StorageBackend):
         subject: str | None = None,
         limit: int = 10,
         active_only: bool = True,
-        before_date: datetime | None = None,
-        after_date: datetime | None = None,
     ) -> list[dict[str, Any]]:
         query = "SELECT * FROM facts WHERE user_id = ?"
         params: list[Any] = [user_id]
@@ -301,12 +295,6 @@ class SQLiteBackend(StorageBackend):
         if subject:
             query += " AND subject = ?"
             params.append(subject)
-        if before_date:
-            query += " AND event_time <= ?"
-            params.append(before_date.isoformat())
-        if after_date:
-            query += " AND event_time >= ?"
-            params.append(after_date.isoformat())
         async with self._conn.execute(query, params) as cursor:
             rows = await cursor.fetchall()
         results = []
@@ -524,14 +512,12 @@ class SQLiteBackend(StorageBackend):
         user_id: str,
         agent_id: str | None = None,
         metadata: dict[str, Any] | None = None,
-        started_at: datetime | None = None,
     ) -> None:
-        started_at_str = started_at.isoformat() if started_at else None
         await self._conn.execute(
-            """INSERT INTO sessions (id, user_id, agent_id, metadata, started_at)
-               VALUES (?, ?, ?, ?, COALESCE(?, datetime('now')))
+            """INSERT INTO sessions (id, user_id, agent_id, metadata)
+               VALUES (?, ?, ?, ?)
                ON CONFLICT (id) DO UPDATE SET metadata = excluded.metadata""",
-            (session_id, user_id, agent_id, json.dumps(metadata or {}), started_at_str),
+            (session_id, user_id, agent_id, json.dumps(metadata or {})),
         )
         await self._conn.commit()
 

@@ -123,7 +123,6 @@ class MemoryBackend(StorageBackend):
         confidence: float = 1.0,
         superseded_by_target: str | None = None,
         metadata: dict[str, Any] | None = None,
-        event_time: datetime | None = None,
     ) -> str:
         fact_id = str(uuid.uuid4())
         self._facts[fact_id] = {
@@ -139,7 +138,6 @@ class MemoryBackend(StorageBackend):
             "superseded_by": superseded_by_target,
             "is_active": True,
             "metadata": metadata or {},
-            "event_time": event_time,
             "created_at": datetime.utcnow(),
         }
         return fact_id
@@ -153,8 +151,6 @@ class MemoryBackend(StorageBackend):
         subject: str | None = None,
         limit: int = 10,
         active_only: bool = True,
-        before_date: datetime | None = None,
-        after_date: datetime | None = None,
     ) -> list[dict[str, Any]]:
         results = []
         for f in self._facts.values():
@@ -169,11 +165,6 @@ class MemoryBackend(StorageBackend):
             if active_only and not f.get("is_active", True):
                 continue
             if f.get("embedding") is None:
-                continue
-            et = f.get("event_time")
-            if before_date and et and et > before_date:
-                continue
-            if after_date and et and et < after_date:
                 continue
             sim = _cosine_similarity(embedding, f["embedding"])
             results.append({**f, "distance": 1.0 - sim})
@@ -355,14 +346,13 @@ class MemoryBackend(StorageBackend):
         user_id: str,
         agent_id: str | None = None,
         metadata: dict[str, Any] | None = None,
-        started_at: datetime | None = None,
     ) -> None:
         self._sessions[session_id] = {
             "id": session_id,
             "user_id": user_id,
             "agent_id": agent_id,
             "metadata": metadata or {},
-            "started_at": started_at or datetime.utcnow(),
+            "started_at": datetime.utcnow(),
         }
 
     async def get_session(

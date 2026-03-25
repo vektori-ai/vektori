@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 from vektori.config import QualityConfig
@@ -54,7 +53,6 @@ class IngestionPipeline:
         user_id: str,
         agent_id: str | None = None,
         metadata: dict[str, Any] | None = None,
-        session_time: datetime | None = None,
     ) -> dict[str, Any]:
         """
         Ingest a conversation session.
@@ -106,7 +104,7 @@ class IngestionPipeline:
             await self.db.insert_edges(edges)
 
         # 5. Upsert session record
-        await self.db.upsert_session(session_id, user_id, agent_id, metadata or {}, started_at=session_time)
+        await self.db.upsert_session(session_id, user_id, agent_id, metadata or {})
 
         # 6. Trigger extraction
         if self.worker is not None:
@@ -115,11 +113,10 @@ class IngestionPipeline:
                 session_id=session_id,
                 user_id=user_id,
                 agent_id=agent_id,
-                session_time=session_time,
             ))
             extraction_status = "queued"
         else:
-            await self.extractor.extract(messages, session_id, user_id, agent_id, session_time=session_time)
+            await self.extractor.extract(messages, session_id, user_id, agent_id)
             extraction_status = "done"
 
         return {
