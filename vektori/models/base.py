@@ -32,10 +32,9 @@ class LLMProvider(ABC):
     """Abstract LLM provider for fact and insight extraction."""
 
     @abstractmethod
-    async def generate(self, prompt: str, max_tokens: int | None = None) -> str:
+    async def generate(self, prompt: str) -> str:
         """
         Generate a completion for the given prompt.
         Should return valid JSON for extraction prompts.
-        max_tokens: cap output length. None = provider default.
         """
         ...

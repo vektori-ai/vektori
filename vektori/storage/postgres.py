@@ -93,25 +93,7 @@ class PostgresBackend(StorageBackend):
         schema = SCHEMA_PATH.read_text()
         async with self._pool.acquire() as conn:
             await conn.execute(schema)
-            await self._migrate(conn)
         logger.info("PostgreSQL backend initialized")
-
-    async def _migrate(self, conn: Any) -> None:
-        """Additive migrations for existing databases. Safe to run on every init."""
-        existing = {
-            row["column_name"]
-            for row in await conn.fetch(
-                "SELECT column_name FROM information_schema.columns WHERE table_name = 'facts'"
-            )
-        }
-        if "session_id" not in existing:
-            await conn.execute("ALTER TABLE facts ADD COLUMN session_id TEXT")
-        if "subject" not in existing:
-            await conn.execute("ALTER TABLE facts ADD COLUMN subject TEXT")
-            await conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_facts_subject ON facts (user_id, subject) "
-                "WHERE subject IS NOT NULL"
-            )
 
     async def close(self) -> None:
         if self._pool:
@@ -238,8 +220,6 @@ class PostgresBackend(StorageBackend):
         embedding: list[float],
         user_id: str,
         agent_id: str | None = None,
-        session_id: str | None = None,
-        subject: str | None = None,
         confidence: float = 1.0,
         superseded_by_target: str | None = None,
         metadata: dict[str, Any] | None = None,
@@ -250,18 +230,16 @@ class PostgresBackend(StorageBackend):
             await conn.execute(
                 """
                 INSERT INTO facts
-                    (id, text, embedding, user_id, agent_id, session_id, subject,
-                     confidence, superseded_by, metadata)
+                    (id, text, embedding, user_id, agent_id, confidence,
+                     superseded_by, metadata)
                 VALUES
-                    ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10)
+                    ($1, $2, $3::vector, $4, $5, $6, $7, $8)
                 """,
                 fact_id,
                 text,
                 _vec(embedding),
                 user_id,
                 agent_id,
-                session_id,
-                subject,
                 confidence,
                 uuid.UUID(superseded_by_target) if superseded_by_target else None,
                 json.dumps(metadata or {}),
@@ -273,8 +251,6 @@ class PostgresBackend(StorageBackend):
         embedding: list[float],
         user_id: str,
         agent_id: str | None = None,
-        session_id: str | None = None,
-        subject: str | None = None,
         limit: int = 10,
         active_only: bool = True,
     ) -> list[dict[str, Any]]:
@@ -283,20 +259,16 @@ class PostgresBackend(StorageBackend):
         Returns facts ordered by cosine distance (ascending — closest first),
         with a 'distance' field added. The scoring layer converts distance →
         similarity and combines with confidence and recency.
-        subject pre-filter: if provided, restricts to facts where subject matches
-        before the vector scan — prevents cross-entity bleed.
         """
         query = """
-            SELECT id, text, confidence, session_id, subject, created_at, metadata,
+            SELECT id, text, confidence, mentions, created_at, metadata,
                    embedding <=> $1::vector AS distance
             FROM facts
             WHERE user_id = $2
               AND ($3::text IS NULL OR agent_id = $3)
-              AND ($4::text IS NULL OR session_id = $4)
-              AND ($5::text IS NULL OR subject = $5)
-              AND ($6::boolean = false OR is_active = true)
+              AND ($4::boolean = false OR is_active = true)
             ORDER BY embedding <=> $1::vector
-            LIMIT $7
+            LIMIT $5
         """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
@@ -304,8 +276,6 @@ class PostgresBackend(StorageBackend):
                 _vec(embedding),
                 user_id,
                 agent_id,
-                session_id,
-                subject,
                 active_only,
                 limit,
             )
@@ -693,8 +663,6 @@ class PostgresBackend(StorageBackend):
         embedding: list[float],
         user_id: str,
         agent_id: str | None = None,
-        session_id: str | None = None,
-        subject: str | None = None,
         limit: int = 10,
         window: int = 3,
     ) -> dict[str, list[dict[str, Any]]]:
@@ -705,23 +673,19 @@ class PostgresBackend(StorageBackend):
 
         This is meaningfully faster than 4 separate queries at scale.
         Called by SearchPipeline when backend.supports_single_query is True.
-        subject: pre-filter facts to a specific entity before vector scan.
-        session_id: scope retrieval to a specific session's facts.
         """
         query = """
             WITH
             -- Step 1: Seed facts via vector similarity (L0)
             seed_facts AS (
-                SELECT id, text, confidence, session_id, subject, created_at, metadata,
+                SELECT id, text, confidence, created_at, metadata,
                        embedding <=> $1::vector AS distance
                 FROM facts
                 WHERE user_id = $2
                   AND ($3::text IS NULL OR agent_id = $3)
-                  AND ($4::text IS NULL OR session_id = $4)
-                  AND ($5::text IS NULL OR subject = $5)
                   AND is_active = true
                 ORDER BY embedding <=> $1::vector
-                LIMIT $6
+                LIMIT $4
             ),
 
             -- Step 2: Insights linked to matched facts (L1)
@@ -752,8 +716,8 @@ class PostgresBackend(StorageBackend):
                 INNER JOIN sentences s2
                     ON  s2.session_id = src.session_id
                     AND s2.turn_number = src.turn_number
-                    AND s2.sentence_index BETWEEN src.sentence_index - $7
-                                              AND src.sentence_index + $7
+                    AND s2.sentence_index BETWEEN src.sentence_index - $5
+                                              AND src.sentence_index + $5
                 WHERE s2.is_active = true
             )
 
@@ -776,8 +740,6 @@ class PostgresBackend(StorageBackend):
                 _vec(embedding),
                 user_id,
                 agent_id,
-                session_id,
-                subject,
                 limit,
                 window,
             )

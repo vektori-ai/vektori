@@ -72,11 +72,11 @@ class AnthropicLLM(LLMProvider):
             self._client = anthropic.AsyncAnthropic(api_key=self._api_key)
         return self._client
 
-    async def generate(self, prompt: str, max_tokens: int | None = None) -> str:
+    async def generate(self, prompt: str) -> str:
         client = self._get_client()
         message = await client.messages.create(
             model=self.model,
-            max_tokens=max_tokens or 2048,
+            max_tokens=2048,
             messages=[{"role": "user", "content": prompt}],
         )
         return message.content[0].text

@@ -119,7 +119,6 @@ class MemoryBackend(StorageBackend):
         user_id: str,
         agent_id: str | None = None,
         session_id: str | None = None,
-        subject: str | None = None,
         confidence: float = 1.0,
         superseded_by_target: str | None = None,
         metadata: dict[str, Any] | None = None,
@@ -132,7 +131,6 @@ class MemoryBackend(StorageBackend):
             "user_id": user_id,
             "agent_id": agent_id,
             "session_id": session_id,
-            "subject": subject,
             "confidence": confidence,
             "superseded_by": superseded_by_target,
             "is_active": True,
@@ -146,8 +144,6 @@ class MemoryBackend(StorageBackend):
         embedding: list[float],
         user_id: str,
         agent_id: str | None = None,
-        session_id: str | None = None,
-        subject: str | None = None,
         limit: int = 10,
         active_only: bool = True,
     ) -> list[dict[str, Any]]:
@@ -156,10 +152,6 @@ class MemoryBackend(StorageBackend):
             if f.get("user_id") != user_id:
                 continue
             if agent_id and f.get("agent_id") != agent_id:
-                continue
-            if session_id and f.get("session_id") != session_id:
-                continue
-            if subject and f.get("subject") != subject:
                 continue
             if active_only and not f.get("is_active", True):
                 continue

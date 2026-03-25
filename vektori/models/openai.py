@@ -67,15 +67,12 @@ class OpenAILLM(LLMProvider):
             self._client = AsyncOpenAI(api_key=self._api_key)
         return self._client
 
-    async def generate(self, prompt: str, max_tokens: int | None = None) -> str:
+    async def generate(self, prompt: str) -> str:
         client = self._get_client()
-        kwargs: dict = {
-            "model": self.model,
-            "messages": [{"role": "user", "content": prompt}],
-            "response_format": {"type": "json_object"},
-            "temperature": 0.1,
-        }
-        if max_tokens is not None:
-            kwargs["max_tokens"] = max_tokens
-        response = await client.chat.completions.create(**kwargs)
+        response = await client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.1,
+        )
         return response.choices[0].message.content or ""

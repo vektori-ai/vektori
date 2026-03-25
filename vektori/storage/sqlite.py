@@ -89,7 +89,6 @@ class SQLiteBackend(StorageBackend):
                 user_id TEXT NOT NULL,
                 agent_id TEXT,
                 session_id TEXT,
-                subject TEXT,
                 is_active INTEGER DEFAULT 1,
                 superseded_by TEXT REFERENCES facts(id),
                 confidence REAL DEFAULT 1.0,
@@ -160,8 +159,6 @@ class SQLiteBackend(StorageBackend):
             cols = {row[1] for row in await cursor.fetchall()}
         if "session_id" not in cols:
             await self._conn.execute("ALTER TABLE facts ADD COLUMN session_id TEXT")
-        if "subject" not in cols:
-            await self._conn.execute("ALTER TABLE facts ADD COLUMN subject TEXT")
 
     async def close(self) -> None:
         if self._conn:
@@ -253,7 +250,6 @@ class SQLiteBackend(StorageBackend):
         user_id: str,
         agent_id: str | None = None,
         session_id: str | None = None,
-        subject: str | None = None,
         confidence: float = 1.0,
         superseded_by_target: str | None = None,
         metadata: dict[str, Any] | None = None,
@@ -261,11 +257,10 @@ class SQLiteBackend(StorageBackend):
         fact_id = str(uuid.uuid4())
         await self._conn.execute(
             """INSERT INTO facts
-               (id, text, embedding, user_id, agent_id, session_id, subject,
-                confidence, superseded_by, metadata)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (id, text, embedding, user_id, agent_id, session_id, confidence, superseded_by, metadata)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (fact_id, text, json.dumps(embedding), user_id, agent_id, session_id,
-             subject, confidence, superseded_by_target, json.dumps(metadata or {})),
+             confidence, superseded_by_target, json.dumps(metadata or {})),
         )
         await self._conn.commit()
         return fact_id
@@ -275,8 +270,6 @@ class SQLiteBackend(StorageBackend):
         embedding: list[float],
         user_id: str,
         agent_id: str | None = None,
-        session_id: str | None = None,
-        subject: str | None = None,
         limit: int = 10,
         active_only: bool = True,
     ) -> list[dict[str, Any]]:
@@ -287,12 +280,6 @@ class SQLiteBackend(StorageBackend):
         if agent_id:
             query += " AND agent_id = ?"
             params.append(agent_id)
-        if session_id:
-            query += " AND session_id = ?"
-            params.append(session_id)
-        if subject:
-            query += " AND subject = ?"
-            params.append(subject)
         async with self._conn.execute(query, params) as cursor:
             rows = await cursor.fetchall()
         results = []

@@ -85,7 +85,6 @@ class StorageBackend(ABC):
         user_id: str,
         agent_id: str | None = None,
         session_id: str | None = None,
-        subject: str | None = None,
         confidence: float = 1.0,
         superseded_by_target: str | None = None,
         metadata: dict[str, Any] | None = None,
@@ -99,13 +98,10 @@ class StorageBackend(ABC):
         embedding: list[float],
         user_id: str,
         agent_id: str | None = None,
-        session_id: str | None = None,
-        subject: str | None = None,
         limit: int = 10,
         active_only: bool = True,
     ) -> list[dict[str, Any]]:
-        """Vector search over facts. Results include a 'distance' field (cosine distance).
-        subject: pre-filter to facts about this entity before the vector scan."""
+        """Vector search over facts. Results include a 'distance' field (cosine distance)."""
         ...
 
     @abstractmethod
