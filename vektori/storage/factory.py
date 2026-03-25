@@ -22,10 +22,7 @@ async def create_storage(config: VektoriConfig) -> StorageBackend:
                 "database_url is required for PostgreSQL backend. "
                 "Example: postgresql://vektori:vektori@localhost:5432/vektori"
             )
-        backend = PostgresBackend(
-            database_url,
-            embedding_dim=config.embedding_dimension,
-        )
+        backend = PostgresBackend(database_url)
 
     else:
         from vektori.storage.sqlite import SQLiteBackend

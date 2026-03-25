@@ -4,7 +4,6 @@
 
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-CREATE EXTENSION IF NOT EXISTS pg_trgm;  -- for find_sentences_by_similarity
 
 CREATE TABLE IF NOT EXISTS sentences (
     id UUID PRIMARY KEY,

@@ -14,20 +14,11 @@ class StorageBackend(ABC):
               Memory (unit tests / CI).
 
     The interface maps directly to the three-layer graph schema:
+      - Sentences (L2): raw conversation nodes + NEXT edges
       - Facts (L0): LLM-extracted statements, primary vector search surface
-      - Insights (L1): inferred cross-session patterns, found via graph traversal
-      - Sentences (L2): raw conversation nodes + NEXT edges (context expansion)
-      - Join tables: fact_sources (L0↔L2), insight_facts (L1↔L0), insight_sources (L1↔L2)
-
-    Layer numbering matches SearchPipeline depth parameter:
-      L0 — vector search over facts only
-      L1 — facts + insights (graph) + source sentences (no expansion)
-      L2 — L1 + full session context window (±N expansion)
+      - Insights (L1): inferred patterns, discovered via graph traversal
+      - Join tables: fact_sources, insight_facts, insight_sources
     """
-
-    # Set to True in backends that implement search_l2_single_query.
-    # SearchPipeline checks this to decide whether to use the fast CTE path.
-    supports_single_query: bool = False
 
     # ── Sentences ──
 
@@ -96,7 +87,6 @@ class StorageBackend(ABC):
         user_id: str,
         agent_id: str | None = None,
         limit: int = 100,
-        offset: int = 0,
     ) -> list[dict[str, Any]]:
         ...
 
@@ -120,10 +110,7 @@ class StorageBackend(ABC):
 
     @abstractmethod
     async def get_supersession_chain(self, fact_id: str) -> list[dict[str, Any]]:
-        """Return full chain starting from fact_id, newest first.
-
-        [fact_id (depth=0), superseded_by (depth=1), ..., oldest ancestor]
-        """
+        """Return full chain: [oldest superseded fact, ..., current active fact]."""
         ...
 
     # ── Insights ──
@@ -145,7 +132,6 @@ class StorageBackend(ABC):
     async def get_insights_from_facts(
         self,
         fact_ids: list[str],
-        user_id: str,
         active_only: bool = True,
     ) -> list[dict[str, Any]]:
         """Graph traversal: JOIN insight_facts WHERE fact_id IN (...). NOT vector search."""
@@ -182,41 +168,19 @@ class StorageBackend(ABC):
         """Link a fact to the sentence it was extracted from."""
         ...
 
-    async def insert_fact_sources(self, pairs: list[tuple[str, str]]) -> None:
-        """Batch link facts to source sentences. Override for efficiency."""
-        for fact_id, sentence_id in pairs:
-            await self.insert_fact_source(fact_id, sentence_id)
-
     @abstractmethod
     async def insert_insight_fact(self, insight_id: str, fact_id: str) -> None:
         """Link an insight to a related fact. This is the key L1↔L0 bridge."""
         ...
-
-    async def insert_insight_facts(self, pairs: list[tuple[str, str]]) -> None:
-        """Batch link insights to related facts. Override for efficiency."""
-        for insight_id, fact_id in pairs:
-            await self.insert_insight_fact(insight_id, fact_id)
 
     @abstractmethod
     async def insert_insight_source(self, insight_id: str, sentence_id: str) -> None:
         """Link an insight to a source sentence."""
         ...
 
-    async def insert_insight_sources(self, pairs: list[tuple[str, str]]) -> None:
-        """Batch link insights to source sentences. Override for efficiency."""
-        for insight_id, sentence_id in pairs:
-            await self.insert_insight_source(insight_id, sentence_id)
-
     @abstractmethod
     async def get_source_sentences(self, fact_ids: list[str]) -> list[str]:
         """Return sentence IDs that are sources for the given facts (via fact_sources)."""
-        ...
-
-    @abstractmethod
-    async def get_sentences_by_ids(
-        self, sentence_ids: list[str]
-    ) -> list[dict[str, Any]]:
-        """Fetch full sentence rows for the given IDs."""
         ...
 
     # ── Sessions ──

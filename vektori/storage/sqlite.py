@@ -274,10 +274,10 @@ class SQLiteBackend(StorageBackend):
         user_id: str,
         agent_id: str | None = None,
         limit: int = 100,
-        offset: int = 0,
     ) -> list[dict[str, Any]]:
-        query = "SELECT * FROM facts WHERE user_id = ? AND is_active = 1 LIMIT ? OFFSET ?"
-        async with self._conn.execute(query, (user_id, limit, offset)) as cursor:
+        query = "SELECT * FROM facts WHERE user_id = ? AND is_active = 1 LIMIT ?"
+        params: list[Any] = [user_id, limit]
+        async with self._conn.execute(query, params) as cursor:
             rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
@@ -343,7 +343,6 @@ class SQLiteBackend(StorageBackend):
     async def get_insights_from_facts(
         self,
         fact_ids: list[str],
-        user_id: str,
         active_only: bool = True,
     ) -> list[dict[str, Any]]:
         if not fact_ids:
@@ -353,11 +352,10 @@ class SQLiteBackend(StorageBackend):
             SELECT DISTINCT i.* FROM insights i
             JOIN insight_facts inf ON i.id = inf.insight_id
             WHERE inf.fact_id IN ({placeholders})
-              AND i.user_id = ?
         """
         if active_only:
             query += " AND i.is_active = 1"
-        async with self._conn.execute(query, (*fact_ids, user_id)) as cursor:
+        async with self._conn.execute(query, fact_ids) as cursor:
             rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
@@ -439,25 +437,6 @@ class SQLiteBackend(StorageBackend):
         ) as cursor:
             rows = await cursor.fetchall()
         return [row[0] for row in rows]
-
-    async def get_sentences_by_ids(
-        self, sentence_ids: list[str]
-    ) -> list[dict[str, Any]]:
-        if not sentence_ids:
-            return []
-        placeholders = ",".join("?" * len(sentence_ids))
-        async with self._conn.execute(
-            f"""
-            SELECT id, text, session_id, turn_number, sentence_index, role, created_at
-            FROM sentences
-            WHERE id IN ({placeholders}) AND is_active = 1
-            ORDER BY session_id, turn_number, sentence_index
-            """,
-            sentence_ids,
-        ) as cursor:
-            rows = await cursor.fetchall()
-            cols = [d[0] for d in cursor.description]
-        return [dict(zip(cols, row)) for row in rows]
 
     # ── Sessions ──
 

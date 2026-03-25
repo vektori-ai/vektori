@@ -154,13 +154,11 @@ class MemoryBackend(StorageBackend):
         user_id: str,
         agent_id: str | None = None,
         limit: int = 100,
-        offset: int = 0,
     ) -> list[dict[str, Any]]:
-        results = [
+        return [
             f for f in self._facts.values()
             if f.get("user_id") == user_id and f.get("is_active", True)
-        ]
-        return results[offset: offset + limit]
+        ][:limit]
 
     async def deactivate_fact(self, fact_id: str, superseded_by: str | None = None) -> None:
         if fact_id in self._facts:
@@ -221,7 +219,6 @@ class MemoryBackend(StorageBackend):
     async def get_insights_from_facts(
         self,
         fact_ids: list[str],
-        user_id: str,
         active_only: bool = True,
     ) -> list[dict[str, Any]]:
         fact_id_set = set(fact_ids)
@@ -233,9 +230,7 @@ class MemoryBackend(StorageBackend):
         results = []
         for iid in insight_ids:
             insight = self._insights.get(iid)
-            if insight and insight.get("user_id") == user_id and (
-                not active_only or insight.get("is_active", True)
-            ):
+            if insight and (not active_only or insight.get("is_active", True)):
                 results.append(insight)
         return results
 
@@ -298,19 +293,6 @@ class MemoryBackend(StorageBackend):
             for link in self._fact_sources
             if link["fact_id"] in fact_id_set
         })
-
-    async def get_sentences_by_ids(
-        self, sentence_ids: list[str]
-    ) -> list[dict[str, Any]]:
-        id_set = set(sentence_ids)
-        results = [
-            s for s in self._sentences.values()
-            if s["id"] in id_set and s.get("is_active", True)
-        ]
-        return sorted(
-            results,
-            key=lambda x: (x.get("session_id", ""), x.get("turn_number", 0), x.get("sentence_index", 0)),
-        )
 
     # ── Sessions ──
 

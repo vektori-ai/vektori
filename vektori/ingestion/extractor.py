@@ -6,9 +6,6 @@ import json
 import logging
 from typing import Any
 
-from vektori.models.base import EmbeddingProvider, LLMProvider
-from vektori.storage.base import StorageBackend
-
 logger = logging.getLogger(__name__)
 
 EXTRACTION_PROMPT = """Analyze this conversation and extract two types of information: FACTS and INSIGHTS.
@@ -64,7 +61,7 @@ class FactExtractor:
     Both are linked back to source sentences via join tables.
     """
 
-    def __init__(self, db: StorageBackend, embedder: EmbeddingProvider, llm: LLMProvider) -> None:
+    def __init__(self, db: Any, embedder: Any, llm: Any) -> None:
         self.db = db
         self.embedder = embedder
         self.llm = llm
