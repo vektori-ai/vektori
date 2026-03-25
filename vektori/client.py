@@ -66,7 +66,6 @@ class Vektori:
         self._extractor = None
         self._search = None
         self._pipeline = None
-        self._expander = None
 
     async def _ensure_initialized(self) -> None:
         if not self._initialized:
@@ -105,12 +104,6 @@ class Vektori:
             quality_config=self.config.quality_config,
             async_extraction=self.config.async_extraction,
             token_batch_threshold=self.config.token_batch_threshold,
-        )
-
-        from vektori.retrieval.expander import QueryExpander
-        self._expander = QueryExpander(
-            llm=self.llm,
-            n_variants=self.config.expansion_queries,
         )
 
         self._initialized = True
@@ -155,7 +148,6 @@ class Vektori:
         top_k: int | None = None,
         context_window: int | None = None,
         include_superseded: bool = False,
-        expand: bool = False,
     ) -> dict[str, Any]:
         """
         Retrieve relevant memories for a query.
@@ -164,19 +156,16 @@ class Vektori:
             query: Natural language query.
             user_id: Whose memories to search.
             agent_id: Optional agent scoping.
-            depth: "l0" | "l1" | "l2". Ignored when expand=True (always L1).
+            depth: "l0" facts only | "l1" facts+insights+sentences | "l2" full story with context window.
             top_k: Max facts to return.
             context_window: ±N sentences around source sentences (L2 only).
             include_superseded: Include overridden/outdated facts.
-            expand: If True, use LLM to generate query variants and search
-                    concurrently. Results are merged then returned at L1.
-                    Use for vague/indirect queries. Adds one LLM call.
 
         Returns:
             {
-              "facts": [...],
-              "insights": [...],        # l1, l2, and expand=True
-              "sentences": [...]        # l1, l2, and expand=True
+              "facts": [...],           # always present
+              "insights": [...],        # l1 and l2
+              "sentences": [...]        # l1 (source sentences) and l2 (expanded context)
             }
         """
         await self._ensure_initialized()
@@ -186,29 +175,17 @@ class Vektori:
             if not should_retrieve(query):
                 logger.debug("Retrieval gate: skipping DB lookup for query=%r", query[:60])
                 result: dict[str, Any] = {"facts": []}
-                if depth in ("l1", "l2") or expand:
+                if depth in ("l1", "l2"):
                     result["insights"] = []
                     result["sentences"] = []
                 return result
-
-        k = top_k or self.config.default_top_k
-
-        if expand:
-            # Generate paraphrase variants → concurrent L0 searches → single L1 graph pass
-            queries = await self._expander.expand(query)
-            return await self._search.search_expanded(
-                queries=queries,
-                user_id=user_id,
-                agent_id=agent_id,
-                top_k=k,
-            )
 
         return await self._search.search(
             query=query,
             user_id=user_id,
             agent_id=agent_id,
             depth=depth,
-            top_k=k,
+            top_k=top_k or self.config.default_top_k,
             context_window=context_window or self.config.context_window,
             include_superseded=include_superseded,
         )
