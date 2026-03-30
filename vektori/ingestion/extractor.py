@@ -404,10 +404,13 @@ class FactExtractor:
                 )
                 facts_inserted += 1
 
-                for quote in fact_data.get("source_quotes") or []:
-                    sent = await self.db.find_sentence_containing(session_id, quote)
-                    if sent:
-                        await self.db.insert_fact_source(fact_id, sent["id"])
+                source_quotes = fact_data.get("source_quotes") or []
+                if source_quotes:
+                    linked = await self._link_to_source_sentences(
+                        source_quotes, session_id, conversation=None
+                    )
+                    for sent_id in linked:
+                        await self.db.insert_fact_source(fact_id, sent_id)
 
             except Exception as e:
                 logger.warning("Failed to replay fact '%s': %s", fact_data.get("text"), e)
@@ -461,20 +464,21 @@ class FactExtractor:
         self,
         source_quotes: list[str],
         session_id: str,
-        conversation: str,
+        conversation: str | None,
     ) -> list[str]:
         """
         Link extracted content to source sentences.
         Step 1: hallucination guard — skip quotes not present in conversation
+                (skipped when conversation=None, e.g. cached fact replay)
         Step 2: exact substring match via find_sentence_containing()
-        Step 3: trgm batch fallback via find_sentences_by_similarity() for unmatched quotes
+        Step 3: embedding vector fallback for paraphrased/unmatched quotes
         """
         linked_ids: list[str] = []
         unmatched: list[str] = []
 
         for quote in source_quotes:
-            # Step 1: guard against hallucinated quotes
-            if quote.lower() not in conversation.lower():
+            # Step 1: guard against hallucinated quotes (skip for trusted cached quotes)
+            if conversation is not None and quote.lower() not in conversation.lower():
                 continue
 
             # Step 2: exact substring match
@@ -484,13 +488,19 @@ class FactExtractor:
             else:
                 unmatched.append(quote)
 
-        # Step 3: trgm batch fallback for all unmatched quotes in one query
+        # Step 3: embedding-based fallback for paraphrased or split quotes
         if unmatched:
             try:
-                trgm_ids = await self.db.find_sentences_by_similarity(unmatched, session_id)
-                linked_ids.extend(trgm_ids)
+                embeddings = await self.embedder.embed_batch(unmatched)
+                seen: set[str] = set(linked_ids)
+                for emb in embeddings:
+                    ids = await self.db.search_sentences_in_session(emb, session_id)
+                    for sid in ids:
+                        if sid not in seen:
+                            linked_ids.append(sid)
+                            seen.add(sid)
             except Exception as e:
-                logger.debug("trgm fallback failed for quotes: %s", e)
+                logger.debug("Embedding fallback failed for source quotes: %s", e)
 
         return linked_ids
 

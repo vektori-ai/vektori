@@ -163,7 +163,7 @@ class SearchPipeline:
         before_date: datetime | None = None,
         after_date: datetime | None = None,
     ) -> dict[str, Any]:
-        # ── Step 1: Vector search over FACTS (L0 entry point) ─────────────────
+        # ── Step 1: Vector search over FACTS ─────────────────────────────────
         seed_facts = await self.db.search_facts(
             embedding=query_embedding,
             user_id=user_id,
@@ -201,8 +201,10 @@ class SearchPipeline:
             top = _clean(scored_facts[:top_k])
             return {"facts": top, "memory_found": len(top) > 0}
 
-        # ── Step 2: Discover INSIGHTS via graph traversal (L1) ────────────────
-        # NOT vector search. JOIN on insight_facts where fact_id IN seed_fact_ids.
+        # ── Step 2: Discover session INSIGHTS via graph traversal ─────────────
+        # NOT vector search — JOIN insight_facts WHERE fact_id IN seed_fact_ids.
+        # Insights are generated per-session from these exact facts, so this
+        # traversal surfaces the session-level summaries that ground the results.
         seed_fact_ids = [f["id"] for f in scored_facts[:top_k]]
         related_insights = await self.db.get_insights_from_facts(
             fact_ids=seed_fact_ids,
@@ -220,12 +222,6 @@ class SearchPipeline:
         memory_found = len(top_facts) > 0
 
         if not source_sentence_ids:
-            # Facts exist but haven't been linked to sentences yet
-            # (extraction may still be in-flight). Return what we have.
-            logger.debug(
-                "search L1/L2: no source sentences for facts %s (extraction pending?)",
-                seed_fact_ids,
-            )
             return {
                 "facts": top_facts,
                 "insights": related_insights,
@@ -234,7 +230,6 @@ class SearchPipeline:
             }
 
         if depth == "l1":
-            # L1: source sentences only — exact moments facts came from, no expansion.
             source_sentences = await self.db.get_sentences_by_ids(source_sentence_ids)
             return {
                 "facts": top_facts,

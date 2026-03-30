@@ -234,8 +234,30 @@ class SQLiteBackend(StorageBackend):
         session_id: str,
         threshold: float = 0.75,
     ) -> list[str]:
-        # TODO: embed each quote (requires access to embedder — wire in later)
+        # Superseded by search_sentences_in_session (embedding-based).
         return []
+
+    async def search_sentences_in_session(
+        self,
+        embedding: list[float],
+        session_id: str,
+        limit: int = 3,
+        threshold: float = 0.75,
+    ) -> list[str]:
+        """Cosine vector search over sentences in a session. Used for fact-source linking."""
+        async with self._conn.execute(
+            "SELECT id, embedding FROM sentences WHERE session_id = ? AND is_active = 1",
+            (session_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        scored: list[tuple[float, str]] = []
+        for row in rows:
+            emb = json.loads(row["embedding"])
+            sim = _cosine_similarity(embedding, emb)
+            if sim >= threshold:
+                scored.append((sim, row["id"]))
+        scored.sort(key=lambda x: -x[0])
+        return [r[1] for r in scored[:limit]]
 
     async def find_sentence_containing(
         self,
@@ -398,6 +420,50 @@ class SQLiteBackend(StorageBackend):
         )
         await self._conn.commit()
         return insight_id
+
+    async def search_insights(
+        self,
+        embedding: list[float],
+        user_id: str,
+        agent_id: str | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Brute-force cosine search over insights for a user."""
+        async with self._conn.execute(
+            "SELECT * FROM insights WHERE user_id = ? AND is_active = 1",
+            (user_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        results = []
+        for row in rows:
+            row_dict = dict(row)
+            emb = json.loads(row_dict["embedding"])
+            sim = _cosine_similarity(embedding, emb)
+            results.append({**row_dict, "distance": 1.0 - sim})
+        results.sort(key=lambda x: x["distance"])
+        return results[:limit]
+
+    async def get_facts_from_insights(
+        self,
+        insight_ids: list[str],
+        user_id: str,
+        active_only: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Graph traversal: find all facts linked to any of the given insights."""
+        if not insight_ids:
+            return []
+        placeholders = ",".join("?" * len(insight_ids))
+        query = f"""
+            SELECT DISTINCT f.* FROM facts f
+            JOIN insight_facts inf ON f.id = inf.fact_id
+            WHERE inf.insight_id IN ({placeholders})
+              AND f.user_id = ?
+        """
+        if active_only:
+            query += " AND f.is_active = 1"
+        async with self._conn.execute(query, (*insight_ids, user_id)) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
 
     async def get_insights_from_facts(
         self,

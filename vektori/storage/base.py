@@ -63,6 +63,20 @@ class StorageBackend(ABC):
         """Find sentence IDs semantically similar to given quotes. Used to link facts/insights to source sentences."""
         ...
 
+    async def search_sentences_in_session(
+        self,
+        embedding: list[float],
+        session_id: str,
+        limit: int = 3,
+        threshold: float = 0.75,
+    ) -> list[str]:
+        """Vector search for sentences within a session. Returns sentence IDs above threshold.
+
+        Used by the extractor as a fallback when exact source-quote matching fails
+        (e.g. the LLM paraphrased the quote). Override in backends for efficiency.
+        """
+        return []
+
     @abstractmethod
     async def find_sentence_containing(
         self,
@@ -171,6 +185,30 @@ class StorageBackend(ABC):
         metadata: dict[str, Any] | None = None,
     ) -> str:
         """Insert an insight and return its UUID."""
+        ...
+
+    @abstractmethod
+    async def search_insights(
+        self,
+        embedding: list[float],
+        user_id: str,
+        agent_id: str | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Vector search over insights. Results include a 'distance' field (cosine distance).
+        Primary entry point for L1/L2 retrieval — insights embed session-level semantics
+        more cleanly than raw facts."""
+        ...
+
+    @abstractmethod
+    async def get_facts_from_insights(
+        self,
+        insight_ids: list[str],
+        user_id: str,
+        active_only: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Graph traversal: JOIN insight_facts WHERE insight_id IN (...).
+        Reverse of get_insights_from_facts — used to pull facts grounding matched insights."""
         ...
 
     @abstractmethod

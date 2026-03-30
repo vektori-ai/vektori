@@ -325,6 +325,7 @@ class LongMemEvalBenchmark:
         qid = instance["question_id"]
         question = instance["question"]
         question_type = instance["question_type"]
+        question_date = instance.get("question_date") or ""
 
         search_results = await self.vektori_client.search(
             query=question,
@@ -333,7 +334,7 @@ class LongMemEvalBenchmark:
         )
 
         context = self._format_retrieved_context(search_results)
-        answer = await self._generate_answer(question, context, question_type)
+        answer = await self._generate_answer(question, context, question_type, question_date)
 
         return {
             "question_id": qid,
@@ -353,9 +354,18 @@ class LongMemEvalBenchmark:
 
         facts = search_results.get("facts") or []
         if facts:
+            # Sort chronologically so the LLM can reason about temporal order
+            facts = sorted(
+                facts,
+                key=lambda f: f.get("event_time") or f.get("created_at") or "",
+            )
             lines.append("## Facts")
             for i, fact in enumerate(facts, 1):
-                lines.append(f"{i}. {fact.get('text', str(fact))}")
+                date_prefix = ""
+                ts = fact.get("event_time") or fact.get("created_at") or ""
+                if ts:
+                    date_prefix = f"[{str(ts)[:10]}] "
+                lines.append(f"{i}. {date_prefix}{fact.get('text', str(fact))}")
 
         insights = search_results.get("insights") or []
         if insights:
@@ -371,37 +381,47 @@ class LongMemEvalBenchmark:
 
         return "\n".join(lines) if lines else "No relevant context retrieved."
 
-    async def _generate_answer(self, question: str, context: str, question_type: str) -> str:
+    async def _generate_answer(
+        self, question: str, context: str, question_type: str, question_date: str = ""
+    ) -> str:
         from vektori.models.factory import create_llm
 
         if "No relevant context" in context:
             return "I don't have relevant information to answer this question."
 
         llm = create_llm(self.config.eval_model)
-        prompt = self._build_qa_prompt(question, context, question_type)
+        prompt = self._build_qa_prompt(question, context, question_type, question_date)
         try:
             return (await llm.generate(prompt, max_tokens=500)).strip()
         except Exception as e:
             logger.warning("Answer generation failed: %s", e)
             return "Unable to generate answer due to API error."
 
-    def _build_qa_prompt(self, question: str, context: str, question_type: str) -> str:
-        abstention_hint = ""
+    def _build_qa_prompt(
+        self, question: str, context: str, question_type: str, question_date: str = ""
+    ) -> str:
+        date_line = f"TODAY'S DATE: {question_date}\n\n" if question_date else ""
+
+        abs_hint = ""
         if question_type.endswith("_abs"):
-            abstention_hint = (
-                "\nNote: This question may be testing abstention. If the context "
-                "does not contain the answer, say the information is not available."
+            abs_hint = (
+                "\n- This question may be specifically testing whether you correctly "
+                "recognise that the information was never mentioned"
             )
 
         return (
             "You are an AI assistant answering questions based on provided context "
             "from chat history.\n\n"
+            f"{date_line}"
             f"CONTEXT:\n{context}\n\n"
             f"QUESTION:\n{question}\n\n"
             "INSTRUCTIONS:\n"
             "- Answer the question based ONLY on the provided context\n"
-            "- Be concise and direct\n"
-            f"- If the context doesn't contain the answer, say so{abstention_hint}\n\n"
+            "- Be concise and direct — a short phrase or sentence is preferred over a long explanation\n"
+            "- For questions about time elapsed, use TODAY'S DATE above as your reference point\n"
+            "- If the context does not contain enough information to answer, say "
+            "\"I don't have that information\" — do not guess or infer beyond what is stated"
+            f"{abs_hint}\n\n"
             "ANSWER:"
         )
 

@@ -202,33 +202,32 @@ class PostgresBackend(StorageBackend):
         session_id: str,
         threshold: float = 0.75,
     ) -> list[str]:
-        """Find sentence IDs within a session that are similar to the given quotes.
+        # Superseded by search_sentences_in_session (embedding-based).
+        return []
 
-        Uses trigram similarity (pg_trgm) in a single round trip via unnest + LATERAL.
-        Returns up to 3 matches per quote, deduplicated.
-
-        Requires: pg_trgm extension (enabled in schema.sql).
-        """
-        if not quotes:
-            return []
-
+    async def search_sentences_in_session(
+        self,
+        embedding: list[float],
+        session_id: str,
+        limit: int = 3,
+        threshold: float = 0.75,
+    ) -> list[str]:
+        """pgvector cosine search over sentences in a session. Used for fact-source linking."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT DISTINCT s.id
-                FROM unnest($1::text[]) AS q(quote)
-                JOIN LATERAL (
-                    SELECT id
-                    FROM sentences
-                    WHERE session_id = $2
-                      AND similarity(text, q.quote) > $3
-                    ORDER BY similarity(text, q.quote) DESC
-                    LIMIT 3
-                ) s ON true
+                SELECT id
+                FROM sentences
+                WHERE session_id = $1
+                  AND is_active = true
+                  AND 1 - (embedding <=> $2::vector) >= $3
+                ORDER BY embedding <=> $2::vector
+                LIMIT $4
                 """,
-                quotes,
                 session_id,
+                _vec(embedding),
                 threshold,
+                limit,
             )
         return [str(row["id"]) for row in rows]
 
@@ -462,6 +461,53 @@ class PostgresBackend(StorageBackend):
                 json.dumps(metadata or {}),
             )
         return str(insight_id)
+
+    async def search_insights(
+        self,
+        embedding: list[float],
+        user_id: str,
+        agent_id: str | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """pgvector cosine search over insights for a user."""
+        query = """
+            SELECT id, text, confidence, is_active, created_at, metadata,
+                   embedding <=> $1::vector AS distance
+            FROM insights
+            WHERE user_id = $2
+              AND ($3::text IS NULL OR agent_id = $3)
+              AND is_active = true
+            ORDER BY embedding <=> $1::vector
+            LIMIT $4
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(query, _vec(embedding), user_id, agent_id, limit)
+        return [_row(r) for r in rows]
+
+    async def get_facts_from_insights(
+        self,
+        insight_ids: list[str],
+        user_id: str,
+        active_only: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Graph traversal: find all facts linked to any of the given insights."""
+        if not insight_ids:
+            return []
+        uuid_ids = [uuid.UUID(iid) for iid in insight_ids]
+        query = """
+            SELECT DISTINCT f.id, f.text, f.embedding, f.user_id, f.agent_id,
+                            f.session_id, f.subject, f.confidence, f.is_active,
+                            f.superseded_by, f.metadata, f.event_time,
+                            f.mentions, f.created_at
+            FROM facts f
+            INNER JOIN insight_facts inf ON f.id = inf.fact_id
+            WHERE inf.insight_id = ANY($1::uuid[])
+              AND f.user_id = $2
+              AND ($3::boolean = false OR f.is_active = true)
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(query, uuid_ids, user_id, active_only)
+        return [_row(r) for r in rows]
 
     async def get_insights_from_facts(
         self,

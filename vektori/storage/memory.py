@@ -95,9 +95,28 @@ class MemoryBackend(StorageBackend):
         session_id: str,
         threshold: float = 0.75,
     ) -> list[str]:
-        # TODO: embed quotes and do cosine search within session
-        # For now returns empty — fact-source linking will be incomplete in memory backend
+        # Superseded by search_sentences_in_session (embedding-based).
         return []
+
+    async def search_sentences_in_session(
+        self,
+        embedding: list[float],
+        session_id: str,
+        limit: int = 3,
+        threshold: float = 0.75,
+    ) -> list[str]:
+        """In-memory cosine search over sentences in a session. Used for fact-source linking."""
+        scored: list[tuple[float, str]] = []
+        for s in self._sentences.values():
+            if s.get("session_id") != session_id:
+                continue
+            if s.get("embedding") is None:
+                continue
+            sim = _cosine_similarity(embedding, s["embedding"])
+            if sim >= threshold:
+                scored.append((sim, s["id"]))
+        scored.sort(key=lambda x: -x[0])
+        return [r[1] for r in scored[:limit]]
 
     async def find_sentence_containing(
         self,
@@ -252,6 +271,49 @@ class MemoryBackend(StorageBackend):
             "created_at": datetime.utcnow(),
         }
         return insight_id
+
+    async def search_insights(
+        self,
+        embedding: list[float],
+        user_id: str,
+        agent_id: str | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """In-memory cosine search over insights for a user."""
+        results = []
+        for ins in self._insights.values():
+            if ins.get("user_id") != user_id:
+                continue
+            if not ins.get("is_active", True):
+                continue
+            if ins.get("embedding") is None:
+                continue
+            sim = _cosine_similarity(embedding, ins["embedding"])
+            results.append({**ins, "distance": 1.0 - sim})
+        results.sort(key=lambda x: x["distance"])
+        return results[:limit]
+
+    async def get_facts_from_insights(
+        self,
+        insight_ids: list[str],
+        user_id: str,
+        active_only: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Graph traversal: find all facts linked to any of the given insights."""
+        insight_id_set = set(insight_ids)
+        fact_ids = {
+            link["fact_id"]
+            for link in self._insight_facts
+            if link["insight_id"] in insight_id_set
+        }
+        results = []
+        for fid in fact_ids:
+            fact = self._facts.get(fid)
+            if fact and fact.get("user_id") == user_id and (
+                not active_only or fact.get("is_active", True)
+            ):
+                results.append(fact)
+        return results
 
     async def get_insights_from_facts(
         self,
