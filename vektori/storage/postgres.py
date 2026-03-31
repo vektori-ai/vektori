@@ -700,7 +700,7 @@ class PostgresBackend(StorageBackend):
             WITH
             -- Step 1: Seed facts via vector similarity (L0)
             seed_facts AS (
-                SELECT id, text, confidence, session_id, subject, created_at, event_time, metadata,
+                SELECT id, text, confidence, mentions, session_id, subject, created_at, event_time, metadata,
                        embedding <=> $1::vector AS distance
                 FROM facts
                 WHERE user_id = $2
@@ -714,7 +714,17 @@ class PostgresBackend(StorageBackend):
                 LIMIT $6
             ),
 
-            -- Step 2: Source sentences for matched facts
+            -- Step 2: Insights linked to matched facts (L1)
+            -- Graph traversal via insight_facts — NOT vector search.
+            related_insights AS (
+                SELECT DISTINCT i.id, i.text, i.confidence, i.created_at, i.metadata
+                FROM insights i
+                INNER JOIN insight_facts inf ON i.id = inf.insight_id
+                WHERE inf.fact_id IN (SELECT id FROM seed_facts)
+                  AND i.is_active = true
+            ),
+
+            -- Step 3: Source sentences for matched facts
             source_sentences AS (
                 SELECT DISTINCT s.id, s.text, s.session_id, s.turn_number,
                                 s.sentence_index, s.role, s.created_at
@@ -724,7 +734,7 @@ class PostgresBackend(StorageBackend):
                   AND s.is_active = true
             ),
 
-            -- Step 3: Session expansion (±window around each source sentence)
+            -- Step 4: Session expansion (±window around each source sentence)
             expanded_sentences AS (
                 SELECT DISTINCT s2.id, s2.text, s2.session_id, s2.turn_number,
                                 s2.sentence_index, s2.role, s2.created_at
@@ -737,12 +747,16 @@ class PostgresBackend(StorageBackend):
                 WHERE s2.is_active = true
             )
 
-            -- Return both layers tagged by type
-            SELECT 'fact'     AS layer, id, text, confidence, created_at,
+            -- Return all three layers tagged by type
+            SELECT 'fact'     AS layer, id, text, confidence, mentions, created_at,
                               metadata::text, distance
             FROM seed_facts
             UNION ALL
-            SELECT 'sentence' AS layer, id, text, NULL AS confidence, created_at,
+            SELECT 'insight'  AS layer, id, text, confidence, NULL::integer AS mentions, created_at,
+                              metadata::text, NULL AS distance
+            FROM related_insights
+            UNION ALL
+            SELECT 'sentence' AS layer, id, text, NULL AS confidence, NULL::integer AS mentions, created_at,
                               NULL AS metadata, NULL AS distance
             FROM expanded_sentences
         """

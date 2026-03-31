@@ -134,9 +134,10 @@ class TemporalQueryParser:
                 before_date=yesterday.replace(hour=23, minute=59, second=59),
             )
 
-        # "recently" / "lately"
+        # "recently" / "lately" — 30-day window; long-term memory contexts
+        # make "recently" mean "past month", not "past week"
         if _RECENTLY.search(query):
-            return TemporalWindow(after_date=ref - timedelta(days=7))
+            return TemporalWindow(after_date=ref - timedelta(days=30))
 
         # "before [year]"
         m = _BEFORE_YEAR.search(query)

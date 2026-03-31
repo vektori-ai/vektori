@@ -63,10 +63,12 @@ class IngestionPipeline:
         Returns:
             {"status": "ok", "sentences_stored": N, "extraction": "queued"|"done"|"skipped"}
         """
-        # 1. Split all user messages into quality-filtered sentences
+        # 1. Split user AND assistant messages into quality-filtered sentences.
+        #    Assistant sentences are needed for source-linking of assistant facts (L1/L2).
         all_sentences: list[dict[str, Any]] = []
         for turn_num, msg in enumerate(messages):
-            if msg["role"] != "user":
+            role = msg.get("role", "")
+            if role not in ("user", "assistant"):
                 continue
             raw_sents = split_sentences(msg["content"])
             for idx, text in enumerate(raw_sents):
@@ -79,21 +81,17 @@ class IngestionPipeline:
                         "session_id": session_id,
                         "turn_number": turn_num,
                         "sentence_index": idx,
-                        "role": "user",
+                        "role": role,
                         "id": generate_sentence_id(session_id, f"{turn_num}_{idx}", text),
                     })
 
-        if not all_sentences:
-            return {"status": "ok", "sentences_stored": 0, "extraction": "skipped"}
+        # 2. Batch embed and upsert sentences (ON CONFLICT → increment mentions)
+        if all_sentences:
+            texts = [s["text"] for s in all_sentences]
+            embeddings = await self.embedder.embed_batch(texts)
+            await self.db.upsert_sentences(all_sentences, embeddings, user_id, agent_id)
 
-        # 2. Batch embed
-        texts = [s["text"] for s in all_sentences]
-        embeddings = await self.embedder.embed_batch(texts)
-
-        # 3. Upsert sentences (ON CONFLICT → increment mentions for IDF weighting)
-        await self.db.upsert_sentences(all_sentences, embeddings, user_id, agent_id)
-
-        # 4. Insert sequential NEXT edges within this session
+        # 3. Insert sequential NEXT edges within this session
         edges = [
             {
                 "source_id": all_sentences[i]["id"],
@@ -106,11 +104,12 @@ class IngestionPipeline:
         if edges:
             await self.db.insert_edges(edges)
 
-        # 5. Upsert session record
+        # 4. Upsert session record
         await self.db.upsert_session(session_id, user_id, agent_id, metadata or {}, started_at=session_time)
 
-        # 6. Trigger extraction
-        if skip_extraction:
+        # 5. Trigger extraction — always runs as long as messages is non-empty.
+        #    Extraction reads from messages directly, not from stored sentences.
+        if skip_extraction or not messages:
             extraction_status = "skipped"
         elif self.worker is not None:
             self.worker.schedule(ExtractionRequest(

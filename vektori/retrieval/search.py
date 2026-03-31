@@ -81,6 +81,7 @@ class SearchPipeline:
         before_date: datetime | None = None,
         after_date: datetime | None = None,
         parse_temporal: bool = True,
+        reference_date: datetime | None = None,
     ) -> dict[str, Any]:
         """Retrieve relevant memories for a query.
 
@@ -117,7 +118,7 @@ class SearchPipeline:
 
         # Auto-parse temporal window from query when no explicit dates given
         if parse_temporal and before_date is None and after_date is None:
-            window = self._temporal_parser.parse(query)
+            window = self._temporal_parser.parse(query, reference_date=reference_date)
             if window:
                 before_date = window.before_date
                 after_date = window.after_date

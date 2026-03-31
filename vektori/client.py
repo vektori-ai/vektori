@@ -157,6 +157,7 @@ class Vektori:
         context_window: int | None = None,
         include_superseded: bool = False,
         expand: bool = False,
+        reference_date: datetime | None = None,
     ) -> dict[str, Any]:
         """
         Retrieve relevant memories for a query.
@@ -210,6 +211,7 @@ class Vektori:
             top_k=k,
             context_window=context_window or self.config.context_window,
             include_superseded=include_superseded,
+            reference_date=reference_date,
         )
 
     async def get_facts(

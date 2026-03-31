@@ -324,6 +324,8 @@ class LongMemEvalBenchmark:
             query=question,
             user_id=user_id,
             depth=self.config.retrieval_depth,
+            expand=True,
+            reference_date=_parse_date(question_date) if question_date else None,
         )
 
         context = self._format_retrieved_context(search_results)
