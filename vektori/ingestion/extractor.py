@@ -62,9 +62,9 @@ General:
 Return ONLY the JSON."""
 
 
-INSIGHTS_PROMPT = """Given this conversation and the facts extracted from it, identify higher-level insights — observations, themes, emotional context, or patterns that emerge from this session.
+INSIGHTS_PROMPT = """You are writing episodic memory records. Given this conversation and the facts extracted from it, write a concise third-person narrative episode describing what happened.
 
-CONVERSATION:
+{session_date_line}CONVERSATION:
 {conversation}
 
 EXTRACTED FACTS (numbered):
@@ -72,22 +72,27 @@ EXTRACTED FACTS (numbered):
 
 Return JSON:
 {{
-  "insights": [
+  "episodes": [
     {{
-      "text": "observation or insight under 25 words",
+      "text": "third-person narrative, 2-4 sentences",
       "fact_indices": [0, 2]
     }}
   ]
 }}
 
 Rules:
-- Insights must be grounded in THIS conversation — no speculation
-- Each insight must reference at least 1 fact via fact_indices (0-based)
-- Insights add context or perspective beyond what the raw facts say
-  GOOD: "User is switching stacks due to performance frustration, not preference"
-  BAD:  "User mentioned switching stacks"  ← that's just a fact
-- Maximum {max_insights} insights
-- Return {{"insights": []}} if nothing notable
+- Write in third person — use "the user" throughout, never "I", "you", or unresolved pronouns
+- If a session date is provided above, open with "On YYYY-MM-DD, the user..."
+- Name entities explicitly — not "a place in Connecticut" but "a shelter in Stamford, Connecticut"
+- Resolve all pronouns — "they said they wanted to go" → "the user stated they wanted to visit Tokyo"
+- 2–4 sentences max — dense, grounded, no padding
+- Each episode must reference at least 1 fact via fact_indices (0-based)
+- Episodes must describe what actually happened, not themes or patterns
+  GOOD: "On 2025-08-20, the user reported sustaining a Grade II ankle sprain during a badminton session. A doctor confirmed the diagnosis and provided preliminary treatment. The user requested a recovery plan."
+  BAD:  "User seems to be dealing with a sports injury" ← that is a theme, not an episode
+  BAD:  "User said X, assistant said Y" ← that is a transcript summary, not an episode
+- One episode per distinct topic in the batch; {max_insights} maximum
+- Return {{"episodes": []}} if nothing notable
 
 Return ONLY the JSON."""
 
@@ -171,7 +176,8 @@ class FactExtractor:
         if inserted_facts:
             try:
                 insights_created = await self._extract_insights(
-                    inserted_facts, conversation, session_id, user_id, agent_id
+                    inserted_facts, conversation, session_id, user_id, agent_id,
+                    session_time=session_time,
                 )
             except Exception as e:
                 logger.warning("Insight extraction failed for session %s: %s", session_id, e)
@@ -313,12 +319,9 @@ class FactExtractor:
                         # Pure dedup: same conversation, skip insert entirely
                         await self.db.increment_fact_mentions(existing_id)
                         continue
-                    else:
-                        # Cross-session near-dup: insert the new fact but do NOT boost
-                        # mentions on the old one. The old fact may have been superseded
-                        # (knowledge-update scenario) — giving it a mentions boost would
-                        # make it outrank the newer fact even after temporal decay is applied.
-                        pass  # fall through to insert
+                    # Cross-session near-dup: the newer fact supersedes the older one.
+                    # Insert the new fact (below), then deactivate the old one with a
+                    # superseded_by pointer so it's excluded from default active_only queries.
 
                 # Carry temporal expression and source role in metadata
                 meta: dict[str, Any] = {}
@@ -339,6 +342,12 @@ class FactExtractor:
                     event_time=session_time,
                 )
                 facts_inserted += 1
+
+                # If this replaced a cross-session near-dup, deactivate the old fact now
+                # that we have the new fact_id to use as the superseded_by pointer.
+                if dedup is not None:
+                    old_id, _ = dedup
+                    await self.db.deactivate_fact(old_id, superseded_by=fact_id)
 
                 if _inserted_facts_out is not None:
                     _inserted_facts_out.append((fact_id, fact_data["text"]))
@@ -481,15 +490,16 @@ class FactExtractor:
         user_id: str,
         agent_id: str | None,
         max_insights: int = 5,
+        session_time: datetime | None = None,
     ) -> int:
-        """Extract per-session insights from the conversation and its facts.
+        """Extract episodic memory narratives from the conversation and its facts.
 
-        Insights are higher-level observations from THIS session — themes,
-        emotional context, patterns that go beyond individual facts. They are
-        vector-embedded so they can be found both via graph traversal (fact →
+        Episodes are concise third-person narratives of what happened in this
+        session batch — grounded stories with resolved entities and dates. They
+        are vector-embedded so they can be found both via graph traversal (fact →
         insight_facts → insights) and direct cosine search at retrieval.
 
-        Returns the number of insights inserted.
+        Returns the number of episodes inserted.
         """
         if not inserted_facts:
             return 0
@@ -500,10 +510,15 @@ class FactExtractor:
         # Truncate conversation to keep prompt manageable (~3000 chars ≈ 750 tokens)
         conv_snippet = conversation[:3000]
 
+        session_date_line = (
+            f"SESSION DATE: {session_time.strftime('%Y-%m-%d')}\n\n"
+            if session_time else ""
+        )
         prompt = INSIGHTS_PROMPT.format(
             conversation=conv_snippet,
             facts_list=facts_list,
             max_insights=max_insights,
+            session_date_line=session_date_line,
         )
         try:
             response = await self.llm.generate(prompt, max_tokens=1024)
@@ -512,7 +527,7 @@ class FactExtractor:
             logger.warning("Insight LLM call failed: %s", e)
             return 0
 
-        raw_insights = data.get("insights", [])[:max_insights]
+        raw_insights = data.get("episodes", data.get("insights", []))[:max_insights]
         if not raw_insights:
             return 0
 
