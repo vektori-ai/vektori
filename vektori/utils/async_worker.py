@@ -56,6 +56,7 @@ class ExtractionWorker:
         token_threshold: int = 800,
         debounce_seconds: float = 30.0,
         max_batch_size: int = 10,
+        max_concurrent_llm: int = 3,
     ) -> None:
         self._extractor = extractor
         self.token_threshold = token_threshold
@@ -63,6 +64,7 @@ class ExtractionWorker:
         self.max_batch_size = max_batch_size
         self._buffers: dict[str, _UserBuffer] = defaultdict(_UserBuffer)
         self._timers: dict[str, asyncio.Task] = {}
+        self._semaphore = asyncio.Semaphore(max_concurrent_llm)
 
     def schedule(self, request: ExtractionRequest) -> None:
         """Queue an extraction job. Non-blocking. Token-threshold per user."""
@@ -113,10 +115,8 @@ class ExtractionWorker:
             key, len(buf.requests), buf.token_count,
         )
 
-        semaphore = asyncio.Semaphore(3)
-
         async def _extract_one(req: ExtractionRequest) -> None:
-            async with semaphore:
+            async with self._semaphore:
                 try:
                     await self._extractor.extract(
                         req.messages, req.session_id, req.user_id, req.agent_id,

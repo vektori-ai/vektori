@@ -77,8 +77,12 @@ def score_and_rank(
         confidence = max(0.0, min(1.0, confidence))
 
         # ── Recency ─────────────────────────────────────────────────────────
-        created_at = fact.get("created_at")
-        age_days = _age_in_days(created_at, now)
+        # Prefer event_time (when the conversation happened) over created_at
+        # (when the row was inserted). In benchmark runs all rows are inserted
+        # today so created_at gives age_days≈0 for every fact, making decay
+        # a no-op. event_time carries the actual historical session date.
+        timestamp = fact.get("event_time") or fact.get("created_at")
+        age_days = _age_in_days(timestamp, now)
         recency = math.exp(-temporal_decay_rate * age_days)
 
         # ── Mentions boost ───────────────────────────────────────────────────

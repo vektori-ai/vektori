@@ -225,9 +225,6 @@ class LongMemEvalBenchmark:
 
         Cache hit  → replay pre-extracted facts (no LLM, only local re-embed).
         Cache miss → full LLM extraction, then write to cache.
-
-        After all sessions are loaded, one cross-session insight pass is run
-        over the question's complete memory space.
         """
         haystack_sessions = instance["haystack_sessions"]
         haystack_sids = instance["haystack_session_ids"]
@@ -346,7 +343,6 @@ class LongMemEvalBenchmark:
             query=question,
             user_id=user_id,
             depth=self.config.retrieval_depth,
-            expand=True,
             reference_date=_parse_date(question_date) if question_date else None,
         )
 

@@ -431,6 +431,12 @@ class FactExtractor:
                 )
                 facts_inserted += 1
 
+                # Match fresh-path behaviour: deactivate the cross-session near-dup
+                # now that we have the new fact_id to use as the superseded_by pointer.
+                if dedup is not None:
+                    old_id, _ = dedup
+                    await self.db.deactivate_fact(old_id, superseded_by=fact_id)
+
                 if _inserted_facts_out is not None:
                     _inserted_facts_out.append((fact_id, fact_data["text"]))
 
