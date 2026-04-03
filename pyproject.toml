@@ -73,6 +73,7 @@ target-version = "py310"
 exclude = [
     "benchmarks/",
     "examples/",
+    "scripts/",
     "check_session.py",
     "fix_cache.py",
     "test_longmemeval_setup.py",
