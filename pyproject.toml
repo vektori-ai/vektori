@@ -74,6 +74,7 @@ exclude = [
     "benchmarks/",
     "examples/",
     "scripts/",
+    "vektori/_version.py",
     "check_session.py",
     "fix_cache.py",
     "test_longmemeval_setup.py",
