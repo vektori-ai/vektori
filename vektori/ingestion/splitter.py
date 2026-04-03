@@ -3,9 +3,25 @@
 from __future__ import annotations
 
 MERGE_STARTERS = {
-    "and", "but", "or", "nor", "yet", "so", "for",
-    "on", "in", "at", "by", "to", "from", "with",
-    "which", "who", "that", "where", "when",
+    "and",
+    "but",
+    "or",
+    "nor",
+    "yet",
+    "so",
+    "for",
+    "on",
+    "in",
+    "at",
+    "by",
+    "to",
+    "from",
+    "with",
+    "which",
+    "who",
+    "that",
+    "where",
+    "when",
 }
 
 
@@ -25,6 +41,7 @@ def _nltk_split(text: str) -> list[str]:
     """Split via NLTK punkt tokenizer. Downloads punkt_tab on first use."""
     try:
         import nltk
+
         try:
             return [s for s in nltk.sent_tokenize(text) if s.strip()]
         except LookupError:

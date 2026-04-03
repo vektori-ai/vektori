@@ -18,30 +18,51 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Optional
 
 
 @dataclass
 class TemporalWindow:
-    after_date: Optional[datetime] = None   # fact event_time >= after_date
-    before_date: Optional[datetime] = None  # fact event_time <= before_date
+    after_date: datetime | None = None  # fact event_time >= after_date
+    before_date: datetime | None = None  # fact event_time <= before_date
 
 
 # ── Patterns (ordered from most specific to most general) ──────────────────
 
 _MONTHS = {
-    "january": 1, "february": 2, "march": 3, "april": 4,
-    "may": 5, "june": 6, "july": 7, "august": 8,
-    "september": 9, "october": 10, "november": 11, "december": 12,
-    "jan": 1, "feb": 2, "mar": 3, "apr": 4,
-    "jun": 6, "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+    "january": 1,
+    "february": 2,
+    "march": 3,
+    "april": 4,
+    "may": 5,
+    "june": 6,
+    "july": 7,
+    "august": 8,
+    "september": 9,
+    "october": 10,
+    "november": 11,
+    "december": 12,
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
 }
 
 _UNIT_TO_DAYS = {
-    "day": 1, "days": 1,
-    "week": 7, "weeks": 7,
-    "month": 30, "months": 30,
-    "year": 365, "years": 365,
+    "day": 1,
+    "days": 1,
+    "week": 7,
+    "weeks": 7,
+    "month": 30,
+    "months": 30,
+    "year": 365,
+    "years": 365,
 }
 
 # "last N days/weeks/months/years"

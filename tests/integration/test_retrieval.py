@@ -1,9 +1,11 @@
 """Integration tests for the retrieval pipeline (memory backend)."""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
-from vektori.storage.memory import MemoryBackend
+
+import pytest
+
 from vektori.retrieval.search import SearchPipeline
+from vektori.storage.memory import MemoryBackend
 
 
 @pytest.fixture

@@ -112,9 +112,7 @@ class SearchPipeline:
             ValueError: if depth is not one of "l0", "l1", "l2".
         """
         if depth not in VALID_DEPTHS:
-            raise ValueError(
-                f"Invalid depth '{depth}'. Must be one of: {sorted(VALID_DEPTHS)}"
-            )
+            raise ValueError(f"Invalid depth '{depth}'. Must be one of: {sorted(VALID_DEPTHS)}")
 
         # Auto-parse temporal window from query when no explicit dates given
         if parse_temporal and before_date is None and after_date is None:
@@ -124,7 +122,8 @@ class SearchPipeline:
                 after_date = window.after_date
                 logger.debug(
                     "Temporal window parsed from query: after=%s before=%s",
-                    after_date, before_date,
+                    after_date,
+                    before_date,
                 )
 
         query_embedding = await self.embedder.embed(query)
@@ -138,14 +137,29 @@ class SearchPipeline:
             and getattr(self.db, "supports_single_query", False)
         ):
             return await self._search_l2_fast(
-                query_embedding, user_id, agent_id, subject, session_id, top_k, context_window,
-                before_date=before_date, after_date=after_date,
+                query_embedding,
+                user_id,
+                agent_id,
+                subject,
+                session_id,
+                top_k,
+                context_window,
+                before_date=before_date,
+                after_date=after_date,
             )
 
         return await self._search_stepped(
-            query_embedding, user_id, agent_id, subject, session_id, depth,
-            top_k, context_window, include_superseded,
-            before_date=before_date, after_date=after_date,
+            query_embedding,
+            user_id,
+            agent_id,
+            subject,
+            session_id,
+            depth,
+            top_k,
+            context_window,
+            include_superseded,
+            before_date=before_date,
+            after_date=after_date,
         )
 
     # ── Step-by-step path (all backends, L0/L1, and L2 fallback) ──────────────
@@ -190,12 +204,15 @@ class SearchPipeline:
 
         # Sentence fallback: no facts yet (extraction still in-flight)
         if not seed_facts:
-            logger.debug(
-                "search: no facts for user=%s, falling back to sentence search", user_id
-            )
+            logger.debug("search: no facts for user=%s, falling back to sentence search", user_id)
             if depth == "l0":
                 return {"facts": [], "insights": [], "memory_found": False}
-            return {"facts": [], "insights": [], "sentences": direct_sentences, "memory_found": False}
+            return {
+                "facts": [],
+                "insights": [],
+                "sentences": direct_sentences,
+                "memory_found": False,
+            }
 
         scored_facts = score_and_rank(
             seed_facts,
@@ -255,10 +272,14 @@ class SearchPipeline:
 
         # All candidate IDs: direct search first (lower distance → higher priority),
         # then fact-linked sentences not in direct search
-        all_candidate_ids: list[str] = list(dict.fromkeys([
-            *[s["id"] for s in direct_sentences],
-            *source_sentence_ids,
-        ]))
+        all_candidate_ids: list[str] = list(
+            dict.fromkeys(
+                [
+                    *[s["id"] for s in direct_sentences],
+                    *source_sentence_ids,
+                ]
+            )
+        )
 
         if not all_candidate_ids:
             return {
@@ -301,9 +322,9 @@ class SearchPipeline:
 
         # Pick top sessions: more sessions for L2 (broader context)
         max_sessions = 5 if depth == "l2" else 3
-        top_session_ids = sorted(
-            session_best_dist, key=lambda s: session_best_dist[s]
-        )[:max_sessions]
+        top_session_ids = sorted(session_best_dist, key=lambda s: session_best_dist[s])[
+            :max_sessions
+        ]
 
         # Return sentences from top sessions in conversation order
         result_sentences: list[dict[str, Any]] = []
@@ -441,14 +462,21 @@ class SearchPipeline:
         for result_set in all_results:
             for fact in result_set:
                 fid = fact["id"]
-                if fid not in best_by_id or fact.get("distance", 1.0) < best_by_id[fid].get("distance", 1.0):
+                if fid not in best_by_id or fact.get("distance", 1.0) < best_by_id[fid].get(
+                    "distance", 1.0
+                ):
                     best_by_id[fid] = fact
 
         merged_facts = list(best_by_id.values())
 
         if not merged_facts:
             logger.debug("search_expanded: no facts found, falling back to sentence search")
-            return {"facts": [], "insights": [], "sentences": direct_sentences, "memory_found": False}
+            return {
+                "facts": [],
+                "insights": [],
+                "sentences": direct_sentences,
+                "memory_found": False,
+            }
 
         # Score the merged set
         scored_facts = score_and_rank(
@@ -488,10 +516,14 @@ class SearchPipeline:
             for s in loaded:
                 direct_sent_by_id[s["id"]] = s
 
-        all_candidate_ids = list(dict.fromkeys([
-            *[s["id"] for s in direct_sentences],
-            *source_sentence_ids,
-        ]))
+        all_candidate_ids = list(
+            dict.fromkeys(
+                [
+                    *[s["id"] for s in direct_sentences],
+                    *source_sentence_ids,
+                ]
+            )
+        )
 
         session_candidates: dict[str, list[dict[str, Any]]] = {}
         session_best_dist: dict[str, float] = {}
@@ -564,6 +596,7 @@ class SearchPipeline:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
 def _empty(depth: str) -> dict[str, Any]:
     """Return the correct empty structure for a given depth."""
     result: dict[str, Any] = {"facts": [], "insights": []}
@@ -592,5 +625,3 @@ def _dedup(sentences: list[dict[str, Any]]) -> list[dict[str, Any]]:
             seen.add(sid)
             result.append(s)
     return result
-
-

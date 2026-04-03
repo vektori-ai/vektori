@@ -1,12 +1,12 @@
 """Integration tests for the full ingestion pipeline (memory backend)."""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
 from vektori import Vektori
-from vektori.storage.memory import MemoryBackend
 from vektori.ingestion.extractor import FactExtractor
 from vektori.ingestion.pipeline import IngestionPipeline
 from vektori.retrieval.search import SearchPipeline
+from vektori.storage.memory import MemoryBackend
 
 
 def _mock_vektori() -> Vektori:
@@ -74,7 +74,10 @@ async def test_add_creates_next_edges():
     await v.add(
         messages=[
             {"role": "user", "content": "I prefer WhatsApp for all my business communications."},
-            {"role": "user", "content": "My outstanding loan balance is forty five thousand rupees."},
+            {
+                "role": "user",
+                "content": "My outstanding loan balance is forty five thousand rupees.",
+            },
         ],
         session_id="test-s4",
         user_id="test-u3",

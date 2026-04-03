@@ -49,8 +49,7 @@ class StorageBackend(ABC):
         user_id: str,
         agent_id: str | None = None,
         limit: int = 10,
-    ) -> list[dict[str, Any]]:
-        ...
+    ) -> list[dict[str, Any]]: ...
 
     @abstractmethod
     async def find_sentences_by_similarity(
@@ -137,8 +136,7 @@ class StorageBackend(ABC):
         agent_id: str | None = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> list[dict[str, Any]]:
-        ...
+    ) -> list[dict[str, Any]]: ...
 
     @abstractmethod
     async def deactivate_fact(
@@ -160,8 +158,7 @@ class StorageBackend(ABC):
         user_id: str,
         text: str,
         agent_id: str | None = None,
-    ) -> dict[str, Any] | None:
-        ...
+    ) -> dict[str, Any] | None: ...
 
     @abstractmethod
     async def get_supersession_chain(self, fact_id: str) -> list[dict[str, Any]]:
@@ -254,9 +251,7 @@ class StorageBackend(ABC):
         ...
 
     @abstractmethod
-    async def get_sentences_by_ids(
-        self, sentence_ids: list[str]
-    ) -> list[dict[str, Any]]:
+    async def get_sentences_by_ids(self, sentence_ids: list[str]) -> list[dict[str, Any]]:
         """Fetch full sentence rows for the given IDs."""
         ...
 
@@ -280,8 +275,7 @@ class StorageBackend(ABC):
         self,
         session_id: str,
         user_id: str,
-    ) -> dict[str, Any] | None:
-        ...
+    ) -> dict[str, Any] | None: ...
 
     @abstractmethod
     async def count_sessions(

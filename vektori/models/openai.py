@@ -64,6 +64,7 @@ class OpenAILLM(LLMProvider):
     def _get_client(self):
         if self._client is None:
             from openai import AsyncOpenAI
+
             self._client = AsyncOpenAI(api_key=self._api_key)
         return self._client
 

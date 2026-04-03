@@ -54,13 +54,13 @@ class CloudflareEmbedder(EmbeddingProvider):
         account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID") or ""
 
         if not token:
-            raise EnvironmentError(
+            raise OSError(
                 "CLOUDFLARE_API_TOKEN environment variable is not set. "
                 "Create a token at Profile > API Tokens > Create Custom Token "
                 "with permission: Account > Workers AI > Read."
             )
         if not account_id:
-            raise EnvironmentError(
+            raise OSError(
                 "CLOUDFLARE_ACCOUNT_ID environment variable is not set. "
                 "Find it on dash.cloudflare.com in the right sidebar."
             )

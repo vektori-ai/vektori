@@ -1,6 +1,7 @@
 """Unit tests for fact scoring."""
 
 from datetime import datetime, timedelta
+
 from vektori.retrieval.scoring import score_and_rank
 
 

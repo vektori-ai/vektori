@@ -13,10 +13,12 @@ async def create_storage(config: VektoriConfig) -> StorageBackend:
 
     if backend_key == "memory":
         from vektori.storage.memory import MemoryBackend
+
         backend: StorageBackend = MemoryBackend()
 
     elif backend_key == "postgres" or (database_url and "postgresql" in database_url):
         from vektori.storage.postgres import PostgresBackend
+
         if not database_url:
             raise ValueError(
                 "database_url is required for PostgreSQL backend. "
@@ -29,6 +31,7 @@ async def create_storage(config: VektoriConfig) -> StorageBackend:
 
     else:
         from vektori.storage.sqlite import SQLiteBackend
+
         backend = SQLiteBackend(database_url)
 
     await backend.initialize()

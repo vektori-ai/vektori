@@ -81,9 +81,7 @@ class PostgresBackend(StorageBackend):
         try:
             import asyncpg
         except ImportError as e:
-            raise ImportError(
-                "asyncpg required: pip install 'vektori[postgres]'"
-            ) from e
+            raise ImportError("asyncpg required: pip install 'vektori[postgres]'") from e
 
         self._pool = await asyncpg.create_pool(
             self.database_url,

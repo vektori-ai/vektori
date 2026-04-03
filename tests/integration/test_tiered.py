@@ -1,9 +1,11 @@
 """Integration tests for L0 / L1 / L2 tiered retrieval depths."""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
-from vektori.storage.memory import MemoryBackend
+
+import pytest
+
 from vektori.retrieval.search import SearchPipeline
+from vektori.storage.memory import MemoryBackend
 
 
 @pytest.fixture
@@ -16,14 +18,16 @@ async def populated_pipeline():
 
     # Sentence
     await db.upsert_sentences(
-        sentences=[{
-            "id": "sent-1",
-            "text": "I only use WhatsApp, please don't email me.",
-            "session_id": "call-001",
-            "turn_number": 1,
-            "sentence_index": 0,
-            "role": "user",
-        }],
+        sentences=[
+            {
+                "id": "sent-1",
+                "text": "I only use WhatsApp, please don't email me.",
+                "session_id": "call-001",
+                "turn_number": 1,
+                "sentence_index": 0,
+                "role": "user",
+            }
+        ],
         embeddings=[[1.0] + [0.0] * 1535],
         user_id="u1",
     )

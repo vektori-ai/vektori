@@ -1,6 +1,5 @@
 """Integration tests for conflict detection and resolution."""
 
-import pytest
 from vektori.storage.memory import MemoryBackend
 
 

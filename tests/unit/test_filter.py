@@ -1,6 +1,5 @@
 """Unit tests for quality filter."""
 
-import pytest
 from vektori.config import QualityConfig
 from vektori.ingestion.filter import is_quality_sentence
 

@@ -1,6 +1,7 @@
 """Unit tests for deterministic ID generation."""
 
 import uuid
+
 from vektori.ingestion.hasher import generate_content_hash, generate_sentence_id
 
 
