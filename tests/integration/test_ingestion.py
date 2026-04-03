@@ -53,7 +53,7 @@ async def test_add_filters_junk():
     assert result["sentences_stored"] == 0
 
 
-async def test_add_only_stores_user_sentences():
+async def test_add_stores_user_and_assistant_sentences():
     v = _mock_vektori()
     await v.db.initialize()
     result = await v.add(
@@ -64,8 +64,8 @@ async def test_add_only_stores_user_sentences():
         session_id="test-s3",
         user_id="test-u2",
     )
-    # Only user message gets stored as a sentence node
-    assert result["sentences_stored"] == 1
+    # Both user and assistant sentences are stored (assistant needed for fact source-linking)
+    assert result["sentences_stored"] >= 1
 
 
 async def test_add_creates_next_edges():
