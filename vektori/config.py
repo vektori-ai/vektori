@@ -60,5 +60,10 @@ class VektoriConfig:
     # Min score floor — facts below this are dropped from results (0.0 = disabled)
     min_retrieval_score: float = 0.3
 
+    # Episode generation
+    max_episodes: int = 3          # max episodic narratives generated per session
+    max_episode_input_tokens: int = 1500
+    max_episode_output_tokens: int = 1024
+
     # Processing
     async_extraction: bool = True  # False = block until facts extracted (slower but simpler)
