@@ -63,3 +63,4 @@ data/*.json
 data/longmemeval_s_cleaned.json
 ISSUES.md
 .tmp_checkpoint_analysis*.py
+*.md
