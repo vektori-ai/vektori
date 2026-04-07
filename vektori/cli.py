@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import uuid
 from typing import Optional
 
@@ -11,52 +12,76 @@ import typer
 
 app = typer.Typer(help="Vektori memory engine — self-hosted, zero-config.", no_args_is_help=True)
 
-import os
-
 # Model option defaults — override via env vars or CLI flags.
 #
-# Extraction model format: "provider:model"
-#   openai:gpt-4o-mini                           (OPENAI_API_KEY)
-#   litellm:groq/llama-3.3-70b-versatile         (GROQ_API_KEY)
-#   litellm:together_ai/meta-llama/Llama-3-70b-chat-hf  (TOGETHERAI_API_KEY)
-#   litellm:ollama/llama3                         (local, no key needed)
+# Extraction model: "provider:model"
+#   openai:gpt-4o-mini                                        (OPENAI_API_KEY)
+#   litellm:groq/llama-3.3-70b-versatile                     (GROQ_API_KEY)
+#   litellm:together_ai/meta-llama/Llama-3-70b-chat-hf       (TOGETHERAI_API_KEY)
+#   litellm:ollama/llama3                                     (local, no key)
 #
-# Embedding model format: "provider:model"
-#   openai:text-embedding-3-small                (OPENAI_API_KEY)
-#   litellm:together_ai/togethercomputer/m2-bert-80M-8k-retrieval  (TOGETHERAI_API_KEY)
-#   litellm:ollama/nomic-embed-text              (local, no key needed)
-#   sentence-transformers:all-MiniLM-L6-v2       (local, pip install sentence-transformers)
+# Embedding model: "provider:model"
+#   openai:text-embedding-3-small                             (OPENAI_API_KEY)
+#   sentence-transformers:all-MiniLM-L6-v2                   (local, no key)
+#   litellm:together_ai/togethercomputer/m2-bert-80M-8k-retrieval
+#   litellm:ollama/nomic-embed-text                           (local, no key)
 _DEFAULT_EXTRACTION = "openai:gpt-4o-mini"
-_DEFAULT_EMBEDDING = "openai:text-embedding-3-small"
+_DEFAULT_EMBEDDING = "sentence-transformers:all-MiniLM-L6-v2"
 
 _EXTRACTION_HELP = (
     "LLM for fact extraction. e.g. 'litellm:groq/llama-3.3-70b-versatile', "
-    "'litellm:ollama/llama3', 'openai:gpt-4o-mini' [env: VEKTORI_EXTRACTION_MODEL]"
+    "'litellm:ollama/llama3' [env: VEKTORI_EXTRACTION_MODEL]"
 )
 _EMBEDDING_HELP = (
-    "Embedding model. e.g. 'litellm:together_ai/togethercomputer/m2-bert-80M-8k-retrieval', "
-    "'litellm:ollama/nomic-embed-text', 'sentence-transformers:all-MiniLM-L6-v2' "
-    "[env: VEKTORI_EMBEDDING_MODEL]"
+    "Embedding model. e.g. 'sentence-transformers:all-MiniLM-L6-v2' (local), "
+    "'openai:text-embedding-3-small' [env: VEKTORI_EMBEDDING_MODEL]"
 )
 
 
 def _warn_openai(model: str, var: str) -> None:
-    """Warn early if an OpenAI model is selected but OPENAI_API_KEY is not set."""
     if model.startswith("openai:") and not os.environ.get("OPENAI_API_KEY"):
         typer.echo(
             f"[warn] {var}={model!r} requires OPENAI_API_KEY.\n"
-            "       Set it, or pick another provider:\n"
+            "       Alternatives:\n"
             "         litellm:groq/llama-3.3-70b-versatile   (GROQ_API_KEY)\n"
-            "         litellm:ollama/llama3                   (local)\n"
-            "         litellm:together_ai/...                 (TOGETHERAI_API_KEY)\n",
+            "         litellm:ollama/llama3                   (local, no key)\n"
+            "         sentence-transformers:all-MiniLM-L6-v2  (local, embeddings only)\n",
             err=True,
         )
 
 
-def _client(extraction_model: str, embedding_model: str):
+def _silence_litellm() -> None:
+    """Suppress LiteLLM's verbose stdout/stderr output."""
+    import logging
+    logging.getLogger("LiteLLM").setLevel(logging.CRITICAL)
+    logging.getLogger("litellm").setLevel(logging.CRITICAL)
+    try:
+        import litellm
+        litellm.suppress_debug_info = True
+        litellm.set_verbose = False
+    except Exception:
+        pass
+
+
+def _client(extraction_model: str, embedding_model: str, sync_extraction: bool = True):
+    """
+    Build a Vektori client.
+    sync_extraction=True: extraction runs inline during add() — CLI default so
+    facts are immediately visible after the command returns.
+    """
     from vektori.client import Vektori
 
-    return Vektori(extraction_model=extraction_model, embedding_model=embedding_model)
+    from vektori.config import VektoriConfig
+
+    _silence_litellm()
+    cfg = VektoriConfig(
+        extraction_model=extraction_model,
+        embedding_model=embedding_model,
+        async_extraction=not sync_extraction,
+        # CLI search is always intentional — disable the conversational retrieval gate
+        enable_retrieval_gate=False,
+    )
+    return Vektori(config=cfg)
 
 
 def _out(data: object, as_json: bool) -> None:
@@ -113,25 +138,40 @@ def add(
         _DEFAULT_EMBEDDING, "--embedding-model", "-e", envvar="VEKTORI_EMBEDDING_MODEL",
         help=_EMBEDDING_HELP,
     ),
+    no_extraction: bool = typer.Option(
+        False, "--no-extraction",
+        help="Skip LLM fact extraction. Stores sentence only — useful for testing without an API key.",
+    ),
     as_json: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
-    """Add a memory."""
-    _warn_openai(extraction_model, "--extraction-model")
+    """Add a memory. Extraction runs synchronously so facts are ready immediately."""
+    if not no_extraction:
+        _warn_openai(extraction_model, "--extraction-model")
     _warn_openai(embedding_model, "--embedding-model")
     sid = session_id or str(uuid.uuid4())
     messages = [{"role": "user", "content": text}]
 
     async def _run() -> dict:
-        v = _client(extraction_model, embedding_model)
-        result = await v.add(messages, session_id=sid, user_id=user_id)
-        await v.close()
+        v = _client(extraction_model, embedding_model, sync_extraction=not no_extraction)
+        try:
+            result = await v.add(messages, session_id=sid, user_id=user_id)
+        finally:
+            await v.close()
         return result
 
-    result = asyncio.run(_run())
+    try:
+        result = asyncio.run(_run())
+    except Exception as e:
+        # Surface extraction errors clearly rather than a raw traceback
+        typer.echo(f"[error] {e}", err=True)
+        raise typer.Exit(1)
+
     if as_json:
         _out(result, True)
     else:
-        typer.echo(f"Stored — {result['sentences_stored']} sentence(s), extraction: {result['extraction']}")
+        typer.echo(
+            f"Stored — {result['sentences_stored']} sentence(s), extraction: {result['extraction']}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -159,28 +199,43 @@ def search(
     as_json: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
     """Search memories with a natural language query."""
-    _warn_openai(extraction_model, "--extraction-model")
     _warn_openai(embedding_model, "--embedding-model")
 
     async def _run() -> dict:
         v = _client(extraction_model, embedding_model)
-        result = await v.search(query, user_id=user_id, top_k=top_k, depth=depth, expand=expand)
-        await v.close()
+        try:
+            result = await v.search(query, user_id=user_id, top_k=top_k, depth=depth, expand=expand)
+        finally:
+            await v.close()
         return result
 
-    result = asyncio.run(_run())
+    try:
+        result = asyncio.run(_run())
+    except Exception as e:
+        typer.echo(f"[error] {e}", err=True)
+        raise typer.Exit(1)
+
     if as_json:
         _out(result, True)
         return
 
     facts = result.get("facts", [])
-    if not facts:
+    sentences = result.get("sentences", [])
+
+    if facts:
+        for i, fact in enumerate(facts, 1):
+            score = fact.get("score")
+            score_str = f"  [{score:.3f}]" if score is not None else ""
+            typer.echo(f"{i}.{score_str} {fact['text']}")
+    elif sentences:
+        # No facts extracted yet — show raw sentence matches
+        typer.echo("(showing raw sentences — run with an extraction model to get structured facts)\n")
+        for i, sent in enumerate(sentences, 1):
+            dist = sent.get("distance")
+            score_str = f"  [{1 - dist:.3f}]" if dist is not None else ""
+            typer.echo(f"{i}.{score_str} {sent['text']}")
+    else:
         typer.echo("No memories found.")
-        return
-    for i, fact in enumerate(facts, 1):
-        score = fact.get("score")
-        score_str = f"  [{score:.3f}]" if score is not None else ""
-        typer.echo(f"{i}.{score_str} {fact['text']}")
 
 
 # ---------------------------------------------------------------------------
@@ -191,14 +246,20 @@ def search(
 @app.command(name="list")
 def list_memories(
     user_id: str = typer.Option(..., "--user-id", "-u", help="User ID."),
+    embedding_model: str = typer.Option(
+        _DEFAULT_EMBEDDING, "--embedding-model", "-e", envvar="VEKTORI_EMBEDDING_MODEL",
+        help=_EMBEDDING_HELP,
+    ),
     as_json: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
-    """List all active memories for a user."""
+    """List all active memories (extracted facts) for a user."""
 
     async def _run() -> list:
-        v = _client(_DEFAULT_EXTRACTION, _DEFAULT_EMBEDDING)
-        facts = await v.get_facts(user_id=user_id)
-        await v.close()
+        v = _client(_DEFAULT_EXTRACTION, embedding_model)
+        try:
+            facts = await v.get_facts(user_id=user_id)
+        finally:
+            await v.close()
         return facts
 
     facts = asyncio.run(_run())
@@ -232,8 +293,10 @@ def delete(
 
     async def _run() -> int:
         v = _client(_DEFAULT_EXTRACTION, _DEFAULT_EMBEDDING)
-        n = await v.delete_user(user_id=user_id)
-        await v.close()
+        try:
+            n = await v.delete_user(user_id=user_id)
+        finally:
+            await v.close()
         return n
 
     n = asyncio.run(_run())
