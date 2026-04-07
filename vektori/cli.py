@@ -11,11 +11,20 @@ import typer
 
 app = typer.Typer(help="Vektori memory engine — self-hosted, zero-config.", no_args_is_help=True)
 
+# Model option defaults — override via env vars or CLI flags.
+# LiteLLM format: "litellm:<provider>/<model>"
+#   Groq:    litellm:groq/llama-3.3-70b-versatile
+#   OpenAI:  litellm:gpt-4o-mini   (or openai:gpt-4o-mini)
+#   Ollama:  litellm:ollama/llama3
+#   Together: litellm:together_ai/mistralai/Mixtral-8x7B-Instruct-v0.1
+_DEFAULT_EXTRACTION = "openai:gpt-4o-mini"
+_DEFAULT_EMBEDDING = "openai:text-embedding-3-small"
 
-def _client():
+
+def _client(extraction_model: str, embedding_model: str):
     from vektori.client import Vektori
 
-    return Vektori()
+    return Vektori(extraction_model=extraction_model, embedding_model=embedding_model)
 
 
 def _out(data: object, as_json: bool) -> None:
@@ -29,16 +38,32 @@ def _out(data: object, as_json: bool) -> None:
 
 
 @app.command()
-def init() -> None:
+def init(
+    extraction_model: str = typer.Option(
+        _DEFAULT_EXTRACTION,
+        "--extraction-model",
+        "-m",
+        envvar="VEKTORI_EXTRACTION_MODEL",
+        help="LLM for fact extraction. Any 'provider:model' string. "
+        "e.g. 'litellm:groq/llama-3.3-70b-versatile'",
+    ),
+    embedding_model: str = typer.Option(
+        _DEFAULT_EMBEDDING,
+        "--embedding-model",
+        "-e",
+        envvar="VEKTORI_EMBEDDING_MODEL",
+        help="Embedding model. e.g. 'openai:text-embedding-3-small', 'ollama:nomic-embed-text'",
+    ),
+) -> None:
     """Initialise local SQLite storage."""
 
     async def _run() -> None:
-        v = _client()
+        v = _client(extraction_model, embedding_model)
         await v._ensure_initialized()
         await v.close()
 
     asyncio.run(_run())
-    typer.echo("Vektori initialised. SQLite database ready.")
+    typer.echo(f"Vektori initialised (extraction={extraction_model}, embedding={embedding_model})")
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +78,20 @@ def add(
     session_id: Optional[str] = typer.Option(
         None, "--session-id", "-s", help="Session ID (auto-generated if omitted)."
     ),
+    extraction_model: str = typer.Option(
+        _DEFAULT_EXTRACTION,
+        "--extraction-model",
+        "-m",
+        envvar="VEKTORI_EXTRACTION_MODEL",
+        help="LLM for fact extraction. e.g. 'litellm:groq/llama-3.3-70b-versatile'",
+    ),
+    embedding_model: str = typer.Option(
+        _DEFAULT_EMBEDDING,
+        "--embedding-model",
+        "-e",
+        envvar="VEKTORI_EMBEDDING_MODEL",
+        help="Embedding model. e.g. 'openai:text-embedding-3-small'",
+    ),
     as_json: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
     """Add a memory."""
@@ -60,7 +99,7 @@ def add(
     messages = [{"role": "user", "content": text}]
 
     async def _run() -> dict:
-        v = _client()
+        v = _client(extraction_model, embedding_model)
         result = await v.add(messages, session_id=sid, user_id=user_id)
         await v.close()
         return result
@@ -83,13 +122,30 @@ def search(
     user_id: str = typer.Option(..., "--user-id", "-u", help="User ID."),
     top_k: int = typer.Option(10, "--top-k", "-k", help="Max results to return."),
     depth: str = typer.Option("l1", "--depth", "-d", help="Search depth: l0, l1, or l2."),
+    extraction_model: str = typer.Option(
+        _DEFAULT_EXTRACTION,
+        "--extraction-model",
+        "-m",
+        envvar="VEKTORI_EXTRACTION_MODEL",
+        help="LLM used if --expand is set. e.g. 'litellm:groq/llama-3.3-70b-versatile'",
+    ),
+    embedding_model: str = typer.Option(
+        _DEFAULT_EMBEDDING,
+        "--embedding-model",
+        "-e",
+        envvar="VEKTORI_EMBEDDING_MODEL",
+        help="Embedding model.",
+    ),
+    expand: bool = typer.Option(
+        False, "--expand", help="Use LLM to generate query variants before searching."
+    ),
     as_json: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
     """Search memories with a natural language query."""
 
     async def _run() -> dict:
-        v = _client()
-        result = await v.search(query, user_id=user_id, top_k=top_k, depth=depth)
+        v = _client(extraction_model, embedding_model)
+        result = await v.search(query, user_id=user_id, top_k=top_k, depth=depth, expand=expand)
         await v.close()
         return result
 
@@ -121,7 +177,7 @@ def list_memories(
     """List all active memories for a user."""
 
     async def _run() -> list:
-        v = _client()
+        v = _client(_DEFAULT_EXTRACTION, _DEFAULT_EMBEDDING)
         facts = await v.get_facts(user_id=user_id)
         await v.close()
         return facts
@@ -156,7 +212,7 @@ def delete(
         typer.confirm(f"Delete ALL memories for user '{user_id}'?", abort=True)
 
     async def _run() -> int:
-        v = _client()
+        v = _client(_DEFAULT_EXTRACTION, _DEFAULT_EMBEDDING)
         n = await v.delete_user(user_id=user_id)
         await v.close()
         return n
