@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68", "setuptools-scm>=8"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "vektori"
@@ -23,7 +23,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "spacy>=3.7",
+    "nltk>=3.8",
     "numpy>=1.24",
     "aiosqlite>=0.19",
     "openai>=1.12",
@@ -65,13 +65,26 @@ include = ["vektori*"]
 
 [tool.setuptools_scm]
 write_to = "vektori/_version.py"
+fallback_version = "0.0.0"
 
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+exclude = [
+    "benchmarks/",
+    "examples/",
+    "scripts/",
+    "vektori/_version.py",
+    "check_session.py",
+    "fix_cache.py",
+    "test_longmemeval_setup.py",
+    "run_locomo.py",
+    "run_longmemeval_s.py",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]
 
 [tool.ruff.format]
 quote-style = "double"

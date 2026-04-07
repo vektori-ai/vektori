@@ -79,7 +79,7 @@ class GeminiLLM(LLMProvider):
         self.model = model or DEFAULT_MODEL
         self._api_key = api_key
         self._client = None
-        
+
         # Retry configuration
         self.max_retries = max_retries
         self.initial_backoff = initial_backoff
@@ -104,11 +104,11 @@ class GeminiLLM(LLMProvider):
     async def _calculate_backoff(self, attempt: int) -> float:
         """
         Calculate backoff time with exponential backoff + jitter.
-        
+
         Prevents thundering herd problem when many requests retry simultaneously.
         """
         backoff = min(
-            self.initial_backoff * (DEFAULT_BACKOFF_MULTIPLIER ** attempt),
+            self.initial_backoff * (DEFAULT_BACKOFF_MULTIPLIER**attempt),
             self.max_backoff,
         )
         # Add jitter: ±25% randomness
@@ -141,7 +141,7 @@ class GeminiLLM(LLMProvider):
 
         # Retry loop with exponential backoff
         last_exception = None
-        
+
         for attempt in range(self.max_retries + 1):
             try:
                 logger.debug(
@@ -164,14 +164,14 @@ class GeminiLLM(LLMProvider):
                         raise e
 
                 response_text = await loop.run_in_executor(None, _generate)
-                
+
                 # Success
                 logger.debug(f"Gemini API call succeeded on attempt {attempt + 1}")
                 return response_text
 
             except Exception as e:
                 last_exception = e
-                
+
                 # Check if this is a retryable error
                 error_msg = str(e).lower()
                 is_retryable = any(
@@ -187,16 +187,14 @@ class GeminiLLM(LLMProvider):
                         "try again",
                     ]
                 )
-                
+
                 # If not retryable or last attempt, raise
                 if not is_retryable or attempt >= self.max_retries:
-                    logger.error(
-                        f"Gemini API call failed after {attempt + 1} attempts: {e}"
-                    )
+                    logger.error(f"Gemini API call failed after {attempt + 1} attempts: {e}")
                     raise RuntimeError(
                         f"Gemini API call failed after {self.max_retries + 1} attempts: {e}"
                     ) from e
-                
+
                 # Calculate backoff and wait
                 backoff_time = await self._calculate_backoff(attempt)
                 logger.warning(
@@ -210,9 +208,7 @@ class GeminiLLM(LLMProvider):
             f"Gemini API call failed after {self.max_retries + 1} attempts"
         ) from last_exception
 
-    async def generate_json(
-        self, prompt: str, max_tokens: int | None = None
-    ) -> dict[str, Any]:
+    async def generate_json(self, prompt: str, max_tokens: int | None = None) -> dict[str, Any]:
         """
         Generate JSON response from Gemini with retry.
 

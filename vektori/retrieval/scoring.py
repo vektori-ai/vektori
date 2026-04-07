@@ -93,23 +93,25 @@ def score_and_rank(
         if use_mentions and max_mentions > 1:
             mentions = int(fact.get("mentions") or 1)
             raw_boost = math.log1p(mentions) / math.log1p(max_mentions)  # → [0, 1]
-            mentions_boost = 1.0 + 0.5 * raw_boost                       # → [1.0, 1.5]
+            mentions_boost = 1.0 + 0.5 * raw_boost  # → [1.0, 1.5]
         else:
             mentions_boost = 1.0
 
         score = similarity * confidence * recency * mentions_boost
 
-        scored.append({
-            **fact,
-            "score": round(score, 6),
-            # Expose components for debugging / explanation
-            "_score_components": {
-                "similarity": round(similarity, 4),
-                "confidence": round(confidence, 4),
-                "recency": round(recency, 4),
-                "mentions_boost": round(mentions_boost, 4),
-            },
-        })
+        scored.append(
+            {
+                **fact,
+                "score": round(score, 6),
+                # Expose components for debugging / explanation
+                "_score_components": {
+                    "similarity": round(similarity, 4),
+                    "confidence": round(confidence, 4),
+                    "recency": round(recency, 4),
+                    "mentions_boost": round(mentions_boost, 4),
+                },
+            }
+        )
 
     scored.sort(key=lambda x: x["score"], reverse=True)
     return scored
@@ -151,5 +153,5 @@ def explain_score(fact: dict[str, Any]) -> str:
         f"conf={components.get('confidence', '?'):.4f} × "
         f"recency={components.get('recency', '?'):.4f} × "
         f"mentions={components.get('mentions_boost', '?'):.4f}]  "
-        f"→ \"{fact.get('text', '')[:60]}\""
+        f'→ "{fact.get("text", "")[:60]}"'
     )

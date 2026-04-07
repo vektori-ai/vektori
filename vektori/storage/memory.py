@@ -30,10 +30,10 @@ class MemoryBackend(StorageBackend):
         self._sentences: dict[str, dict[str, Any]] = {}
         self._facts: dict[str, dict[str, Any]] = {}
         self._edges: list[dict[str, Any]] = []
-        self._fact_sources: list[dict[str, str]] = []       # [{fact_id, sentence_id}]
+        self._fact_sources: list[dict[str, str]] = []  # [{fact_id, sentence_id}]
         self._sessions: dict[str, dict[str, Any]] = {}
         self._insights: dict[str, dict[str, Any]] = {}
-        self._insight_facts: list[dict[str, str]] = []      # [{insight_id, fact_id}]
+        self._insight_facts: list[dict[str, str]] = []  # [{insight_id, fact_id}]
 
     async def initialize(self) -> None:
         pass  # Nothing to do
@@ -206,10 +206,11 @@ class MemoryBackend(StorageBackend):
         offset: int = 0,
     ) -> list[dict[str, Any]]:
         results = [
-            f for f in self._facts.values()
+            f
+            for f in self._facts.values()
             if f.get("user_id") == user_id and f.get("is_active", True)
         ]
-        return results[offset: offset + limit]
+        return results[offset : offset + limit]
 
     async def increment_fact_mentions(self, fact_id: str) -> None:
         if fact_id in self._facts:
@@ -275,7 +276,9 @@ class MemoryBackend(StorageBackend):
                     and abs(s.get("sentence_index", 0) - target_idx) <= window
                 ):
                     results[s["id"]] = s
-        return sorted(results.values(), key=lambda x: (x.get("turn_number", 0), x.get("sentence_index", 0)))
+        return sorted(
+            results.values(), key=lambda x: (x.get("turn_number", 0), x.get("sentence_index", 0))
+        )
 
     # ── Join tables ──
 
@@ -315,9 +318,7 @@ class MemoryBackend(StorageBackend):
             return []
         fact_id_set = set(fact_ids)
         matched_insight_ids = {
-            link["insight_id"]
-            for link in self._insight_facts
-            if link["fact_id"] in fact_id_set
+            link["insight_id"] for link in self._insight_facts if link["fact_id"] in fact_id_set
         }
         return [
             {k: v for k, v in self._insights[iid].items() if k != "embedding"}
@@ -354,23 +355,22 @@ class MemoryBackend(StorageBackend):
 
     async def get_source_sentences(self, fact_ids: list[str]) -> list[str]:
         fact_id_set = set(fact_ids)
-        return list({
-            link["sentence_id"]
-            for link in self._fact_sources
-            if link["fact_id"] in fact_id_set
-        })
+        return list(
+            {link["sentence_id"] for link in self._fact_sources if link["fact_id"] in fact_id_set}
+        )
 
-    async def get_sentences_by_ids(
-        self, sentence_ids: list[str]
-    ) -> list[dict[str, Any]]:
+    async def get_sentences_by_ids(self, sentence_ids: list[str]) -> list[dict[str, Any]]:
         id_set = set(sentence_ids)
         results = [
-            s for s in self._sentences.values()
-            if s["id"] in id_set and s.get("is_active", True)
+            s for s in self._sentences.values() if s["id"] in id_set and s.get("is_active", True)
         ]
         return sorted(
             results,
-            key=lambda x: (x.get("session_id", ""), x.get("turn_number", 0), x.get("sentence_index", 0)),
+            key=lambda x: (
+                x.get("session_id", ""),
+                x.get("turn_number", 0),
+                x.get("sentence_index", 0),
+            ),
         )
 
     # ── Sessions ──

@@ -50,9 +50,7 @@ class SQLiteBackend(StorageBackend):
         try:
             import aiosqlite
         except ImportError as e:
-            raise ImportError(
-                "aiosqlite required for SQLite backend: pip install aiosqlite"
-            ) from e
+            raise ImportError("aiosqlite required for SQLite backend: pip install aiosqlite") from e
 
         self._conn = await aiosqlite.connect(str(self.db_path))
         self._conn.row_factory = aiosqlite.Row
@@ -176,6 +174,7 @@ class SQLiteBackend(StorageBackend):
     ) -> int:
         count = 0
         from vektori.ingestion.hasher import generate_content_hash
+
         for sent, emb in zip(sentences, embeddings):
             content_hash = generate_content_hash(
                 sent["session_id"], f"{sent['turn_number']}_{sent['sentence_index']}", sent["text"]
@@ -187,10 +186,16 @@ class SQLiteBackend(StorageBackend):
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT (content_hash) DO UPDATE SET mentions = mentions + 1""",
                 (
-                    sent["id"], sent["text"], json.dumps(emb),
-                    user_id, agent_id,
-                    sent["session_id"], sent["turn_number"], sent["sentence_index"],
-                    sent.get("role", "user"), content_hash,
+                    sent["id"],
+                    sent["text"],
+                    json.dumps(emb),
+                    user_id,
+                    agent_id,
+                    sent["session_id"],
+                    sent["turn_number"],
+                    sent["sentence_index"],
+                    sent.get("role", "user"),
+                    content_hash,
                 ),
             )
             count += 1
@@ -286,9 +291,19 @@ class SQLiteBackend(StorageBackend):
                (id, text, embedding, user_id, agent_id, session_id, subject,
                 confidence, superseded_by, metadata, event_time)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (fact_id, text, json.dumps(embedding), user_id, agent_id, session_id,
-             subject, confidence, superseded_by_target, json.dumps(metadata or {}),
-             event_time_str),
+            (
+                fact_id,
+                text,
+                json.dumps(embedding),
+                user_id,
+                agent_id,
+                session_id,
+                subject,
+                confidence,
+                superseded_by_target,
+                json.dumps(metadata or {}),
+                event_time_str,
+            ),
         )
         await self._conn.commit()
         return fact_id
@@ -332,7 +347,13 @@ class SQLiteBackend(StorageBackend):
             emb = json.loads(row_dict.pop("embedding") or "null")
             if emb:
                 sim = _cosine_similarity(embedding, emb)
-                results.append({**row_dict, "distance": 1.0 - sim, "created_at": _parse_dt(row_dict.get("created_at"))})
+                results.append(
+                    {
+                        **row_dict,
+                        "distance": 1.0 - sim,
+                        "created_at": _parse_dt(row_dict.get("created_at")),
+                    }
+                )
         results.sort(key=lambda x: x["distance"])
         return results[:limit]
 
@@ -510,9 +531,7 @@ class SQLiteBackend(StorageBackend):
         results.sort(key=lambda x: x["distance"])
         return results[:limit]
 
-    async def get_sentences_by_ids(
-        self, sentence_ids: list[str]
-    ) -> list[dict[str, Any]]:
+    async def get_sentences_by_ids(self, sentence_ids: list[str]) -> list[dict[str, Any]]:
         if not sentence_ids:
             return []
         placeholders = ",".join("?" * len(sentence_ids))

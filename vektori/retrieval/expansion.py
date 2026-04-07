@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 # ── Grouping ──────────────────────────────────────────────────────────────────
 
 
@@ -26,9 +25,7 @@ def group_by_session(
         sid = sent.get("session_id", "unknown")
         groups.setdefault(sid, []).append(sent)
     for group in groups.values():
-        group.sort(
-            key=lambda x: (x.get("turn_number", 0), x.get("sentence_index", 0))
-        )
+        group.sort(key=lambda x: (x.get("turn_number", 0), x.get("sentence_index", 0)))
     return groups
 
 
@@ -52,10 +49,7 @@ def mark_sources(
     Returns:
         Same list with ``is_source`` bool added to each dict (new dict, not mutated).
     """
-    return [
-        {**s, "is_source": s.get("id") in source_ids}
-        for s in sentences
-    ]
+    return [{**s, "is_source": s.get("id") in source_ids} for s in sentences]
 
 
 # ── Formatting ────────────────────────────────────────────────────────────────
@@ -170,9 +164,7 @@ def build_retrieval_context(
             # or we infer from facts via fact_sources if the caller hasn't
             # pre-annotated. Fall back to marking nothing if unavailable.
             if mark_source_sentences:
-                source_ids: set[str] | None = {
-                    s["id"] for s in sentences if s.get("is_source")
-                }
+                source_ids: set[str] | None = {s["id"] for s in sentences if s.get("is_source")}
                 # If no pre-annotation, source_ids stays empty — no markers shown.
                 if not source_ids:
                     source_ids = None

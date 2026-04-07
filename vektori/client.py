@@ -44,9 +44,7 @@ class Vektori:
         if config is not None:
             self.config = config
         else:
-            resolved_backend = storage_backend or (
-                "postgres" if database_url else "sqlite"
-            )
+            resolved_backend = storage_backend or ("postgres" if database_url else "sqlite")
             self.config = VektoriConfig(
                 database_url=database_url,
                 storage_backend=resolved_backend,
@@ -108,6 +106,7 @@ class Vektori:
         )
 
         from vektori.retrieval.expander import QueryExpander
+
         self._expander = QueryExpander(
             llm=self.llm,
             n_variants=self.config.expansion_queries,
@@ -145,7 +144,9 @@ class Vektori:
             {"status": "ok", "sentences_stored": N, "extraction": "queued"|"done"|"skipped"}
         """
         await self._ensure_initialized()
-        return await self._pipeline.ingest(messages, session_id, user_id, agent_id, metadata, session_time=session_time)
+        return await self._pipeline.ingest(
+            messages, session_id, user_id, agent_id, metadata, session_time=session_time
+        )
 
     async def search(
         self,
@@ -184,6 +185,7 @@ class Vektori:
 
         if self.config.enable_retrieval_gate:
             from vektori.retrieval.gate import should_retrieve
+
             if not should_retrieve(query):
                 logger.debug("Retrieval gate: skipping DB lookup for query=%r", query[:60])
                 result: dict[str, Any] = {"facts": []}
@@ -253,7 +255,7 @@ class Vektori:
         if self.db:
             await self.db.close()
 
-    async def __aenter__(self) -> "Vektori":
+    async def __aenter__(self) -> Vektori:
         await self._ensure_initialized()
         return self
 

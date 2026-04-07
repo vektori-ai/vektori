@@ -1,6 +1,7 @@
 """Shared test fixtures."""
 
 import pytest
+
 from vektori.storage.memory import MemoryBackend
 
 

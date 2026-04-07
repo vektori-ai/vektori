@@ -34,9 +34,7 @@ class AnthropicEmbedder(EmbeddingProvider):
             try:
                 import voyageai
             except ImportError as e:
-                raise ImportError(
-                    "voyageai required: pip install 'vektori[anthropic]'"
-                ) from e
+                raise ImportError("voyageai required: pip install 'vektori[anthropic]'") from e
             self._client = voyageai.AsyncClient(api_key=self._api_key)
         return self._client
 
@@ -66,9 +64,7 @@ class AnthropicLLM(LLMProvider):
             try:
                 import anthropic
             except ImportError as e:
-                raise ImportError(
-                    "anthropic required: pip install 'vektori[anthropic]'"
-                ) from e
+                raise ImportError("anthropic required: pip install 'vektori[anthropic]'") from e
             self._client = anthropic.AsyncAnthropic(api_key=self._api_key)
         return self._client
 

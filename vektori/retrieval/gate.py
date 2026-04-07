@@ -92,11 +92,7 @@ def should_retrieve(query: str) -> bool:
     # Named entity: capitalized word that isn't the first word of the sentence.
     # Only reached here if not a generic question, so likely a person/entity in memory.
     words = q.split()
-    if any(
-        w[0].isupper() and i > 0
-        for i, w in enumerate(words)
-        if w and w[0].isalpha()
-    ):
+    if any(w[0].isupper() and i > 0 for i, w in enumerate(words) if w and w[0].isalpha()):
         return True
 
     # Default: retrieve (safer to over-retrieve than under-retrieve)

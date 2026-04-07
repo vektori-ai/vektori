@@ -24,7 +24,7 @@ class ExtractionRequest:
     user_id: str
     agent_id: str | None = None
     sentence_ids: list[str] | None = None  # IDs of sentences stored in this session
-    session_time: datetime | None = None   # when the conversation happened (for event_time on facts)
+    session_time: datetime | None = None  # when the conversation happened (for event_time on facts)
 
 
 @dataclass
@@ -112,20 +112,23 @@ class ExtractionWorker:
 
         logger.debug(
             "Extraction firing for key=%s: %d requests, ~%d tokens",
-            key, len(buf.requests), buf.token_count,
+            key,
+            len(buf.requests),
+            buf.token_count,
         )
 
         async def _extract_one(req: ExtractionRequest) -> None:
             async with self._semaphore:
                 try:
                     await self._extractor.extract(
-                        req.messages, req.session_id, req.user_id, req.agent_id,
+                        req.messages,
+                        req.session_id,
+                        req.user_id,
+                        req.agent_id,
                         session_time=req.session_time,
                     )
                 except Exception as e:
-                    logger.error(
-                        "Extraction failed for session %s: %s", req.session_id, e
-                    )
+                    logger.error("Extraction failed for session %s: %s", req.session_id, e)
 
         await asyncio.gather(*[_extract_one(r) for r in buf.requests])
 

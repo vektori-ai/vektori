@@ -44,7 +44,8 @@ class IngestionPipeline:
         self.async_extraction = async_extraction
         self.worker: ExtractionWorker | None = (
             ExtractionWorker(extractor, token_threshold=token_batch_threshold)
-            if async_extraction else None
+            if async_extraction
+            else None
         )
 
     async def ingest(
@@ -72,18 +73,19 @@ class IngestionPipeline:
                 continue
             raw_sents = split_sentences(msg["content"])
             for idx, text in enumerate(raw_sents):
-                if (
-                    not self.quality_config.enabled
-                    or is_quality_sentence(text, self.quality_config)
+                if not self.quality_config.enabled or is_quality_sentence(
+                    text, self.quality_config
                 ):
-                    all_sentences.append({
-                        "text": text,
-                        "session_id": session_id,
-                        "turn_number": turn_num,
-                        "sentence_index": idx,
-                        "role": role,
-                        "id": generate_sentence_id(session_id, f"{turn_num}_{idx}", text),
-                    })
+                    all_sentences.append(
+                        {
+                            "text": text,
+                            "session_id": session_id,
+                            "turn_number": turn_num,
+                            "sentence_index": idx,
+                            "role": role,
+                            "id": generate_sentence_id(session_id, f"{turn_num}_{idx}", text),
+                        }
+                    )
 
         # 2. Batch embed and upsert sentences (ON CONFLICT → increment mentions)
         if all_sentences:
@@ -105,23 +107,29 @@ class IngestionPipeline:
             await self.db.insert_edges(edges)
 
         # 4. Upsert session record
-        await self.db.upsert_session(session_id, user_id, agent_id, metadata or {}, started_at=session_time)
+        await self.db.upsert_session(
+            session_id, user_id, agent_id, metadata or {}, started_at=session_time
+        )
 
         # 5. Trigger extraction — always runs as long as messages is non-empty.
         #    Extraction reads from messages directly, not from stored sentences.
         if skip_extraction or not messages:
             extraction_status = "skipped"
         elif self.worker is not None:
-            self.worker.schedule(ExtractionRequest(
-                messages=messages,
-                session_id=session_id,
-                user_id=user_id,
-                agent_id=agent_id,
-                session_time=session_time,
-            ))
+            self.worker.schedule(
+                ExtractionRequest(
+                    messages=messages,
+                    session_id=session_id,
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    session_time=session_time,
+                )
+            )
             extraction_status = "queued"
         else:
-            await self.extractor.extract(messages, session_id, user_id, agent_id, session_time=session_time)
+            await self.extractor.extract(
+                messages, session_id, user_id, agent_id, session_time=session_time
+            )
             extraction_status = "done"
 
         return {

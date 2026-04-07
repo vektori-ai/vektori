@@ -60,8 +60,7 @@ def create_llm(model_string: str, **kwargs) -> LLMProvider:
     provider, _, model_name = model_string.partition(":")
     if provider not in LLM_REGISTRY:
         raise ValueError(
-            f"Unknown LLM provider: '{provider}'. "
-            f"Available: {list(LLM_REGISTRY.keys())}"
+            f"Unknown LLM provider: '{provider}'. Available: {list(LLM_REGISTRY.keys())}"
         )
     cls = _import_class(LLM_REGISTRY[provider])
     return cls(model=model_name or None, **kwargs)

@@ -99,6 +99,7 @@ Return ONLY the JSON."""
 
 # ── Extractor ─────────────────────────────────────────────────────────────────
 
+
 class FactExtractor:
     """
     Extracts facts (L0) from conversations using an LLM.
@@ -151,9 +152,7 @@ class FactExtractor:
         session_time: when the conversation happened (session started_at).
         Stored as event_time on each fact for temporal filtering at retrieval.
         """
-        conversation = "\n".join(
-            f"{msg['role'].upper()}: {msg['content']}" for msg in messages
-        )
+        conversation = "\n".join(f"{msg['role'].upper()}: {msg['content']}" for msg in messages)
 
         # ── Extract facts — chunk long conversations so early facts aren't lost ──
         try:
@@ -167,7 +166,12 @@ class FactExtractor:
 
         inserted_facts: list[tuple[str, str]] = []  # (fact_id, text)
         facts_inserted = await self._process_facts(
-            new_facts, session_id, user_id, agent_id, conversation, session_time,
+            new_facts,
+            session_id,
+            user_id,
+            agent_id,
+            conversation,
+            session_time,
             _capture_out=_capture_out,
             _inserted_facts_out=inserted_facts,
         )
@@ -176,7 +180,11 @@ class FactExtractor:
         if inserted_facts:
             try:
                 insights_created = await self._extract_insights(
-                    inserted_facts, conversation, session_id, user_id, agent_id,
+                    inserted_facts,
+                    conversation,
+                    session_id,
+                    user_id,
+                    agent_id,
                     session_time=session_time,
                 )
             except Exception as e:
@@ -184,7 +192,9 @@ class FactExtractor:
 
         logger.info(
             "Extraction complete for session %s: %d facts, %d insights",
-            session_id, facts_inserted, insights_created,
+            session_id,
+            facts_inserted,
+            insights_created,
         )
         return {"facts_inserted": facts_inserted, "insights_created": insights_created}
 
@@ -224,13 +234,12 @@ class FactExtractor:
         chunks = self._chunk_messages(messages)
         logger.debug(
             "Long conversation (%d chars) split into %d chunks for extraction",
-            len(full_conversation), len(chunks),
+            len(full_conversation),
+            len(chunks),
         )
         all_facts: list[dict[str, Any]] = []
         for chunk in chunks:
-            chunk_conv = "\n".join(
-                f"{m['role'].upper()}: {m['content']}" for m in chunk
-            )
+            chunk_conv = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in chunk)
             try:
                 chunk_facts = await self._extract_facts(chunk_conv, session_time)
                 all_facts.extend(chunk_facts)
@@ -238,9 +247,7 @@ class FactExtractor:
                 logger.warning("Chunk extraction failed (%d messages): %s", len(chunk), e)
         return all_facts
 
-    def _chunk_messages(
-        self, messages: list[dict[str, str]]
-    ) -> list[list[dict[str, str]]]:
+    def _chunk_messages(self, messages: list[dict[str, str]]) -> list[list[dict[str, str]]]:
         """Split messages into chunks where each chunk's text fits in one LLM call.
 
         Carries the last message of each chunk into the next as overlap so the
@@ -258,8 +265,7 @@ class FactExtractor:
                 overlap = current[-1]
                 current = [overlap, msg]
                 current_chars = (
-                    len(overlap.get("role", "")) + len(overlap.get("content", "")) + 10
-                    + msg_chars
+                    len(overlap.get("role", "")) + len(overlap.get("content", "")) + 10 + msg_chars
                 )
             else:
                 current.append(msg)
@@ -353,13 +359,15 @@ class FactExtractor:
                     _inserted_facts_out.append((fact_id, fact_data["text"]))
 
                 if _capture_out is not None:
-                    _capture_out.append({
-                        "text": fact_data["text"],
-                        "subject": subject,
-                        "confidence": fact_data.get("confidence", 1.0),
-                        "metadata": meta or {},
-                        "source_quotes": fact_data.get("source_quotes") or [],
-                    })
+                    _capture_out.append(
+                        {
+                            "text": fact_data["text"],
+                            "subject": subject,
+                            "confidence": fact_data.get("confidence", 1.0),
+                            "metadata": meta or {},
+                            "source_quotes": fact_data.get("source_quotes") or [],
+                        }
+                    )
 
                 if fact_data.get("source_quotes"):
                     linked = await self._link_to_source_sentences(
@@ -525,8 +533,7 @@ class FactExtractor:
         conv_snippet = conversation[:3000]
 
         session_date_line = (
-            f"SESSION DATE: {session_time.strftime('%Y-%m-%d')}\n\n"
-            if session_time else ""
+            f"SESSION DATE: {session_time.strftime('%Y-%m-%d')}\n\n" if session_time else ""
         )
         prompt = INSIGHTS_PROMPT.format(
             conversation=conv_snippet,
@@ -637,6 +644,7 @@ class FactExtractor:
 
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
+
 
 def _parse_json_response(response: str) -> dict[str, Any]:
     """Parse LLM JSON response, stripping markdown code fences if present."""
