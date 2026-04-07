@@ -16,6 +16,8 @@ EMBEDDING_REGISTRY: dict[str, str] = {
     "bge": "vektori.models.bge.BGEEmbedder",
     # Cloudflare Workers AI: remote BGE-M3, zero local GPU, 1024-dim
     "cloudflare": "vektori.models.cloudflare.CloudflareEmbedder",
+    # LiteLLM: 100+ providers — Together AI, Cohere, Azure, Ollama, etc.
+    "litellm": "vektori.models.litellm_embedder.LiteLLMEmbedder",
 }
 
 LLM_REGISTRY: dict[str, str] = {

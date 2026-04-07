@@ -11,14 +11,46 @@ import typer
 
 app = typer.Typer(help="Vektori memory engine — self-hosted, zero-config.", no_args_is_help=True)
 
+import os
+
 # Model option defaults — override via env vars or CLI flags.
-# LiteLLM format: "litellm:<provider>/<model>"
-#   Groq:    litellm:groq/llama-3.3-70b-versatile
-#   OpenAI:  litellm:gpt-4o-mini   (or openai:gpt-4o-mini)
-#   Ollama:  litellm:ollama/llama3
-#   Together: litellm:together_ai/mistralai/Mixtral-8x7B-Instruct-v0.1
+#
+# Extraction model format: "provider:model"
+#   openai:gpt-4o-mini                           (OPENAI_API_KEY)
+#   litellm:groq/llama-3.3-70b-versatile         (GROQ_API_KEY)
+#   litellm:together_ai/meta-llama/Llama-3-70b-chat-hf  (TOGETHERAI_API_KEY)
+#   litellm:ollama/llama3                         (local, no key needed)
+#
+# Embedding model format: "provider:model"
+#   openai:text-embedding-3-small                (OPENAI_API_KEY)
+#   litellm:together_ai/togethercomputer/m2-bert-80M-8k-retrieval  (TOGETHERAI_API_KEY)
+#   litellm:ollama/nomic-embed-text              (local, no key needed)
+#   sentence-transformers:all-MiniLM-L6-v2       (local, pip install sentence-transformers)
 _DEFAULT_EXTRACTION = "openai:gpt-4o-mini"
 _DEFAULT_EMBEDDING = "openai:text-embedding-3-small"
+
+_EXTRACTION_HELP = (
+    "LLM for fact extraction. e.g. 'litellm:groq/llama-3.3-70b-versatile', "
+    "'litellm:ollama/llama3', 'openai:gpt-4o-mini' [env: VEKTORI_EXTRACTION_MODEL]"
+)
+_EMBEDDING_HELP = (
+    "Embedding model. e.g. 'litellm:together_ai/togethercomputer/m2-bert-80M-8k-retrieval', "
+    "'litellm:ollama/nomic-embed-text', 'sentence-transformers:all-MiniLM-L6-v2' "
+    "[env: VEKTORI_EMBEDDING_MODEL]"
+)
+
+
+def _warn_openai(model: str, var: str) -> None:
+    """Warn early if an OpenAI model is selected but OPENAI_API_KEY is not set."""
+    if model.startswith("openai:") and not os.environ.get("OPENAI_API_KEY"):
+        typer.echo(
+            f"[warn] {var}={model!r} requires OPENAI_API_KEY.\n"
+            "       Set it, or pick another provider:\n"
+            "         litellm:groq/llama-3.3-70b-versatile   (GROQ_API_KEY)\n"
+            "         litellm:ollama/llama3                   (local)\n"
+            "         litellm:together_ai/...                 (TOGETHERAI_API_KEY)\n",
+            err=True,
+        )
 
 
 def _client(extraction_model: str, embedding_model: str):
@@ -40,22 +72,17 @@ def _out(data: object, as_json: bool) -> None:
 @app.command()
 def init(
     extraction_model: str = typer.Option(
-        _DEFAULT_EXTRACTION,
-        "--extraction-model",
-        "-m",
-        envvar="VEKTORI_EXTRACTION_MODEL",
-        help="LLM for fact extraction. Any 'provider:model' string. "
-        "e.g. 'litellm:groq/llama-3.3-70b-versatile'",
+        _DEFAULT_EXTRACTION, "--extraction-model", "-m", envvar="VEKTORI_EXTRACTION_MODEL",
+        help=_EXTRACTION_HELP,
     ),
     embedding_model: str = typer.Option(
-        _DEFAULT_EMBEDDING,
-        "--embedding-model",
-        "-e",
-        envvar="VEKTORI_EMBEDDING_MODEL",
-        help="Embedding model. e.g. 'openai:text-embedding-3-small', 'ollama:nomic-embed-text'",
+        _DEFAULT_EMBEDDING, "--embedding-model", "-e", envvar="VEKTORI_EMBEDDING_MODEL",
+        help=_EMBEDDING_HELP,
     ),
 ) -> None:
     """Initialise local SQLite storage."""
+    _warn_openai(extraction_model, "--extraction-model")
+    _warn_openai(embedding_model, "--embedding-model")
 
     async def _run() -> None:
         v = _client(extraction_model, embedding_model)
@@ -79,22 +106,18 @@ def add(
         None, "--session-id", "-s", help="Session ID (auto-generated if omitted)."
     ),
     extraction_model: str = typer.Option(
-        _DEFAULT_EXTRACTION,
-        "--extraction-model",
-        "-m",
-        envvar="VEKTORI_EXTRACTION_MODEL",
-        help="LLM for fact extraction. e.g. 'litellm:groq/llama-3.3-70b-versatile'",
+        _DEFAULT_EXTRACTION, "--extraction-model", "-m", envvar="VEKTORI_EXTRACTION_MODEL",
+        help=_EXTRACTION_HELP,
     ),
     embedding_model: str = typer.Option(
-        _DEFAULT_EMBEDDING,
-        "--embedding-model",
-        "-e",
-        envvar="VEKTORI_EMBEDDING_MODEL",
-        help="Embedding model. e.g. 'openai:text-embedding-3-small'",
+        _DEFAULT_EMBEDDING, "--embedding-model", "-e", envvar="VEKTORI_EMBEDDING_MODEL",
+        help=_EMBEDDING_HELP,
     ),
     as_json: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
     """Add a memory."""
+    _warn_openai(extraction_model, "--extraction-model")
+    _warn_openai(embedding_model, "--embedding-model")
     sid = session_id or str(uuid.uuid4())
     messages = [{"role": "user", "content": text}]
 
@@ -123,18 +146,12 @@ def search(
     top_k: int = typer.Option(10, "--top-k", "-k", help="Max results to return."),
     depth: str = typer.Option("l1", "--depth", "-d", help="Search depth: l0, l1, or l2."),
     extraction_model: str = typer.Option(
-        _DEFAULT_EXTRACTION,
-        "--extraction-model",
-        "-m",
-        envvar="VEKTORI_EXTRACTION_MODEL",
-        help="LLM used if --expand is set. e.g. 'litellm:groq/llama-3.3-70b-versatile'",
+        _DEFAULT_EXTRACTION, "--extraction-model", "-m", envvar="VEKTORI_EXTRACTION_MODEL",
+        help=_EXTRACTION_HELP,
     ),
     embedding_model: str = typer.Option(
-        _DEFAULT_EMBEDDING,
-        "--embedding-model",
-        "-e",
-        envvar="VEKTORI_EMBEDDING_MODEL",
-        help="Embedding model.",
+        _DEFAULT_EMBEDDING, "--embedding-model", "-e", envvar="VEKTORI_EMBEDDING_MODEL",
+        help=_EMBEDDING_HELP,
     ),
     expand: bool = typer.Option(
         False, "--expand", help="Use LLM to generate query variants before searching."
@@ -142,6 +159,8 @@ def search(
     as_json: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
     """Search memories with a natural language query."""
+    _warn_openai(extraction_model, "--extraction-model")
+    _warn_openai(embedding_model, "--embedding-model")
 
     async def _run() -> dict:
         v = _client(extraction_model, embedding_model)
