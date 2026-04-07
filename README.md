@@ -208,7 +208,7 @@ DATABASE_URL=postgresql://vektori:vektori@localhost:5432/vektori python examples
 
 ## Model Support
 
-Bring whatever model stack you have. Works with 11 providers out of the box.
+Bring whatever model stack you have. Works with 10 providers out of the box.
 
 ```python
 # OpenAI
@@ -219,9 +219,10 @@ v = Vektori(
 
 # Azure OpenAI
 # Ensure AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY are set
+# Note: The string after "azure:" must match your specific Azure deployment names
 v = Vektori(
-    embedding_model="azure:text-embedding-3-small",
-    extraction_model="azure:gpt-4o",
+    embedding_model="azure:my-embedding-deployment",
+    extraction_model="azure:my-gpt-4o-deployment",
 )
 
 # GitHub Models (Copilot)

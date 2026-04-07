@@ -78,8 +78,18 @@ class AzureOpenAIEmbedder(EmbeddingProvider):
 
     @property
     def dimension(self) -> int:
-        # Fallback to model name if deployment name doesn't match standard models
-        return EMBEDDING_DIMENSIONS.get(self.model, 1536)
+        if self.model in EMBEDDING_DIMENSIONS:
+            return EMBEDDING_DIMENSIONS[self.model]
+
+        env_dim = os.environ.get("AZURE_EMBEDDING_DIMENSION")
+        if env_dim and env_dim.isdigit():
+            return int(env_dim)
+
+        raise ValueError(
+            f"Azure deployment name '{self.model}' not found in standard dimensions. "
+            f"Please set the AZURE_EMBEDDING_DIMENSION environment variable (e.g., '1536') "
+            f"to explicitly configure the embedding dimension for this custom deployment."
+        )
 
     async def embed(self, text: str) -> list[float]:
         client = self._get_client()
