@@ -4,7 +4,7 @@
 
 # Replace with your GitHub OAuth App Client ID
 CLIENT_ID="YOUR_GITHUB_OAUTH_CLIENT_ID"
-SCOPE="read:user"
+SCOPE="read:user models:read"
 
 DEVICE_CODE_URL="https://github.com/login/device/code"
 ACCESS_TOKEN_URL="https://github.com/login/oauth/access_token"

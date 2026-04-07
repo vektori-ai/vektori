@@ -22,8 +22,13 @@ DEFAULT_GITHUB_EMBEDDING_MODEL = "openai/text-embedding-3-small"
 
 def _normalize_model_id(model: str, default: str) -> str:
     """Return API model ID: publisher/name."""
-    s = model.split(":", 1)[-1].strip() if ":" in model else model.strip()
-    if not s or s.lower() == "copilot":
+    if ":" in model:
+        publisher, name = model.split(":", 1)
+        s = f"{publisher.strip()}/{name.strip()}"
+    else:
+        s = model.strip()
+
+    if not s or s.lower() == "copilot" or s == "/":
         return default
     return s
 
@@ -50,7 +55,24 @@ class GitHubEmbedder(EmbeddingProvider):
 
     @property
     def dimension(self) -> int:
-        return 1536  # Fallback assumption for openai/text-embedding-3-small
+        model_name = self.model.lower()
+        if "text-embedding-3-large" in model_name:
+            return 3072
+        elif "text-embedding-3-small" in model_name or "text-embedding-ada-002" in model_name:
+            return 1536
+        elif (
+            "cohere/embed-english-v3" in model_name or "cohere/embed-multilingual-v3" in model_name
+        ):
+            return 1024
+        elif (
+            "cohere/embed-english-light-v3" in model_name
+            or "cohere/embed-multilingual-light-v3" in model_name
+        ):
+            return 384
+        else:
+            # Fallback assumption for openai/text-embedding-3-small
+            logger.warning(f"Unknown embedding dimension for {self.model}, assuming 1536.")
+            return 1536
 
     async def embed(self, text: str) -> list[float]:
         res = await self.embed_batch([text])
@@ -121,6 +143,8 @@ class GitHubLLM(LLMProvider):
                     json=payload,
                 )
                 resp.raise_for_status()
+                data = resp.json()
+                fallback_used = False
             except httpx.HTTPStatusError as e:
                 # Fallback without response_format if it fails
                 if e.response.status_code == 400 and "response_format" in str(e.response.text):
@@ -131,10 +155,10 @@ class GitHubLLM(LLMProvider):
                         json=payload,
                     )
                     resp.raise_for_status()
+                    data = resp.json()
+                    fallback_used = True
                 else:
                     raise
-
-            data = resp.json()
 
         choices = data.get("choices") or []
         if not choices:
@@ -142,4 +166,16 @@ class GitHubLLM(LLMProvider):
 
         msg = choices[0].get("message") or {}
         content = msg.get("content")
-        return str(content or "") if content is not None else ""
+        content_str = str(content or "") if content is not None else ""
+
+        if fallback_used and content_str:
+            import json
+
+            try:
+                json.loads(content_str)
+            except json.JSONDecodeError as e:
+                raise RuntimeError(
+                    f"GitHub Models fallback response is not valid JSON. Response content: {content_str}"
+                ) from e
+
+        return content_str
