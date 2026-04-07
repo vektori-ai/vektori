@@ -9,6 +9,8 @@ from vektori.models.base import EmbeddingProvider, LLMProvider
 # Format: "provider_key": "module.path.ClassName"
 EMBEDDING_REGISTRY: dict[str, str] = {
     "openai": "vektori.models.openai.OpenAIEmbedder",
+    "azure": "vektori.models.azure.AzureOpenAIEmbedder",
+    "github": "vektori.models.github.GitHubEmbedder",
     "anthropic": "vektori.models.anthropic.AnthropicEmbedder",
     "ollama": "vektori.models.ollama.OllamaEmbedder",
     "sentence-transformers": "vektori.models.sentence_transformers.SentenceTransformerEmbedder",
@@ -20,6 +22,8 @@ EMBEDDING_REGISTRY: dict[str, str] = {
 
 LLM_REGISTRY: dict[str, str] = {
     "openai": "vektori.models.openai.OpenAILLM",
+    "azure": "vektori.models.azure.AzureOpenAILLM",
+    "github": "vektori.models.github.GitHubLLM",
     "anthropic": "vektori.models.anthropic.AnthropicLLM",
     "ollama": "vektori.models.ollama.OllamaLLM",
     "gemini": "vektori.models.gemini.GeminiLLM",  # Direct Gemini API
