@@ -300,5 +300,23 @@ class StorageBackend(ABC):
 
     @abstractmethod
     async def delete_user(self, user_id: str) -> int:
-        """Cascade delete all data for a user (GDPR). Returns rows deleted."""
+        """Cascade delete all data for a user (GDPR). Returns rows deleted. Includes profiles."""
+        ...
+
+    # ── Profiles ──
+
+    @abstractmethod
+    async def get_profile(self, user_id: str, agent_id: str | None = None) -> str | None:
+        """Return profile markdown content, or None if no profile exists yet."""
+        ...
+
+    @abstractmethod
+    async def set_profile(
+        self,
+        user_id: str,
+        content: str,
+        agent_id: str | None = None,
+        session_count: int = 0,
+    ) -> None:
+        """Upsert profile markdown content for a user."""
         ...
