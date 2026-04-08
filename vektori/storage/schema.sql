@@ -163,3 +163,20 @@ CREATE TABLE IF NOT EXISTS insight_facts (
 
 CREATE INDEX IF NOT EXISTS idx_insight_facts_insight ON insight_facts (insight_id);
 CREATE INDEX IF NOT EXISTS idx_insight_facts_fact ON insight_facts (fact_id);
+
+
+-- ============================================================
+-- PROFILES: Per-user living profile document.
+-- Always-in-context layer — never retrieved, always prepended.
+-- Updated incrementally every N sessions via LLM merge pass.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS profiles (
+    user_id  TEXT NOT NULL,
+    agent_id TEXT,
+    content  TEXT NOT NULL DEFAULT '',
+    session_count_at_update INTEGER DEFAULT 0,
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (user_id, COALESCE(agent_id, ''))
+);
+
+CREATE INDEX IF NOT EXISTS idx_profiles_user ON profiles (user_id);
