@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 # ── Prompts ──────────────────────────────────────────────────────────────────
 
-FACTS_PROMPT = """Extract facts from this conversation — both facts about the USER and notable things the ASSISTANT said.
+FACTS_PROMPT = """Extract facts from this conversation — both facts about the USER and notable things the ASSISTANT said. Only extract facts that describe the person themselves: their life, activities, spending, health, relationships, preferences, or habits. Skip facts that merely describe what they asked about or how they wanted the response formatted — those describe the conversation, not the person.
 
 {session_date_line}CONVERSATION:
 {conversation}
@@ -53,7 +53,7 @@ ASSISTANT facts (source: "assistant"):
 General:
 - One fact per statement. Short and crisp.
 - subject: 'user' when about the person speaking; a named entity when about someone/something they mention; 'assistant' for assistant facts
-- Extract at most {max_facts} facts total — prioritize high-confidence, significant ones
+- {max_facts} is a hard ceiling, not a target. A good session produces 3–5 facts. Only extract more if the conversation genuinely contains more distinct personal signal. It is correct to return 0–2 facts for a session with no personal content.
 - If nothing factual was stated, return {{"facts": []}}
 - Dates in `text`: if CONVERSATION DATE is provided, replace relative time references with the actual date.
   "today" → "on YYYY-MM-DD", "yesterday" → "on YYYY-MM-DD", "last week" → "on week of YYYY-MM-DD", etc.
