@@ -318,7 +318,7 @@ class FactExtractor:
 
                 # Write-time semantic dedup
                 dedup = await self._check_dedup(
-                    fact_embedding, session_id, user_id, agent_id, subject
+                    fact_embedding, session_id, user_id, agent_id, subject, session_time
                 )
 
                 if dedup is not None:
@@ -420,7 +420,7 @@ class FactExtractor:
 
                 # Dedup check — in a fresh user context this always returns None,
                 # but we run it anyway for correctness if sessions overlap.
-                dedup = await self._check_dedup(fact_emb, session_id, user_id, agent_id, subject)
+                dedup = await self._check_dedup(fact_emb, session_id, user_id, agent_id, subject, session_time)
                 if dedup is not None:
                     existing_id, same_session = dedup
                     await self.db.increment_fact_mentions(existing_id)
@@ -472,6 +472,7 @@ class FactExtractor:
         user_id: str,
         agent_id: str | None,
         subject: str | None = None,
+        session_time: datetime | None = None,
     ) -> tuple[str, bool] | None:
         """
         Check if a near-duplicate fact already exists.
@@ -501,6 +502,14 @@ class FactExtractor:
             if same_session and sim > 0.92:
                 return (best["id"], True)
             if not same_session and sim > 0.85:
+                # Don't deactivate if both facts are temporally distinct events (>30 days apart)
+                if session_time and best.get("event_time"):
+                    try:
+                        existing_time = datetime.fromisoformat(str(best["event_time"]))
+                        if abs((session_time - existing_time).days) > 30:
+                            return None
+                    except (ValueError, TypeError):
+                        pass
                 return (best["id"], False)
         except Exception as e:
             logger.warning("Dedup lookup failed: %s", e)
