@@ -140,10 +140,20 @@ class SQLiteBackend(StorageBackend):
                 PRIMARY KEY (insight_id, fact_id)
             );
 
+            CREATE TABLE IF NOT EXISTS profiles (
+                user_id  TEXT NOT NULL,
+                agent_id TEXT,
+                content  TEXT NOT NULL DEFAULT '',
+                session_count_at_update INTEGER DEFAULT 0,
+                updated_at TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (user_id, COALESCE(agent_id, ''))
+            );
+
             CREATE INDEX IF NOT EXISTS idx_facts_user ON facts (user_id);
             CREATE INDEX IF NOT EXISTS idx_facts_active ON facts (user_id, is_active);
             CREATE INDEX IF NOT EXISTS idx_fact_sources_fact ON fact_sources (fact_id);
             CREATE INDEX IF NOT EXISTS idx_insight_facts_fact ON insight_facts (fact_id);
+            CREATE INDEX IF NOT EXISTS idx_profiles_user ON profiles (user_id);
         """)
 
     async def _migrate(self) -> None:
@@ -158,6 +168,23 @@ class SQLiteBackend(StorageBackend):
             await self._conn.execute("ALTER TABLE facts ADD COLUMN mentions INTEGER DEFAULT 1")
         if "event_time" not in cols:
             await self._conn.execute("ALTER TABLE facts ADD COLUMN event_time TEXT")
+        async with self._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='profiles'"
+        ) as cursor:
+            if not await cursor.fetchone():
+                await self._conn.execute("""
+                    CREATE TABLE IF NOT EXISTS profiles (
+                        user_id  TEXT NOT NULL,
+                        agent_id TEXT,
+                        content  TEXT NOT NULL DEFAULT '',
+                        session_count_at_update INTEGER DEFAULT 0,
+                        updated_at TEXT DEFAULT (datetime('now')),
+                        PRIMARY KEY (user_id, COALESCE(agent_id, ''))
+                    )
+                """)
+                await self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_profiles_user ON profiles (user_id)"
+                )
 
     async def close(self) -> None:
         if self._conn:
@@ -606,7 +633,7 @@ class SQLiteBackend(StorageBackend):
 
     async def delete_user(self, user_id: str) -> int:
         count = 0
-        for table in ["sentences", "facts", "insights", "sessions"]:
+        for table in ["sentences", "facts", "insights", "sessions", "profiles"]:
             async with self._conn.execute(
                 f"SELECT COUNT(*) FROM {table} WHERE user_id = ?", (user_id,)
             ) as cursor:
@@ -615,6 +642,34 @@ class SQLiteBackend(StorageBackend):
             await self._conn.execute(f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
         await self._conn.commit()
         return count
+
+    # ── Profiles ──
+
+    async def get_profile(self, user_id: str, agent_id: str | None = None) -> str | None:
+        async with self._conn.execute(
+            "SELECT content FROM profiles WHERE user_id = ? AND COALESCE(agent_id, '') = COALESCE(?, '')",
+            (user_id, agent_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return row[0] if row else None
+
+    async def set_profile(
+        self,
+        user_id: str,
+        content: str,
+        agent_id: str | None = None,
+        session_count: int = 0,
+    ) -> None:
+        await self._conn.execute(
+            """INSERT INTO profiles (user_id, agent_id, content, session_count_at_update, updated_at)
+               VALUES (?, ?, ?, ?, datetime('now'))
+               ON CONFLICT (user_id, COALESCE(agent_id, ''))
+               DO UPDATE SET content = excluded.content,
+                             session_count_at_update = excluded.session_count_at_update,
+                             updated_at = datetime('now')""",
+            (user_id, agent_id, content, session_count),
+        )
+        await self._conn.commit()
 
 
 def _parse_dt(val: Any) -> datetime:

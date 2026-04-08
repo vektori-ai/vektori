@@ -112,6 +112,26 @@ class PostgresBackend(StorageBackend):
             )
         if "mentions" not in existing:
             await conn.execute("ALTER TABLE facts ADD COLUMN mentions INTEGER DEFAULT 1")
+        tables = {
+            row["tablename"]
+            for row in await conn.fetch(
+                "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+            )
+        }
+        if "profiles" not in tables:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS profiles (
+                    user_id  TEXT NOT NULL,
+                    agent_id TEXT,
+                    content  TEXT NOT NULL DEFAULT '',
+                    session_count_at_update INTEGER DEFAULT 0,
+                    updated_at TIMESTAMPTZ DEFAULT now(),
+                    PRIMARY KEY (user_id, COALESCE(agent_id, ''))
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_profiles_user ON profiles (user_id)"
+            )
 
     async def close(self) -> None:
         if self._pool:
@@ -787,6 +807,38 @@ class PostgresBackend(StorageBackend):
 
         return {"facts": facts, "sentences": sentences}
 
+    # ── Profiles ───────────────────────────────────────────────────────────────
+
+    async def get_profile(self, user_id: str, agent_id: str | None = None) -> str | None:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT content FROM profiles WHERE user_id = $1 AND COALESCE(agent_id, '') = COALESCE($2, '')",
+                user_id,
+                agent_id,
+            )
+        return row["content"] if row else None
+
+    async def set_profile(
+        self,
+        user_id: str,
+        content: str,
+        agent_id: str | None = None,
+        session_count: int = 0,
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO profiles (user_id, agent_id, content, session_count_at_update)
+                   VALUES ($1, $2, $3, $4)
+                   ON CONFLICT (user_id, COALESCE(agent_id, ''))
+                   DO UPDATE SET content = excluded.content,
+                                 session_count_at_update = excluded.session_count_at_update,
+                                 updated_at = now()""",
+                user_id,
+                agent_id,
+                content,
+                session_count,
+            )
+
     # ── GDPR ───────────────────────────────────────────────────────────────────
 
     async def delete_user(self, user_id: str) -> int:
@@ -813,6 +865,7 @@ class PostgresBackend(StorageBackend):
                 await conn.execute("DELETE FROM facts    WHERE user_id = $1", user_id)
                 await conn.execute("DELETE FROM insights WHERE user_id = $1", user_id)
                 await conn.execute("DELETE FROM sessions WHERE user_id = $1", user_id)
+                await conn.execute("DELETE FROM profiles WHERE user_id = $1", user_id)
 
         logger.info("Deleted %d rows for user %s", total, user_id)
         return int(total)
