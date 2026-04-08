@@ -64,6 +64,25 @@ General:
 Return ONLY the JSON."""
 
 
+PROFILE_PROMPT = """You are maintaining a living profile document for a user based on facts extracted from their conversations.
+
+CURRENT PROFILE (may be empty):
+{current_profile}
+
+FACTS (most recent first):
+{facts_list}
+
+Update the profile to incorporate new information. Rules:
+- Sections: ## Identity, ## Preferences & Habits, ## Ongoing Goals, ## Key People
+- States (location, job, relationship status): overwrite when new info conflicts
+- Lists (hobbies, people, preferences): append new entries, no duplicates
+- Omit sections that have nothing to say
+- Total profile must stay under 600 tokens — prune the lowest-signal entries if needed
+- Do NOT include one-off queries, formatting requests, or minor transient details
+
+Return ONLY the updated markdown profile. No explanation, no preamble."""
+
+
 INSIGHTS_PROMPT = """You are writing episodic memory records. Given this conversation and the facts extracted from it, write a concise third-person narrative episode describing what happened.
 
 {session_date_line}CONVERSATION:
@@ -126,11 +145,13 @@ class FactExtractor:
         max_facts: int = 8,
         max_input_tokens: int = 4000,
         max_output_tokens: int = 8192,
+        profile_update_interval: int = 5,
     ) -> None:
         self.db = db
         self.embedder = embedder
         self.llm = llm
         self.max_facts = max_facts
+        self.profile_update_interval = profile_update_interval
         # ~4 chars/token → 4000 tokens ≈ 16k chars per chunk
         # Long conversations are chunked (not truncated) so facts are extracted
         # from the full history, not just the most recent window.
@@ -191,6 +212,14 @@ class FactExtractor:
                 )
             except Exception as e:
                 logger.warning("Insight extraction failed for session %s: %s", session_id, e)
+
+        if self.profile_update_interval > 0:
+            try:
+                session_count = await self.db.count_sessions(user_id, agent_id)
+                if session_count % self.profile_update_interval == 0:
+                    await self._update_profile(user_id, agent_id)
+            except Exception as e:
+                logger.warning("Profile update check failed for user %s: %s", user_id, e)
 
         logger.info(
             "Extraction complete for session %s: %d facts, %d insights",
@@ -608,6 +637,27 @@ class FactExtractor:
                 logger.warning("Failed to insert insight '%s': %s", text, e)
 
         return insights_created
+
+    async def _update_profile(self, user_id: str, agent_id: str | None) -> None:
+        """Incrementally patch the user profile from current active facts via LLM."""
+        current = await self.db.get_profile(user_id, agent_id) or ""
+        facts = await self.db.get_active_facts(user_id, agent_id, limit=50)
+        if not facts and not current:
+            return
+        facts_list = "\n".join(f"- {f['text']}" for f in facts)
+        prompt = PROFILE_PROMPT.format(
+            current_profile=current or "(empty)",
+            facts_list=facts_list or "(none)",
+        )
+        try:
+            response = await self.llm.generate(prompt, max_tokens=1024)
+            content = response.strip()
+            if content:
+                session_count = await self.db.count_sessions(user_id, agent_id)
+                await self.db.set_profile(user_id, content, agent_id, session_count)
+                logger.debug("Profile updated for user %s", user_id)
+        except Exception as e:
+            logger.warning("Profile LLM call failed for user %s: %s", user_id, e)
 
     async def _link_to_source_sentences(
         self,

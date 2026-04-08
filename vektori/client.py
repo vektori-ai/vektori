@@ -39,6 +39,7 @@ class Vektori:
         context_window: int = 3,
         temporal_decay_rate: float = 0.001,
         async_extraction: bool = True,
+        profile_update_interval: int = 5,
         config: VektoriConfig | None = None,
     ) -> None:
         if config is not None:
@@ -56,6 +57,7 @@ class Vektori:
                 context_window=context_window,
                 temporal_decay_rate=temporal_decay_rate,
                 async_extraction=async_extraction,
+                profile_update_interval=profile_update_interval,
             )
 
         self._initialized = False
@@ -89,6 +91,7 @@ class Vektori:
             max_facts=self.config.max_facts,
             max_input_tokens=self.config.max_extraction_input_tokens,
             max_output_tokens=self.config.max_extraction_output_tokens,
+            profile_update_interval=self.config.profile_update_interval,
         )
         self._search = SearchPipeline(
             db=self.db,
@@ -242,6 +245,22 @@ class Vektori:
         """Get the full supersession chain for a fact (conflict/change history)."""
         await self._ensure_initialized()
         return await self.db.get_supersession_chain(fact_id)
+
+    async def get_profile(
+        self,
+        user_id: str,
+        agent_id: str | None = None,
+    ) -> str | None:
+        """Return the user's living profile as a markdown string, or None if not built yet.
+
+        The profile is a concise always-in-context document (~600 tokens) that captures
+        who the user is — identity, preferences, goals, key people. It is updated
+        automatically every N sessions (configurable via profile_update_interval).
+
+        Typical usage: prepend the profile to your LLM's system or user prompt.
+        """
+        await self._ensure_initialized()
+        return await self.db.get_profile(user_id, agent_id)
 
     async def delete_user(self, user_id: str) -> int:
         """Delete all data for a user (GDPR). Returns number of rows deleted."""

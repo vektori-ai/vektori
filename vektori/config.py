@@ -62,3 +62,6 @@ class VektoriConfig:
 
     # Processing
     async_extraction: bool = True  # False = block until facts extracted (slower but simpler)
+
+    # Profile update — every N sessions, run an LLM pass to merge new facts into the user profile
+    profile_update_interval: int = 5  # set to 0 to disable
