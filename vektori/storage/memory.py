@@ -34,6 +34,7 @@ class MemoryBackend(StorageBackend):
         self._sessions: dict[str, dict[str, Any]] = {}
         self._insights: dict[str, dict[str, Any]] = {}
         self._insight_facts: list[dict[str, str]] = []  # [{insight_id, fact_id}]
+        self._profiles: dict[tuple[str, str | None], str] = {}  # (user_id, agent_id) → content
 
     async def initialize(self) -> None:
         pass  # Nothing to do
@@ -428,4 +429,22 @@ class MemoryBackend(StorageBackend):
             for k in keys:
                 del store[k]
                 count += 1
+        profile_keys = [k for k in self._profiles if k[0] == user_id]
+        for k in profile_keys:
+            del self._profiles[k]
+            count += 1
         return count
+
+    # ── Profiles ──
+
+    async def get_profile(self, user_id: str, agent_id: str | None = None) -> str | None:
+        return self._profiles.get((user_id, agent_id))
+
+    async def set_profile(
+        self,
+        user_id: str,
+        content: str,
+        agent_id: str | None = None,
+        session_count: int = 0,
+    ) -> None:
+        self._profiles[(user_id, agent_id)] = content
