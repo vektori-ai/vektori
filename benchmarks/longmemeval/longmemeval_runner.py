@@ -365,6 +365,10 @@ class LongMemEvalBenchmark:
 
         context = self._format_retrieved_context(search_results)
 
+        profile = await self.vektori_client.get_profile(user_id)
+        if profile:
+            context = f"## User Profile\n{profile}\n\n{context}"
+
         qa_t0 = time.perf_counter()
         answer = await self._generate_answer(question, context, question_type, question_date)
         qa_ms = (time.perf_counter() - qa_t0) * 1000
