@@ -47,6 +47,8 @@ ASSISTANT facts (source: "assistant"):
   BAD: "Assistant provided a list of language learning apps."
   GOOD: "Assistant recommended Memrise (uses mnemonics), Duolingo (gamified), and Babbel for language learning."
 - Do NOT extract generic filler ("Sure, I can help", "Great question", "Let me know if you need anything")
+- Do NOT extract opinions about the user, affirmations, or personal assistant chatter ("Assistant believes the user would be a great counselor", "Assistant thinks the user is very capable")
+- A valid assistant fact MUST contain at least one: named entity, specific quantity, or concrete recommendation. If it contains none of these, skip it.
 - confidence: always 1.0
 - source_quotes: verbatim text from the ASSISTANT turn
 
