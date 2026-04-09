@@ -181,6 +181,16 @@ More examples in [`/examples`](examples/):
 - [`quickstart.py`](examples/quickstart.py) — fully local, zero API keys (Ollama)
 - [`openai_agent.py`](examples/openai_agent.py) — OpenAI agent loop
 
+## Memory Explorer (local debug UI)
+
+Browse stored graph data for a user (facts, episodes, sentences, links, and profile summary):
+
+```bash
+python -m tools.memory_explorer.server
+```
+
+Then open `http://127.0.0.1:8765`.
+
 ---
 
 ## Storage Backends
