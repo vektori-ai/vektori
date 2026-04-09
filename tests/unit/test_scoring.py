@@ -1,6 +1,6 @@
 """Unit tests for fact scoring."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from vektori.retrieval.scoring import score_and_rank
 
@@ -11,7 +11,7 @@ def _fact(distance=0.1, confidence=1.0, days_ago=0):
         "text": "test fact",
         "distance": distance,
         "confidence": confidence,
-        "created_at": datetime.utcnow() - timedelta(days=days_ago),
+        "created_at": datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days_ago),
     }
 
 

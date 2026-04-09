@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -54,7 +54,7 @@ def score_and_rank(
     if not facts:
         return []
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
 
     # Pre-compute max mentions for normalisation — only over this result set.
     # We don't want a globally popular fact to dominate locally irrelevant results.

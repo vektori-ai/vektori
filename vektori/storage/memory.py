@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from vektori.storage.base import StorageBackend
@@ -17,6 +17,11 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     if norm_a == 0 or norm_b == 0:
         return 0.0
     return dot / (norm_a * norm_b)
+
+
+def _utcnow_naive() -> datetime:
+    """Return current UTC timestamp as naive datetime for storage parity."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class MemoryBackend(StorageBackend):
@@ -63,7 +68,7 @@ class MemoryBackend(StorageBackend):
                     "agent_id": agent_id,
                     "mentions": 1,
                     "is_active": True,
-                    "created_at": datetime.utcnow(),
+                    "created_at": _utcnow_naive(),
                 }
                 count += 1
         return count
@@ -158,7 +163,7 @@ class MemoryBackend(StorageBackend):
             "is_active": True,
             "metadata": metadata or {},
             "event_time": event_time,
-            "created_at": datetime.utcnow(),
+            "created_at": _utcnow_naive(),
         }
         return fact_id
 
@@ -302,7 +307,7 @@ class MemoryBackend(StorageBackend):
                 "agent_id": agent_id,
                 "session_id": session_id,
                 "is_active": True,
-                "created_at": datetime.utcnow(),
+                "created_at": _utcnow_naive(),
             }
         return episode_id
 
@@ -388,7 +393,7 @@ class MemoryBackend(StorageBackend):
             "user_id": user_id,
             "agent_id": agent_id,
             "metadata": metadata or {},
-            "started_at": started_at or datetime.utcnow(),
+            "started_at": started_at or _utcnow_naive(),
         }
 
     async def get_session(

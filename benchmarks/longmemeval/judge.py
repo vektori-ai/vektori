@@ -67,6 +67,7 @@ class JudgeConfig:
     n: int = 5
     output_dir: str = "benchmark_results"
     seed: int = 42
+    qids: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.model:
@@ -125,9 +126,27 @@ Rules:
     "RETRIEVAL_FAILURE" — if verdict is WRONG/ABSTAINED and context_has_answer is false
 - For temporal-reasoning questions: off-by-one errors in day/time counts = PARTIALLY_CORRECT
 - For knowledge-update questions: accept updated answer if it matches expected
+- For questions where QUESTION TYPE ends with "_abs": the question is designed to be unanswerable. If the model's answer is an abstention ("I don't have that information", "I cannot answer", "not enough information", etc.), verdict must be CORRECT — the model correctly identified the question as unanswerable. The expected_answer text is only an example explanation, not a required phrase to match.
 
 Respond with exactly this JSON structure:
 {{"verdict": "CORRECT|PARTIALLY_CORRECT|WRONG|ABSTAINED", "context_has_answer": true|false, "failure_mode": null|"QA_FAILURE"|"RETRIEVAL_FAILURE", "explanation": "one sentence"}}"""
+
+
+ABSTENTION_PHRASES = (
+    "i don't have that information",
+    "i do not have that information",
+    "i don't have enough information",
+    "i do not have enough information",
+    "i cannot answer",
+    "i can't answer",
+    "cannot answer this",
+    "not enough information",
+    "information not available",
+    "i don't know",
+    "i do not know",
+    "not mentioned",
+    "never mentioned",
+)
 
 
 def build_prompt(entry: dict[str, Any]) -> str:
@@ -138,6 +157,59 @@ def build_prompt(entry: dict[str, Any]) -> str:
         expected_answer=entry.get("expected_answer", ""),
         retrieved_context=entry.get("retrieved_context", "(none)"),
     )
+
+
+def is_abs_question_type(question_type: str | None) -> bool:
+    return bool(question_type and question_type.endswith("_abs"))
+
+
+def is_abstention_answer(answer: str | None) -> bool:
+    if not answer:
+        return False
+    normalized = re.sub(r"\s+", " ", answer.lower()).strip()
+    return any(phrase in normalized for phrase in ABSTENTION_PHRASES)
+
+
+def _parse_qid_inputs(qids_arg: str, qids_file: str) -> list[str]:
+    qids: list[str] = []
+
+    if qids_arg:
+        qids.extend(part.strip() for part in qids_arg.split(",") if part.strip())
+
+    if qids_file:
+        path = Path(qids_file)
+        if not path.exists():
+            raise ValueError(f"QID file not found: {path}")
+        for line in path.read_text(encoding="utf-8").splitlines():
+            candidate = line.split("#", 1)[0].strip()
+            if candidate:
+                qids.append(candidate)
+
+    # Deduplicate while preserving first-seen order
+    return list(dict.fromkeys(qids))
+
+
+def _select_entries(
+    completed_entries: dict[str, dict[str, Any]],
+    *,
+    n: int,
+    seed: int,
+    qids: list[str] | None,
+) -> list[dict[str, Any]]:
+    if not completed_entries:
+        raise ValueError("no completed entries in checkpoint")
+
+    if qids:
+        missing = [qid for qid in qids if qid not in completed_entries]
+        if missing:
+            preview = ", ".join(missing[:5])
+            suffix = "..." if len(missing) > 5 else ""
+            raise ValueError(f"requested QIDs not found in checkpoint: {preview}{suffix}")
+        return [completed_entries[qid] for qid in qids]
+
+    all_entries = list(completed_entries.values())
+    rng = random.Random(seed)
+    return rng.sample(all_entries, min(n, len(all_entries)))
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +347,14 @@ async def evaluate_entry(
     prompt = build_prompt(entry)
     raw, latency_ms = await call_judge(prompt, provider, model)
     verdict = parse_verdict(raw, latency_ms)
+
+    if is_abs_question_type(entry.get("question_type")) and is_abstention_answer(
+        entry.get("hypothesis")
+    ):
+        verdict.verdict = "CORRECT"
+        verdict.context_has_answer = False
+        verdict.failure_mode = None
+
     return {
         **entry,
         "verdict": verdict.verdict,
@@ -387,17 +467,24 @@ async def run(config: JudgeConfig) -> list[dict[str, Any]]:
         sys.exit(1)
 
     raw_data = json.loads(cp_path.read_text(encoding="utf-8"))
-    all_entries = list(raw_data.get("completed", {}).values())
-    if not all_entries:
-        print("ERROR: no completed entries in checkpoint", file=sys.stderr)
+    completed_entries = raw_data.get("completed", {})
+
+    try:
+        sample = _select_entries(
+            completed_entries,
+            n=config.n,
+            seed=config.seed,
+            qids=config.qids,
+        )
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # Sample
-    rng = random.Random(config.seed)
-    sample = rng.sample(all_entries, min(config.n, len(all_entries)))
-
     print(f"\n{_BOLD}LLM-as-a-Judge  |  provider={config.provider}  model={config.model}{_RESET}")
-    print(f"Evaluating {len(sample)} questions from {cp_path.name}\n")
+    if config.qids:
+        print(f"Evaluating {len(sample)} questions from {cp_path.name} (explicit QIDs)\n")
+    else:
+        print(f"Evaluating {len(sample)} questions from {cp_path.name}\n")
 
     results: list[dict[str, Any]] = []
     t_start = time.perf_counter()
@@ -483,7 +570,22 @@ def main() -> None:
         default="benchmark_results",
         help="Directory for output JSON (default: benchmark_results)",
     )
+    parser.add_argument(
+        "--qids",
+        default="",
+        help="Comma-separated question IDs to evaluate (disables random sampling)",
+    )
+    parser.add_argument(
+        "--qids-file",
+        default="",
+        help="Path to file containing question IDs (one per line; '#' comments allowed)",
+    )
     args = parser.parse_args()
+
+    try:
+        qids = _parse_qid_inputs(args.qids, args.qids_file)
+    except ValueError as e:
+        parser.error(str(e))
 
     config = JudgeConfig(
         provider=args.provider,
@@ -492,6 +594,7 @@ def main() -> None:
         n=args.n,
         seed=args.seed,
         output_dir=args.output_dir,
+        qids=qids,
     )
 
     asyncio.run(run(config))

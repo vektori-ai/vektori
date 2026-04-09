@@ -6,7 +6,7 @@ import json
 import logging
 import math
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -625,4 +625,4 @@ def _parse_dt(val: Any) -> datetime:
             return datetime.fromisoformat(val)
         except ValueError:
             pass
-    return datetime.utcnow()
+    return datetime.now(timezone.utc).replace(tzinfo=None)
