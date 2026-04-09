@@ -348,8 +348,11 @@ async def evaluate_entry(
     raw, latency_ms = await call_judge(prompt, provider, model)
     verdict = parse_verdict(raw, latency_ms)
 
-    if is_abs_question_type(entry.get("question_type")) and is_abstention_answer(entry.get("hypothesis")):
+    if is_abs_question_type(entry.get("question_type")) and is_abstention_answer(
+        entry.get("hypothesis")
+    ):
         verdict.verdict = "CORRECT"
+        verdict.context_has_answer = False
         verdict.failure_mode = None
 
     return {

@@ -6,7 +6,7 @@ contains temporal language like "last week", "3 months ago", "in 2023", etc.
 Design:
 - Regex-based, no external dependencies, fast.
 - Returns a TemporalWindow (after_date, before_date) or None if no signal found.
-- Reference date defaults to utcnow(); override for deterministic testing.
+- Reference date defaults to current UTC time (naive datetime); override for deterministic testing.
 - "recently" / "lately" → 7-day window (conservative, avoids false negatives).
 - Relative expressions ("last N days") anchor to reference_date.
 - Explicit year/month expressions ("in January", "in 2023") produce month/year ranges.

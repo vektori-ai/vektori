@@ -48,6 +48,29 @@ def test_abs_question_with_abstention_is_forced_correct(monkeypatch):
     assert result["raw_judge_response"] == _judge_response("WRONG")
 
 
+def test_abs_question_without_abstention_not_promoted(monkeypatch):
+    async def fake_call_judge(
+        prompt: str,
+        provider: str,
+        model: str,
+        lmstudio_base_url: str = "",
+    ):
+        return _judge_response("WRONG"), 9.4
+
+    monkeypatch.setattr(judge, "call_judge", fake_call_judge)
+
+    result = asyncio.run(
+        judge.evaluate_entry(
+            _entry("single-session_abs", "The launch date was April 9, 2026."),
+            provider="lmstudio",
+            model="meta-llama-3.1-8b-instruct",
+        )
+    )
+
+    assert result["verdict"] == "WRONG"
+    assert result["failure_mode"] == "RETRIEVAL_FAILURE"
+
+
 def test_non_abs_question_abstention_is_not_promoted(monkeypatch):
     async def fake_call_judge(prompt: str, provider: str, model: str, lmstudio_base_url: str = ""):
         return _judge_response("ABSTAINED"), 8.5
