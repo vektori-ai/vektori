@@ -71,6 +71,7 @@ async def create_storage(config: VektoriConfig) -> StorageBackend:
         url = database_url or "http://localhost:6333"
         backend = QdrantBackend(
             url=url,
+            api_key=config.qdrant_api_key,
             embedding_dim=config.embedding_dimension,
         )
 

@@ -39,6 +39,7 @@ class Vektori:
         context_window: int = 3,
         temporal_decay_rate: float = 0.001,
         async_extraction: bool = True,
+        qdrant_api_key: str | None = None,
         config: VektoriConfig | None = None,
     ) -> None:
         if config is not None:
@@ -56,6 +57,7 @@ class Vektori:
                 context_window=context_window,
                 temporal_decay_rate=temporal_decay_rate,
                 async_extraction=async_extraction,
+                qdrant_api_key=qdrant_api_key,
             )
 
         self._initialized = False

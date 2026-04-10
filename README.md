@@ -25,7 +25,7 @@ EPISODE LAYER (L1)   <- patterns auto-discovered via graph traversal.
 SENTENCE LAYER (L2)  <- raw conversation. Sequential NEXT edges. The full story.
 ```
 
-Search hits Facts, graph discovers Episodes, traces back to source Sentences. One database, Postgres or SQLite. No Neo4j, no Qdrant, no infra drama.
+Search hits Facts, graph discovers Episodes, traces back to source Sentences. SQLite by default — swap to Postgres, Neo4j, or Qdrant when you're ready to scale.
 
 ---
 
@@ -42,7 +42,10 @@ Still improving. Run your own in [`/benchmarks`](benchmarks/).
 ## Install
 
 ```bash
-pip install vektori
+pip install vektori                      # SQLite + Postgres
+pip install 'vektori[neo4j]'             # + Neo4j support
+pip install 'vektori[qdrant]'            # + Qdrant support
+pip install 'vektori[neo4j,qdrant]'      # all backends
 ```
 
 No Docker, no external services. SQLite by default.
@@ -192,16 +195,53 @@ v = Vektori()
 # PostgreSQL + pgvector — production scale
 v = Vektori(database_url="postgresql://localhost:5432/vektori")
 
+# Neo4j — native graph traversal for Episode layer
+v = Vektori(
+    storage_backend="neo4j",
+    database_url="bolt://localhost:7687",
+    embedding_dimension=1024,   # must match your embedding model
+)
+
+# Qdrant — dedicated vector DB, cloud-ready
+v = Vektori(
+    storage_backend="qdrant",
+    database_url="http://localhost:6333",
+    embedding_dimension=1024,
+)
+
+# Qdrant Cloud
+v = Vektori(
+    storage_backend="qdrant",
+    database_url="https://your-cluster.qdrant.io",
+    qdrant_api_key="your-api-key",
+    embedding_dimension=1024,
+)
+
 # In-memory — tests / CI
 v = Vektori(storage_backend="memory")
 ```
 
-**Postgres via Docker:**
+**All backends via Docker:**
 ```bash
 git clone https://github.com/vektori-ai/vektori
 cd vektori
-docker compose up -d
+docker compose up -d                 # starts Postgres, Neo4j, and Qdrant
+
+# Postgres
 DATABASE_URL=postgresql://vektori:vektori@localhost:5432/vektori python examples/quickstart_postgres.py
+
+# Neo4j
+VEKTORI_STORAGE_BACKEND=neo4j VEKTORI_DATABASE_URL=bolt://localhost:7687 vektori add "I prefer dark mode" --user-id u1
+
+# Qdrant
+VEKTORI_STORAGE_BACKEND=qdrant VEKTORI_DATABASE_URL=http://localhost:6333 vektori add "I prefer dark mode" --user-id u1
+```
+
+**CLI storage flags:**
+```bash
+vektori config --storage-backend qdrant --database-url http://localhost:6333
+vektori add "my note" --user-id u1
+vektori search "preferences" --user-id u1
 ```
 
 ---

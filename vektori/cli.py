@@ -25,6 +25,18 @@ _EMBEDDING_HELP = (
     "Embedding model. e.g. 'sentence-transformers:all-MiniLM-L6-v2' (local), "
     "'openai:text-embedding-3-small' [env: VEKTORI_EMBEDDING_MODEL]"
 )
+_BACKEND_HELP = (
+    "Storage backend: sqlite (default), postgres, memory, neo4j, qdrant. "
+    "[env: VEKTORI_STORAGE_BACKEND]"
+)
+_DATABASE_URL_HELP = (
+    "Connection URL for the backend. "
+    "Postgres: postgresql://user:pw@host/db  "
+    "Neo4j: bolt://host:7687  "
+    "Qdrant: http://host:6333  "
+    "[env: VEKTORI_DATABASE_URL]"
+)
+_QDRANT_API_KEY_HELP = "Qdrant Cloud API key. [env: QDRANT_API_KEY]"
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +105,24 @@ def _silence_litellm() -> None:
         pass
 
 
-def _client(extraction_model: str, embedding_model: str, sync_extraction: bool = True):
+def _default_storage_backend() -> str:
+    cfg = _load_config()
+    return os.environ.get("VEKTORI_STORAGE_BACKEND") or cfg.get("storage_backend") or "sqlite"
+
+
+def _default_database_url() -> str | None:
+    cfg = _load_config()
+    return os.environ.get("VEKTORI_DATABASE_URL") or cfg.get("database_url")
+
+
+def _client(
+    extraction_model: str,
+    embedding_model: str,
+    sync_extraction: bool = True,
+    storage_backend: str | None = None,
+    database_url: str | None = None,
+    qdrant_api_key: str | None = None,
+):
     from vektori.client import Vektori
     from vektori.config import VektoriConfig
 
@@ -103,6 +132,9 @@ def _client(extraction_model: str, embedding_model: str, sync_extraction: bool =
         embedding_model=embedding_model,
         async_extraction=not sync_extraction,
         enable_retrieval_gate=False,
+        storage_backend=storage_backend or _default_storage_backend(),
+        database_url=database_url or _default_database_url(),
+        qdrant_api_key=qdrant_api_key or os.environ.get("QDRANT_API_KEY"),
     )
     return Vektori(config=cfg)
 
@@ -125,15 +157,19 @@ def config(
     embedding_model: str | None = typer.Option(
         None, "--embedding-model", "-e", help=_EMBEDDING_HELP
     ),
+    storage_backend: str | None = typer.Option(None, "--storage-backend", help=_BACKEND_HELP),
+    database_url: str | None = typer.Option(None, "--database-url", help=_DATABASE_URL_HELP),
     show: bool = typer.Option(False, "--show", help="Print current config."),
     reset: bool = typer.Option(False, "--reset", help="Reset to defaults."),
 ) -> None:
-    """Set default models so you don't have to pass --extraction-model / --embedding-model every time.
+    """Set default models and storage so you don't have to pass flags every time.
 
     \b
     Examples:
       vektori config --extraction-model "litellm:groq/llama-3.3-70b-versatile"
       vektori config --embedding-model "sentence-transformers:all-MiniLM-L6-v2"
+      vektori config --storage-backend qdrant --database-url http://localhost:6333
+      vektori config --storage-backend neo4j --database-url "bolt://localhost:7687"
       vektori config --show
     """
     if reset:
@@ -148,15 +184,23 @@ def config(
         cfg["extraction_model"] = extraction_model
     if embedding_model:
         cfg["embedding_model"] = embedding_model
+    if storage_backend:
+        cfg["storage_backend"] = storage_backend
+    if database_url:
+        cfg["database_url"] = database_url
 
-    if extraction_model or embedding_model:
+    if extraction_model or embedding_model or storage_backend or database_url:
         _save_config(cfg)
         typer.echo(f"Saved to {_CONFIG_PATH}")
 
-    if show or not (extraction_model or embedding_model or reset):
-        typer.echo(f"Config file : {_CONFIG_PATH}")
-        typer.echo(f"extraction  : {_default_extraction()}")
-        typer.echo(f"embedding   : {_default_embedding()}")
+    if show or not (
+        extraction_model or embedding_model or storage_backend or database_url or reset
+    ):
+        typer.echo(f"Config file     : {_CONFIG_PATH}")
+        typer.echo(f"extraction      : {_default_extraction()}")
+        typer.echo(f"embedding       : {_default_embedding()}")
+        typer.echo(f"storage_backend : {_default_storage_backend()}")
+        typer.echo(f"database_url    : {_default_database_url() or '(default)'}")
 
 
 # ---------------------------------------------------------------------------
@@ -172,15 +216,30 @@ def init(
     embedding_model: str | None = typer.Option(
         None, "--embedding-model", "-e", envvar="VEKTORI_EMBEDDING_MODEL", help=_EMBEDDING_HELP
     ),
+    storage_backend: str | None = typer.Option(
+        None, "--storage-backend", envvar="VEKTORI_STORAGE_BACKEND", help=_BACKEND_HELP
+    ),
+    database_url: str | None = typer.Option(
+        None, "--database-url", envvar="VEKTORI_DATABASE_URL", help=_DATABASE_URL_HELP
+    ),
+    qdrant_api_key: str | None = typer.Option(
+        None, "--qdrant-api-key", envvar="QDRANT_API_KEY", help=_QDRANT_API_KEY_HELP
+    ),
 ) -> None:
-    """Initialise local SQLite storage."""
+    """Initialise storage backend (SQLite by default)."""
     em = extraction_model or _default_extraction()
     eb = embedding_model or _default_embedding()
     _warn_openai(em, "--extraction-model")
     _warn_openai(eb, "--embedding-model")
 
     async def _run() -> None:
-        v = _client(em, eb)
+        v = _client(
+            em,
+            eb,
+            storage_backend=storage_backend,
+            database_url=database_url,
+            qdrant_api_key=qdrant_api_key,
+        )
         await v._ensure_initialized()
         await v.close()
 
@@ -206,6 +265,15 @@ def add(
     embedding_model: str | None = typer.Option(
         None, "--embedding-model", "-e", envvar="VEKTORI_EMBEDDING_MODEL", help=_EMBEDDING_HELP
     ),
+    storage_backend: str | None = typer.Option(
+        None, "--storage-backend", envvar="VEKTORI_STORAGE_BACKEND", help=_BACKEND_HELP
+    ),
+    database_url: str | None = typer.Option(
+        None, "--database-url", envvar="VEKTORI_DATABASE_URL", help=_DATABASE_URL_HELP
+    ),
+    qdrant_api_key: str | None = typer.Option(
+        None, "--qdrant-api-key", envvar="QDRANT_API_KEY", help=_QDRANT_API_KEY_HELP
+    ),
     no_extraction: bool = typer.Option(
         False,
         "--no-extraction",
@@ -223,7 +291,14 @@ def add(
     messages = [{"role": "user", "content": text}]
 
     async def _run() -> dict:
-        v = _client(em, eb, sync_extraction=not no_extraction)
+        v = _client(
+            em,
+            eb,
+            sync_extraction=not no_extraction,
+            storage_backend=storage_backend,
+            database_url=database_url,
+            qdrant_api_key=qdrant_api_key,
+        )
         try:
             result = await v.add(messages, session_id=sid, user_id=user_id)
         finally:
@@ -261,6 +336,15 @@ def search(
     embedding_model: str | None = typer.Option(
         None, "--embedding-model", "-e", envvar="VEKTORI_EMBEDDING_MODEL", help=_EMBEDDING_HELP
     ),
+    storage_backend: str | None = typer.Option(
+        None, "--storage-backend", envvar="VEKTORI_STORAGE_BACKEND", help=_BACKEND_HELP
+    ),
+    database_url: str | None = typer.Option(
+        None, "--database-url", envvar="VEKTORI_DATABASE_URL", help=_DATABASE_URL_HELP
+    ),
+    qdrant_api_key: str | None = typer.Option(
+        None, "--qdrant-api-key", envvar="QDRANT_API_KEY", help=_QDRANT_API_KEY_HELP
+    ),
     expand: bool = typer.Option(
         False, "--expand", help="Use LLM to generate query variants before searching."
     ),
@@ -272,7 +356,13 @@ def search(
     _warn_openai(eb, "--embedding-model")
 
     async def _run() -> dict:
-        v = _client(em, eb)
+        v = _client(
+            em,
+            eb,
+            storage_backend=storage_backend,
+            database_url=database_url,
+            qdrant_api_key=qdrant_api_key,
+        )
         try:
             result = await v.search(query, user_id=user_id, top_k=top_k, depth=depth, expand=expand)
         finally:
@@ -320,13 +410,28 @@ def list_memories(
     embedding_model: str | None = typer.Option(
         None, "--embedding-model", "-e", envvar="VEKTORI_EMBEDDING_MODEL", help=_EMBEDDING_HELP
     ),
+    storage_backend: str | None = typer.Option(
+        None, "--storage-backend", envvar="VEKTORI_STORAGE_BACKEND", help=_BACKEND_HELP
+    ),
+    database_url: str | None = typer.Option(
+        None, "--database-url", envvar="VEKTORI_DATABASE_URL", help=_DATABASE_URL_HELP
+    ),
+    qdrant_api_key: str | None = typer.Option(
+        None, "--qdrant-api-key", envvar="QDRANT_API_KEY", help=_QDRANT_API_KEY_HELP
+    ),
     as_json: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
     """List all active memories (extracted facts) for a user."""
     eb = embedding_model or _default_embedding()
 
     async def _run() -> list:
-        v = _client(_default_extraction(), eb)
+        v = _client(
+            _default_extraction(),
+            eb,
+            storage_backend=storage_backend,
+            database_url=database_url,
+            qdrant_api_key=qdrant_api_key,
+        )
         try:
             facts = await v.get_facts(user_id=user_id)
         finally:
@@ -356,6 +461,15 @@ def list_memories(
 def delete(
     user_id: str = typer.Option(..., "--user-id", "-u", envvar="VEKTORI_USER_ID", help="User ID."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt."),
+    storage_backend: str | None = typer.Option(
+        None, "--storage-backend", envvar="VEKTORI_STORAGE_BACKEND", help=_BACKEND_HELP
+    ),
+    database_url: str | None = typer.Option(
+        None, "--database-url", envvar="VEKTORI_DATABASE_URL", help=_DATABASE_URL_HELP
+    ),
+    qdrant_api_key: str | None = typer.Option(
+        None, "--qdrant-api-key", envvar="QDRANT_API_KEY", help=_QDRANT_API_KEY_HELP
+    ),
     as_json: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
     """Delete all memories for a user."""
@@ -363,7 +477,13 @@ def delete(
         typer.confirm(f"Delete ALL memories for user '{user_id}'?", abort=True)
 
     async def _run() -> int:
-        v = _client(_default_extraction(), _default_embedding())
+        v = _client(
+            _default_extraction(),
+            _default_embedding(),
+            storage_backend=storage_backend,
+            database_url=database_url,
+            qdrant_api_key=qdrant_api_key,
+        )
         try:
             n = await v.delete_user(user_id=user_id)
         finally:
@@ -395,6 +515,15 @@ def remember(
     embedding_model: str | None = typer.Option(
         None, "--embedding-model", "-e", envvar="VEKTORI_EMBEDDING_MODEL", help=_EMBEDDING_HELP
     ),
+    storage_backend: str | None = typer.Option(
+        None, "--storage-backend", envvar="VEKTORI_STORAGE_BACKEND", help=_BACKEND_HELP
+    ),
+    database_url: str | None = typer.Option(
+        None, "--database-url", envvar="VEKTORI_DATABASE_URL", help=_DATABASE_URL_HELP
+    ),
+    qdrant_api_key: str | None = typer.Option(
+        None, "--qdrant-api-key", envvar="QDRANT_API_KEY", help=_QDRANT_API_KEY_HELP
+    ),
     as_json: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
     """Remember something. Alias for `add` — reads naturally in agent prompts."""
@@ -405,7 +534,13 @@ def remember(
     messages = [{"role": "user", "content": text}]
 
     async def _run() -> dict:
-        v = _client(em, eb)
+        v = _client(
+            em,
+            eb,
+            storage_backend=storage_backend,
+            database_url=database_url,
+            qdrant_api_key=qdrant_api_key,
+        )
         try:
             result = await v.add(messages, session_id=sid, user_id=user_id)
         finally:
@@ -442,6 +577,15 @@ def recall(
     embedding_model: str | None = typer.Option(
         None, "--embedding-model", "-e", envvar="VEKTORI_EMBEDDING_MODEL", help=_EMBEDDING_HELP
     ),
+    storage_backend: str | None = typer.Option(
+        None, "--storage-backend", envvar="VEKTORI_STORAGE_BACKEND", help=_BACKEND_HELP
+    ),
+    database_url: str | None = typer.Option(
+        None, "--database-url", envvar="VEKTORI_DATABASE_URL", help=_DATABASE_URL_HELP
+    ),
+    qdrant_api_key: str | None = typer.Option(
+        None, "--qdrant-api-key", envvar="QDRANT_API_KEY", help=_QDRANT_API_KEY_HELP
+    ),
     as_json: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
     """Recall memories. Alias for `search` — reads naturally in agent prompts."""
@@ -449,7 +593,13 @@ def recall(
     eb = embedding_model or _default_embedding()
 
     async def _run() -> dict:
-        v = _client(em, eb)
+        v = _client(
+            em,
+            eb,
+            storage_backend=storage_backend,
+            database_url=database_url,
+            qdrant_api_key=qdrant_api_key,
+        )
         try:
             result = await v.search(query, user_id=user_id, top_k=top_k, depth="l1")
         finally:
@@ -502,12 +652,27 @@ def recall(
 @app.command()
 def stats(
     user_id: str = typer.Option(..., "--user-id", "-u", envvar="VEKTORI_USER_ID", help="User ID."),
+    storage_backend: str | None = typer.Option(
+        None, "--storage-backend", envvar="VEKTORI_STORAGE_BACKEND", help=_BACKEND_HELP
+    ),
+    database_url: str | None = typer.Option(
+        None, "--database-url", envvar="VEKTORI_DATABASE_URL", help=_DATABASE_URL_HELP
+    ),
+    qdrant_api_key: str | None = typer.Option(
+        None, "--qdrant-api-key", envvar="QDRANT_API_KEY", help=_QDRANT_API_KEY_HELP
+    ),
     as_json: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
     """Show memory stats for a user."""
 
     async def _run() -> dict:
-        v = _client(_default_extraction(), _default_embedding())
+        v = _client(
+            _default_extraction(),
+            _default_embedding(),
+            storage_backend=storage_backend,
+            database_url=database_url,
+            qdrant_api_key=qdrant_api_key,
+        )
         await v._ensure_initialized()
         try:
             facts = await v.get_facts(user_id=user_id)
