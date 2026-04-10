@@ -2,8 +2,11 @@ name: Publish to PyPI
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
+  workflow_dispatch:
 
 jobs:
   publish:
@@ -28,7 +31,19 @@ jobs:
       - name: Build package
         run: python -m build
 
+      - name: Check if version already on PyPI
+        id: version_check
+        run: |
+          WHEEL=$(ls dist/*.whl | head -1)
+          VERSION=$(echo "$WHEEL" | sed 's/.*vektori-\(.*\)-py3.*/\1/')
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://pypi.org/pypi/vektori/${VERSION}/json")
+          if [ "$STATUS" = "200" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Version ${VERSION} already on PyPI, skipping upload."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish to PyPI
+        if: steps.version_check.outputs.skip != 'true'
         uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          skip-existing: true
