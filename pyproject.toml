@@ -70,6 +70,7 @@ include = ["vektori*"]
 [tool.setuptools_scm]
 write_to = "vektori/_version.py"
 fallback_version = "0.0.0"
+local_scheme = "no-local-version"
 
 [tool.ruff]
 line-length = 100
