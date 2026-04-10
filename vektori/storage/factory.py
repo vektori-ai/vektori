@@ -21,9 +21,7 @@ async def create_storage(config: VektoriConfig) -> StorageBackend:
 
         backend: StorageBackend = MemoryBackend()
 
-    elif backend_key == "postgres" or (
-        database_url and "postgresql" in database_url
-    ):
+    elif backend_key == "postgres" or (database_url and "postgresql" in database_url):
         from vektori.storage.postgres import PostgresBackend
 
         if not database_url:
@@ -37,7 +35,8 @@ async def create_storage(config: VektoriConfig) -> StorageBackend:
         )
 
     elif backend_key == "neo4j" or (
-        database_url and (
+        database_url
+        and (
             database_url.startswith("bolt://")
             or database_url.startswith("neo4j://")
             or database_url.startswith("neo4j+s://")
@@ -61,7 +60,8 @@ async def create_storage(config: VektoriConfig) -> StorageBackend:
         )
 
     elif backend_key == "qdrant" or (
-        database_url and (
+        database_url
+        and (
             "qdrant" in database_url
             or (database_url.startswith("http") and ":6333" in database_url)
         )

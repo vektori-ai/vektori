@@ -182,7 +182,9 @@ async def test_supersession_chain(qdrant_backend):
         text="User is 25 years old.", embedding=emb, user_id="test-user"
     )
     f2 = await qdrant_backend.insert_fact(
-        text="User is 26 years old.", embedding=emb, user_id="test-user",
+        text="User is 26 years old.",
+        embedding=emb,
+        user_id="test-user",
         superseded_by_target=f1,
     )
     chain = await qdrant_backend.get_supersession_chain(f2)
@@ -248,16 +250,20 @@ async def test_batch_fact_sources(qdrant_backend):
     emb = [0.4, 0.4, 0.4, 0.4]
     await qdrant_backend.upsert_sentences(
         [
-            {"id": f"qs-batch-s{i}", "text": f"Batch source {i}.",
-             "session_id": "qsess-batch", "turn_number": 0, "sentence_index": i, "role": "user"}
+            {
+                "id": f"qs-batch-s{i}",
+                "text": f"Batch source {i}.",
+                "session_id": "qsess-batch",
+                "turn_number": 0,
+                "sentence_index": i,
+                "role": "user",
+            }
             for i in range(3)
         ],
         [emb] * 3,
         user_id="test-user",
     )
-    fid = await qdrant_backend.insert_fact(
-        text="Batch fact.", embedding=emb, user_id="test-user"
-    )
+    fid = await qdrant_backend.insert_fact(text="Batch fact.", embedding=emb, user_id="test-user")
     await qdrant_backend.insert_fact_sources(
         [(fid, "qs-batch-s0"), (fid, "qs-batch-s1"), (fid, "qs-batch-s2")]
     )

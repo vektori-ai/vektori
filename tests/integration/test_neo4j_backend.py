@@ -69,9 +69,7 @@ async def test_upsert_and_search_sentences(neo4j_backend):
             "role": "user",
         }
     ]
-    count = await neo4j_backend.upsert_sentences(
-        sentences, [emb], user_id="test-user"
-    )
+    count = await neo4j_backend.upsert_sentences(sentences, [emb], user_id="test-user")
     assert count == 1
 
     results = await neo4j_backend.search_sentences(emb, user_id="test-user", limit=5)
@@ -159,7 +157,9 @@ async def test_supersession_chain(neo4j_backend):
         text="User is 25 years old.", embedding=emb, user_id="test-user"
     )
     f2 = await neo4j_backend.insert_fact(
-        text="User is 26 years old.", embedding=emb, user_id="test-user",
+        text="User is 26 years old.",
+        embedding=emb,
+        user_id="test-user",
         superseded_by_target=f1,
     )
     chain = await neo4j_backend.get_supersession_chain(f2)

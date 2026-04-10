@@ -129,28 +129,28 @@ class QdrantBackend(StorageBackend):
         from qdrant_client.models import PayloadSchemaType
 
         index_specs = [
-            (self._facts_col,     "user_id",    PayloadSchemaType.KEYWORD),
-            (self._facts_col,     "agent_id",   PayloadSchemaType.KEYWORD),
-            (self._facts_col,     "session_id", PayloadSchemaType.KEYWORD),
-            (self._facts_col,     "subject",    PayloadSchemaType.KEYWORD),
-            (self._facts_col,     "is_active",  PayloadSchemaType.BOOL),
-            (self._facts_col,     "event_time", PayloadSchemaType.DATETIME),
-            (self._facts_col,     "text",       PayloadSchemaType.TEXT),
-            (self._sentences_col, "user_id",    PayloadSchemaType.KEYWORD),
-            (self._sentences_col, "agent_id",   PayloadSchemaType.KEYWORD),
+            (self._facts_col, "user_id", PayloadSchemaType.KEYWORD),
+            (self._facts_col, "agent_id", PayloadSchemaType.KEYWORD),
+            (self._facts_col, "session_id", PayloadSchemaType.KEYWORD),
+            (self._facts_col, "subject", PayloadSchemaType.KEYWORD),
+            (self._facts_col, "is_active", PayloadSchemaType.BOOL),
+            (self._facts_col, "event_time", PayloadSchemaType.DATETIME),
+            (self._facts_col, "text", PayloadSchemaType.TEXT),
+            (self._sentences_col, "user_id", PayloadSchemaType.KEYWORD),
+            (self._sentences_col, "agent_id", PayloadSchemaType.KEYWORD),
             (self._sentences_col, "session_id", PayloadSchemaType.KEYWORD),
             (self._sentences_col, "content_hash", PayloadSchemaType.KEYWORD),
-            (self._sentences_col, "is_active",  PayloadSchemaType.BOOL),
+            (self._sentences_col, "is_active", PayloadSchemaType.BOOL),
             (self._sentences_col, "turn_number", PayloadSchemaType.INTEGER),
             (self._sentences_col, "sentence_index", PayloadSchemaType.INTEGER),
-            (self._episodes_col,  "user_id",    PayloadSchemaType.KEYWORD),
-            (self._episodes_col,  "agent_id",   PayloadSchemaType.KEYWORD),
-            (self._episodes_col,  "is_active",  PayloadSchemaType.BOOL),
+            (self._episodes_col, "user_id", PayloadSchemaType.KEYWORD),
+            (self._episodes_col, "agent_id", PayloadSchemaType.KEYWORD),
+            (self._episodes_col, "is_active", PayloadSchemaType.BOOL),
             # Array fields used in Should/MatchValue filters — index required on Qdrant Cloud
-            (self._episodes_col,  "fact_ids",   PayloadSchemaType.KEYWORD),
-            (self._facts_col,     "source_sentence_ids", PayloadSchemaType.KEYWORD),
-            (self._sessions_col,  "user_id",    PayloadSchemaType.KEYWORD),
-            (self._sessions_col,  "agent_id",   PayloadSchemaType.KEYWORD),
+            (self._episodes_col, "fact_ids", PayloadSchemaType.KEYWORD),
+            (self._facts_col, "source_sentence_ids", PayloadSchemaType.KEYWORD),
+            (self._sessions_col, "user_id", PayloadSchemaType.KEYWORD),
+            (self._sessions_col, "agent_id", PayloadSchemaType.KEYWORD),
         ]
         for col, field, schema_type in index_specs:
             try:
@@ -276,10 +276,12 @@ class QdrantBackend(StorageBackend):
         hits = await self._client.query_points(
             collection_name=self._sentences_col,
             query=embedding,
-            query_filter=Filter(must=[
-                FieldCondition(key="session_id", match=MatchValue(value=session_id)),
-                FieldCondition(key="is_active", match=MatchValue(value=True)),
-            ]),
+            query_filter=Filter(
+                must=[
+                    FieldCondition(key="session_id", match=MatchValue(value=session_id)),
+                    FieldCondition(key="is_active", match=MatchValue(value=True)),
+                ]
+            ),
             limit=limit,
             score_threshold=threshold,
             with_payload=["id"],
@@ -299,9 +301,11 @@ class QdrantBackend(StorageBackend):
         while True:
             result, next_offset = await self._client.scroll(
                 collection_name=self._sentences_col,
-                scroll_filter=Filter(must=[
-                    FieldCondition(key="session_id", match=MatchValue(value=session_id)),
-                ]),
+                scroll_filter=Filter(
+                    must=[
+                        FieldCondition(key="session_id", match=MatchValue(value=session_id)),
+                    ]
+                ),
                 limit=100,
                 offset=offset,
                 with_payload=True,
@@ -553,13 +557,16 @@ class QdrantBackend(StorageBackend):
 
             hits, _ = await self._client.scroll(
                 collection_name=self._sentences_col,
-                scroll_filter=Filter(must=[
-                    FieldCondition(key="session_id", match=MatchValue(value=sess)),
-                    FieldCondition(key="turn_number", match=MatchValue(value=turn)),
-                    FieldCondition(key="sentence_index",
-                                   range=Range(gte=idx - window, lte=idx + window)),
-                    FieldCondition(key="is_active", match=MatchValue(value=True)),
-                ]),
+                scroll_filter=Filter(
+                    must=[
+                        FieldCondition(key="session_id", match=MatchValue(value=sess)),
+                        FieldCondition(key="turn_number", match=MatchValue(value=turn)),
+                        FieldCondition(
+                            key="sentence_index", range=Range(gte=idx - window, lte=idx + window)
+                        ),
+                        FieldCondition(key="is_active", match=MatchValue(value=True)),
+                    ]
+                ),
                 limit=window * 2 + 5,
                 with_payload=True,
             )
@@ -570,11 +577,13 @@ class QdrantBackend(StorageBackend):
                     all_results.append(_payload_to_sentence(sid, h.payload or {}))
 
         # Sort by session_id, turn_number, sentence_index
-        all_results.sort(key=lambda r: (
-            r.get("session_id", ""),
-            r.get("turn_number", 0),
-            r.get("sentence_index", 0),
-        ))
+        all_results.sort(
+            key=lambda r: (
+                r.get("session_id", ""),
+                r.get("turn_number", 0),
+                r.get("sentence_index", 0),
+            )
+        )
         return all_results
 
     # ── Join tables ────────────────────────────────────────────────────────────
@@ -632,13 +641,18 @@ class QdrantBackend(StorageBackend):
             ids=sentence_ids,
             with_payload=True,
         )
-        results = [_payload_to_sentence(str(p.id), p.payload or {}) for p in points
-                   if (p.payload or {}).get("is_active", True)]
-        results.sort(key=lambda r: (
-            r.get("session_id", ""),
-            r.get("turn_number", 0),
-            r.get("sentence_index", 0),
-        ))
+        results = [
+            _payload_to_sentence(str(p.id), p.payload or {})
+            for p in points
+            if (p.payload or {}).get("is_active", True)
+        ]
+        results.sort(
+            key=lambda r: (
+                r.get("session_id", ""),
+                r.get("turn_number", 0),
+                r.get("sentence_index", 0),
+            )
+        )
         return results
 
     # ── Episodes ──────────────────────────────────────────────────────────────
@@ -704,10 +718,7 @@ class QdrantBackend(StorageBackend):
 
         # Qdrant array payload match: FieldCondition on array field matches if any element equals value.
         # Use a Should (OR) across all fact_ids.
-        should = [
-            FieldCondition(key="fact_ids", match=MatchValue(value=fid))
-            for fid in fact_ids
-        ]
+        should = [FieldCondition(key="fact_ids", match=MatchValue(value=fid)) for fid in fact_ids]
         must = [FieldCondition(key="is_active", match=MatchValue(value=True))]
 
         seen: set[str] = set()
@@ -726,12 +737,14 @@ class QdrantBackend(StorageBackend):
                 if eid not in seen:
                     seen.add(eid)
                     p = h.payload or {}
-                    results.append({
-                        "id": eid,
-                        "text": p.get("text"),
-                        "session_id": p.get("session_id"),
-                        "created_at": p.get("created_at"),
-                    })
+                    results.append(
+                        {
+                            "id": eid,
+                            "text": p.get("text"),
+                            "session_id": p.get("session_id"),
+                            "created_at": p.get("created_at"),
+                        }
+                    )
             if next_offset is None:
                 break
             offset = next_offset
@@ -845,10 +858,12 @@ class QdrantBackend(StorageBackend):
 
         sent_results, _ = await self._client.scroll(
             collection_name=self._sentences_col,
-            scroll_filter=Filter(must=[
-                FieldCondition(key="session_id", match=MatchValue(value=session_id)),
-                FieldCondition(key="is_active", match=MatchValue(value=True)),
-            ]),
+            scroll_filter=Filter(
+                must=[
+                    FieldCondition(key="session_id", match=MatchValue(value=session_id)),
+                    FieldCondition(key="is_active", match=MatchValue(value=True)),
+                ]
+            ),
             limit=1000,
             with_payload=True,
         )
@@ -882,8 +897,7 @@ class QdrantBackend(StorageBackend):
 
         user_filter = Filter(must=[FieldCondition(key="user_id", match=MatchValue(value=user_id))])
         total = 0
-        for col in (self._facts_col, self._sentences_col,
-                    self._episodes_col, self._sessions_col):
+        for col in (self._facts_col, self._sentences_col, self._episodes_col, self._sessions_col):
             result = await self._client.count(
                 collection_name=col, count_filter=user_filter, exact=True
             )

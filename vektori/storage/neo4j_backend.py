@@ -208,8 +208,13 @@ class Neo4jBackend(StorageBackend):
             ORDER BY distance ASC
             LIMIT $limit
             """,
-            {"embedding": embedding, "user_id": user_id,
-             "agent_id": agent_id, "scan": scan, "limit": limit},
+            {
+                "embedding": embedding,
+                "user_id": user_id,
+                "agent_id": agent_id,
+                "scan": scan,
+                "limit": limit,
+            },
         )
         return [_coerce(r) for r in rows]
 
@@ -241,8 +246,13 @@ class Neo4jBackend(StorageBackend):
             ORDER BY score DESC
             LIMIT $limit
             """,
-            {"embedding": embedding, "session_id": session_id,
-             "threshold": threshold, "scan": scan, "limit": limit},
+            {
+                "embedding": embedding,
+                "session_id": session_id,
+                "threshold": threshold,
+                "scan": scan,
+                "limit": limit,
+            },
         )
         return [r["id"] for r in rows]
 
@@ -471,8 +481,11 @@ class Neo4jBackend(StorageBackend):
                 """,
                 {
                     "edges": [
-                        {"src": e["source_id"], "tgt": e["target_id"],
-                         "weight": e.get("weight", 1.0)}
+                        {
+                            "src": e["source_id"],
+                            "tgt": e["target_id"],
+                            "weight": e.get("weight", 1.0),
+                        }
                         for e in group
                     ]
                 },
@@ -574,8 +587,12 @@ class Neo4jBackend(StorageBackend):
                 e.created_at = datetime()
             """,
             {
-                "id": episode_id, "text": text, "embedding": embedding,
-                "user_id": user_id, "agent_id": agent_id, "session_id": session_id,
+                "id": episode_id,
+                "text": text,
+                "embedding": embedding,
+                "user_id": user_id,
+                "agent_id": agent_id,
+                "session_id": session_id,
             },
         )
         return episode_id
@@ -623,8 +640,13 @@ class Neo4jBackend(StorageBackend):
             ORDER BY distance ASC
             LIMIT $limit
             """,
-            {"embedding": embedding, "user_id": user_id,
-             "agent_id": agent_id, "scan": scan, "limit": limit},
+            {
+                "embedding": embedding,
+                "user_id": user_id,
+                "agent_id": agent_id,
+                "scan": scan,
+                "limit": limit,
+            },
         )
         return [_coerce(r) for r in rows]
 
@@ -732,5 +754,7 @@ def _coerce(row: dict[str, Any]) -> dict[str, Any]:
     neo4j.time.DateTime objects expose .to_native() → Python datetime.
     Everything else passes through unchanged.
     """
-    return {k: (v.to_native() if v is not None and hasattr(v, "to_native") else v)
-            for k, v in row.items()}
+    return {
+        k: (v.to_native() if v is not None and hasattr(v, "to_native") else v)
+        for k, v in row.items()
+    }
