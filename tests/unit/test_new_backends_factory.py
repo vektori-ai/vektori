@@ -11,7 +11,6 @@ from vektori.storage.factory import create_storage
 from vektori.storage.neo4j_backend import Neo4jBackend
 from vektori.storage.qdrant_backend import QdrantBackend
 
-
 # ── Factory routing: storage_backend key ──────────────────────────────────────
 
 
