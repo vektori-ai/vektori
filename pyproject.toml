@@ -30,9 +30,13 @@ dependencies = [
     "httpx>=0.27",
     "pydantic>=2.5",
     "typer>=0.9",
+    "pytest>=9.0.3",
+    "veclite-db>=1.0.9",
+    "pytest-asyncio>=1.3.0",
 ]
 
 [project.optional-dependencies]
+veclite = ["veclite-db>=1.0.9"]
 postgres = ["asyncpg>=0.29", "pgvector>=0.2"]
 neo4j = ["neo4j>=5.14"]
 qdrant = ["qdrant-client>=1.7"]

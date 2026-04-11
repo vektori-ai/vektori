@@ -30,6 +30,15 @@ async def test_factory_qdrant_by_key():
     assert backend.embedding_dim == 768
 
 
+async def test_factory_veclite_by_key():
+    from vektori.storage.veclite_backend import VecLiteBackend
+
+    cfg = VektoriConfig(storage_backend="veclite")
+    with patch.object(VecLiteBackend, "initialize", new_callable=AsyncMock):
+        backend = await create_storage(cfg)
+    assert isinstance(backend, VecLiteBackend)
+
+
 # ── Factory routing: URL-based heuristic ─────────────────────────────────────
 
 
@@ -62,6 +71,23 @@ async def test_factory_qdrant_by_url(url):
         backend = await create_storage(cfg)
     assert isinstance(backend, QdrantBackend)
     assert backend.url == url
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "veclite://test_data",
+        "veclite://another/path",
+    ],
+)
+async def test_factory_veclite_by_url(url):
+    from vektori.storage.veclite_backend import VecLiteBackend
+
+    cfg = VektoriConfig(storage_backend="sqlite", database_url=url)
+    with patch.object(VecLiteBackend, "initialize", new_callable=AsyncMock):
+        backend = await create_storage(cfg)
+    assert isinstance(backend, VecLiteBackend)
+    assert backend.base_path == url.replace("veclite://", "")
 
 
 # ── Neo4j auth parsing in factory ─────────────────────────────────────────────

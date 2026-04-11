@@ -75,6 +75,16 @@ async def create_storage(config: VektoriConfig) -> StorageBackend:
             embedding_dim=config.embedding_dimension,
         )
 
+    elif backend_key == "veclite" or (database_url and database_url.startswith("veclite://")):
+        from vektori.storage.veclite_backend import VecLiteBackend
+
+        path = (
+            database_url.replace("veclite://", "")
+            if database_url and database_url.startswith("veclite://")
+            else "veclite_data"
+        )
+        backend = VecLiteBackend(path)
+
     else:
         from vektori.storage.sqlite import SQLiteBackend
 
