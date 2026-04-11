@@ -25,15 +25,11 @@ EPISODE LAYER (L1)   <- patterns auto-discovered via graph traversal.
 SENTENCE LAYER (L2)  <- raw conversation. Sequential NEXT edges. The full story.
 ```
 
-<<<<<<< HEAD
 <p align="center">
   <img src="assets/screenshots/layers.jpeg" alt="Three-layer memory graph: Facts → Episodes → Sentences" width="680" />
 </p>
 
-Search hits Facts, graph discovers Episodes, traces back to source Sentences. One database, Postgres or SQLite. No Neo4j, no Qdrant, no infra drama.
-=======
 Search hits Facts, graph discovers Episodes, traces back to source Sentences. SQLite by default — swap to Postgres, Neo4j, or Qdrant when you're ready to scale.
->>>>>>> abc1fdde5ff85f05c6d6f7ece73cdf5262765875
 
 ---
 
