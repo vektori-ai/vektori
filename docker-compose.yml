@@ -47,7 +47,58 @@ services:
       timeout: 5s
       retries: 10
 
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.5
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    command:
+      - /usr/local/bin/etcd
+      - -advertise-client-urls=http://127.0.0.1:2379
+      - -listen-client-urls=http://0.0.0.0:2379
+      - --data-dir=/etcd
+    ports:
+      - "2379:2379"
+    volumes:
+      - etcddata:/etcd
+
+  minio:
+    image: minio/minio:RELEASE.2024-02-17T01-15-57Z
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: minio server /minio_data
+    ports:
+      - "9000:9000"
+    volumes:
+      - miniodata:/minio_data
+
+  milvus:
+    image: milvusdb/milvus:v2.5.3
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    ports:
+      - "19530:19530"  # Milvus API
+      - "9091:9091"    # Health/metrics
+    volumes:
+      - milvusdata:/var/lib/milvus
+    depends_on:
+      - etcd
+      - minio
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9091/healthz || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
 volumes:
   pgdata:
   neo4jdata:
   qdrantdata:
+  etcddata:
+  miniodata:
+  milvusdata:

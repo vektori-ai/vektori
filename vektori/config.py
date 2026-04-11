@@ -22,7 +22,7 @@ class VektoriConfig:
 
     # Storage
     database_url: str | None = None  # None = SQLite default (~/.vektori/vektori.db)
-    storage_backend: str = "sqlite"  # "sqlite", "postgres", "memory", "neo4j", "qdrant"
+    storage_backend: str = "sqlite"  # "sqlite", "postgres", "memory", "neo4j", "qdrant", "milvus"
     qdrant_api_key: str | None = None  # Qdrant Cloud API key (not needed for local)
 
     # Embedding provider — format: "provider:model_name"
