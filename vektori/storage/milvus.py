@@ -249,16 +249,20 @@ class MilvusBackend(StorageBackend):
             try:
                 return await fn(**kwargs)
             except RuntimeError:
-                # pytest-asyncio (or other multi-loop runtimes) may reuse a backend
-                # instance across event loops, which breaks grpc.aio internals.
-                logger.warning(
-                    "AsyncMilvusClient loop mismatch detected; falling back to sync client"
-                )
-                from pymilvus import MilvusClient
+                pass  # loop mismatch — fall through to sync fallback
+            except Exception as exc:
+                # pymilvus decorators wrap RuntimeError in MilvusException
+                # before our handler sees it; detect the wrapped loop error.
+                if "attached to a different loop" not in str(exc):
+                    raise
+            # pytest-asyncio (or other multi-loop runtimes) may reuse a backend
+            # instance across event loops, which breaks grpc.aio internals.
+            logger.warning("AsyncMilvusClient loop mismatch detected; falling back to sync client")
+            from pymilvus import MilvusClient
 
-                self._client = MilvusClient(uri=self.url)
-                fn = getattr(self._client, method)
-                return await asyncio.to_thread(fn, **kwargs)
+            self._client = MilvusClient(uri=self.url)
+            fn = getattr(self._client, method)
+            return await asyncio.to_thread(fn, **kwargs)
         return await asyncio.to_thread(fn, **kwargs)
 
     def _json_value(self, metadata: dict[str, Any] | None) -> Any:
@@ -467,33 +471,40 @@ class MilvusBackend(StorageBackend):
             await self._call("upsert", collection_name=collection_name, data=rows)
             await self._flush_collection(collection_name)
             return
-        except Exception:
-            # Fallback for clients without upsert support.
-            ids = [str(r["id"]) for r in rows if r.get("id")]
-            if ids:
-                ors = " or ".join([f'id == "{_escape(i)}"' for i in ids])
-                try:
-                    await self._delete(collection_name, ors)
-                except RuntimeError as e:
-                    logger.warning(
-                        "Milvus delete fallback unsupported before insert; continuing "
-                        "with insert (collection=%s, filter=%s): %s",
-                        collection_name,
-                        ors,
-                        e,
-                    )
-                except Exception as e:
-                    logger.error(
-                        "Milvus delete fallback failed; aborting insert to avoid "
-                        "duplicate records (collection=%s, filter=%s, ids=%s): %s",
-                        collection_name,
-                        ors,
-                        ids,
-                        e,
-                    )
-                    raise
-            await self._call("insert", collection_name=collection_name, data=rows)
-            await self._flush_collection(collection_name)
+        except (NotImplementedError, AttributeError):
+            logger.debug("Upsert not supported; falling back to delete+insert")
+        except Exception as exc:
+            exc_msg = str(exc).lower()
+            if "unsupported" not in exc_msg and "not implemented" not in exc_msg:
+                raise
+            logger.debug("Upsert not supported (%s); falling back to delete+insert", exc)
+
+        # Fallback for clients without upsert support.
+        ids = [str(r["id"]) for r in rows if r.get("id")]
+        if ids:
+            ors = " or ".join([f'id == "{_escape(i)}"' for i in ids])
+            try:
+                await self._delete(collection_name, ors)
+            except RuntimeError as e:
+                logger.warning(
+                    "Milvus delete fallback unsupported before insert; continuing "
+                    "with insert (collection=%s, filter=%s): %s",
+                    collection_name,
+                    ors,
+                    e,
+                )
+            except Exception as e:
+                logger.error(
+                    "Milvus delete fallback failed; aborting insert to avoid "
+                    "duplicate records (collection=%s, filter=%s, ids=%s): %s",
+                    collection_name,
+                    ors,
+                    ids,
+                    e,
+                )
+                raise
+        await self._call("insert", collection_name=collection_name, data=rows)
+        await self._flush_collection(collection_name)
 
     async def _flush_collection(self, collection_name: str) -> None:
         """Best-effort flush so writes are query-visible immediately."""
@@ -787,6 +798,12 @@ class MilvusBackend(StorageBackend):
 
         if not sentences:
             return 0
+
+        if not embeddings or len(sentences) != len(embeddings):
+            raise ValueError(
+                f"sentences/embeddings length mismatch: "
+                f"{len(sentences)} sentences vs {len(embeddings)} embeddings"
+            )
 
         rows: list[dict[str, Any]] = []
 
@@ -1202,7 +1219,6 @@ class MilvusBackend(StorageBackend):
 
         for seed in seeds:
             session_id = str(seed.get("session_id") or "")
-            turn_number = int(seed.get("turn_number") or 0)
             sentence_index = int(seed.get("sentence_index") or 0)
 
             rows = await self._query_all(
@@ -1210,7 +1226,6 @@ class MilvusBackend(StorageBackend):
                 filter_expr=(
                     f'record_type == "{_SENTENCE_RECORD}" and '
                     f'session_id == "{_escape(session_id)}" and '
-                    f"turn_number == {turn_number} and "
                     f"sentence_index >= {sentence_index - window} and "
                     f"sentence_index <= {sentence_index + window} and "
                     "is_active == true"
@@ -1245,17 +1260,40 @@ class MilvusBackend(StorageBackend):
         for fid, sid in pairs:
             by_fact.setdefault(fid, []).append(sid)
 
+        max_retries = 5
         for fid, sentence_ids in by_fact.items():
-            row = await self._get_one(
-                self._facts_col,
-                f'id == "{_escape(fid)}" and record_type == "{_FACT_RECORD}"',
-                self._fact_output_fields(),
-            )
-            if not row:
-                continue
-            merged = _ids_to_csv(_csv_to_ids(row.get("source_sentence_ids")) + sentence_ids)
-            row["source_sentence_ids"] = merged
-            await self._upsert_rows(self._facts_col, [row])
+            for attempt in range(max_retries):
+                row = await self._get_one(
+                    self._facts_col,
+                    f'id == "{_escape(fid)}" and record_type == "{_FACT_RECORD}"',
+                    self._fact_output_fields(),
+                )
+                if not row:
+                    break
+                previous_csv = row.get("source_sentence_ids", "")
+                merged = _ids_to_csv(_csv_to_ids(previous_csv) + sentence_ids)
+                if merged == previous_csv:
+                    break  # nothing to update
+                # CAS check: verify the row still has the value we read
+                cas_check = await self._get_one(
+                    self._facts_col,
+                    (
+                        f'id == "{_escape(fid)}" and record_type == "{_FACT_RECORD}" and '
+                        f'source_sentence_ids == "{_escape(str(previous_csv))}"'
+                    ),
+                    ["id"],
+                )
+                if cas_check:
+                    row["source_sentence_ids"] = merged
+                    await self._upsert_rows(self._facts_col, [row])
+                    break
+                # Row was modified concurrently; retry
+                if attempt == max_retries - 1:
+                    logger.warning(
+                        "CAS retry exhausted for fact %s; writing last merged value", fid
+                    )
+                    row["source_sentence_ids"] = merged
+                    await self._upsert_rows(self._facts_col, [row])
 
     async def get_source_sentences(self, fact_ids: list[str]) -> list[str]:
         if not fact_ids:
@@ -1352,17 +1390,40 @@ class MilvusBackend(StorageBackend):
         return episode_id
 
     async def insert_episode_fact(self, episode_id: str, fact_id: str) -> None:
-        row = await self._get_one(
-            self._episodes_col,
-            f'id == "{_escape(episode_id)}" and record_type == "{_EPISODE_RECORD}"',
-            self._episode_output_fields(),
-        )
-        if not row:
-            return
-
-        merged = _ids_to_csv(_csv_to_ids(row.get("fact_ids")) + [fact_id])
-        row["fact_ids"] = merged
-        await self._upsert_rows(self._episodes_col, [row])
+        max_retries = 5
+        for attempt in range(max_retries):
+            row = await self._get_one(
+                self._episodes_col,
+                f'id == "{_escape(episode_id)}" and record_type == "{_EPISODE_RECORD}"',
+                self._episode_output_fields(),
+            )
+            if not row:
+                return
+            previous_csv = row.get("fact_ids", "")
+            merged = _ids_to_csv(_csv_to_ids(previous_csv) + [fact_id])
+            if merged == previous_csv:
+                return  # nothing to update
+            # CAS check: verify the row still has the value we read
+            cas_check = await self._get_one(
+                self._episodes_col,
+                (
+                    f'id == "{_escape(episode_id)}" and record_type == "{_EPISODE_RECORD}" and '
+                    f'fact_ids == "{_escape(str(previous_csv))}"'
+                ),
+                ["id"],
+            )
+            if cas_check:
+                row["fact_ids"] = merged
+                await self._upsert_rows(self._episodes_col, [row])
+                return
+            # Row was modified concurrently; retry
+            if attempt == max_retries - 1:
+                logger.warning(
+                    "CAS retry exhausted for episode %s; writing last merged value",
+                    episode_id,
+                )
+                row["fact_ids"] = merged
+                await self._upsert_rows(self._episodes_col, [row])
 
     async def get_episodes_for_facts(self, fact_ids: list[str]) -> list[dict[str, Any]]:
         if not fact_ids:
@@ -1417,8 +1478,8 @@ class MilvusBackend(StorageBackend):
 
     # ── Sessions (stored in sentences collection as typed records) ────────────
 
-    def _session_marker_id(self, session_id: str) -> str:
-        return str(uuid.uuid5(uuid.NAMESPACE_OID, f"session::{session_id}"))
+    def _session_marker_id(self, session_id: str, user_id: str) -> str:
+        return str(uuid.uuid5(uuid.NAMESPACE_OID, f"session::{user_id}::{session_id}"))
 
     async def upsert_session(
         self,
@@ -1428,10 +1489,13 @@ class MilvusBackend(StorageBackend):
         metadata: dict[str, Any] | None = None,
         started_at: datetime | None = None,
     ) -> None:
-        marker_id = self._session_marker_id(session_id)
+        marker_id = self._session_marker_id(session_id, user_id)
         existing = await self._get_one(
             self._sentences_col,
-            (f'id == "{_escape(marker_id)}" and record_type == "{_SESSION_RECORD}"'),
+            (
+                f'id == "{_escape(marker_id)}" and record_type == "{_SESSION_RECORD}" and '
+                f'user_id == "{_escape(user_id)}"'
+            ),
             self._sentence_output_fields(),
         )
 
@@ -1493,6 +1557,7 @@ class MilvusBackend(StorageBackend):
             filter_expr=(
                 f'record_type == "{_SENTENCE_RECORD}" and '
                 f'session_id == "{_escape(session_id)}" and '
+                f'user_id == "{_escape(user_id)}" and '
                 "is_active == true"
             ),
             output_fields=self._sentence_output_fields(),
