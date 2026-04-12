@@ -63,6 +63,11 @@ services:
       - "2379:2379"
     volumes:
       - etcddata:/etcd
+    healthcheck:
+      test: ["CMD-SHELL", "ETCDCTL_API=3 etcdctl --endpoints=http://127.0.0.1:2379 endpoint health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
   minio:
     image: minio/minio:RELEASE.2024-02-17T01-15-57Z
@@ -74,6 +79,11 @@ services:
       - "9000:9000"
     volumes:
       - miniodata:/minio_data
+    healthcheck:
+      test: ["CMD-SHELL", "/usr/bin/mc ready local || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
   milvus:
     image: milvusdb/milvus:v2.5.3
@@ -87,8 +97,10 @@ services:
     volumes:
       - milvusdata:/var/lib/milvus
     depends_on:
-      - etcd
-      - minio
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:9091/healthz || exit 1"]
       interval: 5s

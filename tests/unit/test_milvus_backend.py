@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from vektori.storage.milvus import MilvusBackend
 
@@ -155,3 +157,113 @@ async def test_count_sessions_filters_user_and_agent():
     assert 'record_type == "session"' in expr
     assert 'user_id == "u1"' in expr
     assert 'agent_id == "a1"' in expr
+
+
+async def test_upsert_session_preserves_existing_metadata_when_none_passed():
+    backend = MilvusBackend(embedding_dim=4)
+    backend._get_one = AsyncMock(
+        return_value={
+            "created_at": "2026-01-01T00:00:00",
+            "started_at": "2026-01-01T00:00:00",
+            "ended_at": "",
+            "metadata": '{"source":"kept"}',
+        }
+    )
+    backend._upsert_rows = AsyncMock()
+
+    await backend.upsert_session(
+        session_id="sess-1",
+        user_id="user-1",
+        metadata=None,
+    )
+
+    row = backend._upsert_rows.call_args.args[1][0]
+    assert row["metadata"] == '{"source":"kept"}'
+
+
+async def test_insert_episode_dedupe_scoped_by_agent_id():
+    backend = MilvusBackend(embedding_dim=4)
+    backend._get_one = AsyncMock(return_value=None)
+    backend._upsert_rows = AsyncMock()
+
+    await backend.insert_episode(
+        text="Shared text",
+        embedding=[0.1, 0.2, 0.3, 0.4],
+        user_id="u1",
+        agent_id="agent-a",
+    )
+
+    filter_expr = backend._get_one.call_args.args[1]
+    assert 'record_type == "episode"' in filter_expr
+    assert 'agent_id == "agent-a"' in filter_expr
+
+
+async def test_query_fails_closed_when_filtered_query_unsupported():
+    backend = MilvusBackend()
+    backend._call = AsyncMock(side_effect=TypeError("unsupported arg"))
+
+    with pytest.raises(RuntimeError, match="filtered query"):
+        await backend._query(
+            collection_name="x",
+            filter_expr='user_id == "u1"',
+            output_fields=["id"],
+        )
+
+
+async def test_search_fails_closed_when_filtered_search_unsupported():
+    backend = MilvusBackend()
+    backend._call = AsyncMock(side_effect=TypeError("unsupported arg"))
+
+    with pytest.raises(RuntimeError, match="filtered search"):
+        await backend._search(
+            collection_name="x",
+            embedding=[0.1, 0.2],
+            filter_expr='user_id == "u1"',
+            limit=3,
+            output_fields=["id"],
+        )
+
+
+async def test_delete_fails_closed_when_filtered_delete_unsupported():
+    backend = MilvusBackend()
+    backend._call = AsyncMock(side_effect=TypeError("unsupported arg"))
+
+    with pytest.raises(RuntimeError, match="filtered delete"):
+        await backend._delete("collection", 'user_id == "u1"')
+
+
+async def test_delete_flushes_when_filtered_delete_succeeds():
+    backend = MilvusBackend()
+    backend._call = AsyncMock(return_value=None)
+    backend._flush_collection = AsyncMock()
+
+    await backend._delete("collection", 'user_id == "u1"')
+
+    backend._flush_collection.assert_awaited_once_with("collection")
+
+
+async def test_find_sentences_by_similarity_embeds_and_dedupes_ordered():
+    backend = MilvusBackend(embedding_dim=4)
+    embedder = MagicMock()
+    embedder.embed_batch = AsyncMock(return_value=[[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8]])
+    backend.set_sentence_embedder(embedder)
+    backend._search = AsyncMock(
+        side_effect=[
+            [
+                {"id": "s1", "text": "first", "distance": 0.10},
+                {"id": "s2", "text": "second", "distance": 0.30},
+            ],
+            [
+                {"id": "s1", "text": "first", "distance": 0.15},
+                {"id": "s3", "text": "third", "distance": 0.20},
+            ],
+        ]
+    )
+
+    result = await backend.find_sentences_by_similarity(
+        quotes=["q1", "q2"],
+        session_id="sess-1",
+        threshold=0.75,
+    )
+
+    assert result == ["s1", "s3"]

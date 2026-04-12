@@ -118,6 +118,7 @@ class MilvusBackend(StorageBackend):
         self._client: Any | None = None
         self._datatype: Any | None = None
         self._json_is_native = False
+        self._sentence_embedder: Any | None = None
 
     # ── Collection name helpers ────────────────────────────────────────────────
 
@@ -269,6 +270,43 @@ class MilvusBackend(StorageBackend):
             return payload
         return json.dumps(payload)
 
+    def set_sentence_embedder(self, embedder: Any) -> None:
+        """Inject the embedder used by the ingestion/retrieval pipeline."""
+        self._sentence_embedder = embedder
+
+    async def _embed_quotes(self, quotes: list[str]) -> list[list[float]]:
+        """Best-effort quote embedding using the configured pipeline embedder."""
+        if not quotes:
+            return []
+        if self._sentence_embedder is None:
+            logger.debug("MilvusBackend.find_sentences_by_similarity: no embedder configured")
+            return []
+
+        embed_batch = getattr(self._sentence_embedder, "embed_batch", None)
+        if embed_batch is not None:
+            if inspect.iscoroutinefunction(embed_batch):
+                vectors = await embed_batch(quotes)
+            else:
+                vectors = await asyncio.to_thread(embed_batch, quotes)
+            return [list(v) for v in vectors if isinstance(v, list)]
+
+        embed_one = getattr(self._sentence_embedder, "embed", None)
+        if embed_one is None:
+            logger.warning(
+                "MilvusBackend.find_sentences_by_similarity: configured embedder has no embed/embed_batch"
+            )
+            return []
+
+        vectors: list[list[float]] = []
+        for quote in quotes:
+            if inspect.iscoroutinefunction(embed_one):
+                vector = await embed_one(quote)
+            else:
+                vector = await asyncio.to_thread(embed_one, quote)
+            if isinstance(vector, list):
+                vectors.append(vector)
+        return vectors
+
     async def _query(
         self,
         collection_name: str,
@@ -286,14 +324,17 @@ class MilvusBackend(StorageBackend):
             kwargs["output_fields"] = output_fields
 
         if filter_expr:
+            type_errors: list[TypeError] = []
             for key in ("filter", "expr"):
                 try:
                     rows = await self._call("query", **{**kwargs, key: filter_expr})
                     return self._normalize_query_rows(rows)
-                except TypeError:
+                except TypeError as e:
+                    type_errors.append(e)
                     continue
-            rows = await self._call("query", **kwargs)
-            return self._normalize_query_rows(rows)
+            raise RuntimeError(
+                "Milvus client does not support filtered query parameters ('filter'/'expr')"
+            ) from type_errors[-1]
 
         rows = await self._call("query", **kwargs)
         return self._normalize_query_rows(rows)
@@ -343,11 +384,13 @@ class MilvusBackend(StorageBackend):
             try:
                 raw = await self._call("search", **{**kwargs, key: filter_expr})
                 return self._normalize_search_rows(raw, embedding)
-            except TypeError:
+            except TypeError as e:
+                last_type_error = e
                 continue
 
-        raw = await self._call("search", **kwargs)
-        return self._normalize_search_rows(raw, embedding)
+        raise RuntimeError(
+            "Milvus client does not support filtered search parameters ('filter'/'expr')"
+        ) from last_type_error
 
     def _normalize_query_rows(self, rows: Any) -> list[dict[str, Any]]:
         if rows is None:
@@ -454,13 +497,19 @@ class MilvusBackend(StorageBackend):
                 return
 
     async def _delete(self, collection_name: str, filter_expr: str) -> None:
+        last_type_error: TypeError | None = None
         for key in ("filter", "expr"):
             try:
                 await self._call("delete", collection_name=collection_name, **{key: filter_expr})
+                await self._flush_collection(collection_name)
                 return
-            except TypeError:
+            except TypeError as e:
+                last_type_error = e
                 continue
-        await self._call("delete", collection_name=collection_name)
+
+        raise RuntimeError(
+            "Milvus client does not support filtered delete parameters ('filter'/'expr')"
+        ) from last_type_error
 
     async def _get_one(
         self,
@@ -816,7 +865,59 @@ class MilvusBackend(StorageBackend):
         session_id: str,
         threshold: float = 0.75,
     ) -> list[str]:
-        return []
+        if not quotes:
+            return []
+
+        cleaned_quotes = [q.strip() for q in quotes if isinstance(q, str) and q.strip()]
+        if not cleaned_quotes:
+            return []
+
+        try:
+            quote_embeddings = await self._embed_quotes(cleaned_quotes)
+        except Exception as e:
+            logger.warning("Quote embedding failed in find_sentences_by_similarity: %s", e)
+            return []
+
+        if not quote_embeddings:
+            return []
+
+        filter_expr = (
+            f'record_type == "{_SENTENCE_RECORD}" and '
+            f'session_id == "{_escape(session_id)}" and '
+            "is_active == true"
+        )
+
+        seen: set[str] = set()
+        ordered_ids: list[str] = []
+
+        for emb in quote_embeddings:
+            try:
+                hits = await self._search(
+                    collection_name=self._sentences_col,
+                    embedding=emb,
+                    filter_expr=filter_expr,
+                    limit=max(10, len(cleaned_quotes) * 5),
+                    output_fields=self._sentence_output_fields(),
+                )
+            except Exception as e:
+                logger.warning("Sentence similarity search failed for quote embedding: %s", e)
+                continue
+
+            for row in hits:
+                similarity = 1.0 - float(row.get("distance", 1.0))
+                if similarity < threshold:
+                    continue
+
+                sentence_id = str(row.get("id") or "")
+                sentence_text = str(row.get("text") or row.get("sentence") or "")
+                dedup_key = sentence_id or sentence_text
+                if not dedup_key or dedup_key in seen:
+                    continue
+
+                seen.add(dedup_key)
+                ordered_ids.append(sentence_id or sentence_text)
+
+        return ordered_ids
 
     async def search_sentences_in_session(
         self,
@@ -1207,10 +1308,15 @@ class MilvusBackend(StorageBackend):
                 f"Embedding has {len(embedding)} dimensions, expected {self.embedding_dim}"
             )
 
-        episode_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{user_id}::{text}"))
+        agent_scope = agent_id or ""
+        episode_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{user_id}::{agent_scope}::{text}"))
         existing = await self._get_one(
             self._episodes_col,
-            f'id == "{_escape(episode_id)}" and record_type == "{_EPISODE_RECORD}"',
+            (
+                f'id == "{_escape(episode_id)}" and '
+                f'record_type == "{_EPISODE_RECORD}" and '
+                f'agent_id == "{_escape(agent_scope)}"'
+            ),
             self._episode_output_fields(),
         )
         if existing:
@@ -1322,6 +1428,13 @@ class MilvusBackend(StorageBackend):
             else (existing.get("started_at") if existing else _utcnow_iso())
         )
 
+        if existing and metadata is None:
+            metadata_value = existing.get("metadata")
+            if metadata_value is None:
+                metadata_value = self._json_value({})
+        else:
+            metadata_value = self._json_value(metadata)
+
         row = {
             "id": marker_id,
             "text": "",
@@ -1338,7 +1451,7 @@ class MilvusBackend(StorageBackend):
             "created_at": existing.get("created_at") if existing else _utcnow_iso(),
             "next_sentence_id": "",
             "record_type": _SESSION_RECORD,
-            "metadata": self._json_value(metadata),
+            "metadata": metadata_value,
             "started_at": started_at_value,
             "ended_at": existing.get("ended_at", "") if existing else "",
         }

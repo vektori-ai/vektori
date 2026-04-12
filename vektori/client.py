@@ -83,6 +83,8 @@ class Vektori:
 
         self.db = await create_storage(self.config)
         self.embedder = create_embedder(self.config.embedding_model)
+        if hasattr(self.db, "set_sentence_embedder"):
+            self.db.set_sentence_embedder(self.embedder)
         self.llm = create_llm(self.config.extraction_model)
         self._extractor = FactExtractor(
             db=self.db,
