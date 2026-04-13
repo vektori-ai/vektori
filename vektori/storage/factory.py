@@ -10,8 +10,8 @@ async def create_storage(config: VektoriConfig) -> StorageBackend:
     """Resolve and initialize the correct storage backend from config.
 
     Backend selection priority:
-        1. config.storage_backend key  ("sqlite", "postgres", "memory", "neo4j", "qdrant")
-        2. URL prefix heuristic        (postgresql://, bolt://, neo4j://, http://localhost:6333)
+        1. config.storage_backend key  ("sqlite", "postgres", "memory", "neo4j", "qdrant", "milvus")
+        2. URL prefix heuristic        (postgresql://, bolt://, neo4j://, http://localhost:6333, :19530)
     """
     backend_key = config.storage_backend
     database_url = config.database_url
@@ -72,6 +72,22 @@ async def create_storage(config: VektoriConfig) -> StorageBackend:
         backend = QdrantBackend(
             url=url,
             api_key=config.qdrant_api_key,
+            embedding_dim=config.embedding_dimension,
+        )
+
+    elif backend_key == "milvus" or (
+        database_url
+        and (
+            "milvus" in database_url
+            or (database_url.startswith("http") and ":19530" in database_url)
+        )
+    ):
+        from vektori.storage.milvus import MilvusBackend
+
+        url = database_url or "http://localhost:19530"
+        backend = MilvusBackend(
+            url=url,
+            token=config.milvus_token,
             embedding_dim=config.embedding_dimension,
         )
 

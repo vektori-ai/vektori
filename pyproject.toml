@@ -8,9 +8,7 @@ dynamic = ["version"]
 description = "Open-source, self-hostable memory engine for AI agents using a three-layer sentence graph architecture."
 readme = "README.md"
 license = { file = "LICENSE" }
-authors = [
-    { name = "Laxman & Manit" }
-]
+authors = [{ name = "Laxman & Manit" }]
 requires-python = ">=3.10"
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -36,6 +34,7 @@ dependencies = [
 postgres = ["asyncpg>=0.29", "pgvector>=0.2"]
 neo4j = ["neo4j>=5.14"]
 qdrant = ["qdrant-client>=1.7"]
+milvus = ["pymilvus>=2.5.3"]
 anthropic = ["anthropic>=0.20", "voyageai>=0.2"]
 sentence-transformers = ["sentence-transformers>=2.6"]
 bge = ["FlagEmbedding>=1.2"]
@@ -52,6 +51,7 @@ all = [
     "pgvector>=0.2",
     "neo4j>=5.14",
     "qdrant-client>=1.7",
+    "pymilvus>=2.5.3",
     "anthropic>=0.20",
     "voyageai>=0.2",
     "sentence-transformers>=2.6",

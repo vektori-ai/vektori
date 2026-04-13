@@ -8,6 +8,7 @@ import pytest
 
 from vektori.config import VektoriConfig
 from vektori.storage.factory import create_storage
+from vektori.storage.milvus import MilvusBackend
 from vektori.storage.neo4j_backend import Neo4jBackend
 from vektori.storage.qdrant_backend import QdrantBackend
 
@@ -28,6 +29,14 @@ async def test_factory_qdrant_by_key():
         backend = await create_storage(cfg)
     assert isinstance(backend, QdrantBackend)
     assert backend.embedding_dim == 768
+
+
+async def test_factory_milvus_by_key():
+    cfg = VektoriConfig(storage_backend="milvus", embedding_dimension=1536)
+    with patch.object(MilvusBackend, "initialize", new_callable=AsyncMock):
+        backend = await create_storage(cfg)
+    assert isinstance(backend, MilvusBackend)
+    assert backend.embedding_dim == 1536
 
 
 # ── Factory routing: URL-based heuristic ─────────────────────────────────────
@@ -62,6 +71,33 @@ async def test_factory_qdrant_by_url(url):
         backend = await create_storage(cfg)
     assert isinstance(backend, QdrantBackend)
     assert backend.url == url
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://localhost:19530",
+        "http://milvus-host:19530",
+    ],
+)
+async def test_factory_milvus_by_url(url):
+    cfg = VektoriConfig(storage_backend="sqlite", database_url=url)
+    with patch.object(MilvusBackend, "initialize", new_callable=AsyncMock):
+        backend = await create_storage(cfg)
+    assert isinstance(backend, MilvusBackend)
+    assert backend.url == url
+
+
+async def test_factory_milvus_token_passed():
+    cfg = VektoriConfig(
+        storage_backend="milvus",
+        database_url="https://milvus.example.com",
+        milvus_token="token-123",
+    )
+    with patch.object(MilvusBackend, "initialize", new_callable=AsyncMock):
+        backend = await create_storage(cfg)
+    assert isinstance(backend, MilvusBackend)
+    assert backend.token == "token-123"
 
 
 # ── Neo4j auth parsing in factory ─────────────────────────────────────────────
@@ -105,6 +141,21 @@ def test_qdrant_custom_prefix():
     assert b._sentences_col == "myapp_sentences"
     assert b._episodes_col == "myapp_episodes"
     assert b._sessions_col == "myapp_sessions"
+
+
+def test_milvus_default_url():
+    b = MilvusBackend()
+    assert b.url == "http://localhost:19530"
+    assert b.prefix == "vektori"
+    assert b.embedding_dim == 1024
+
+
+def test_milvus_custom_prefix():
+    b = MilvusBackend(url="http://host:19530", prefix="myapp", embedding_dim=512)
+    assert b.prefix == "myapp"
+    assert b._facts_col == "myapp_facts"
+    assert b._sentences_col == "myapp_sentences"
+    assert b._episodes_col == "myapp_episodes"
 
 
 # ── Neo4jBackend constructor defaults ─────────────────────────────────────────

@@ -29,7 +29,7 @@ SENTENCE LAYER (L2)  <- raw conversation. Sequential NEXT edges. The full story.
   <img src="assets/screenshots/layers.jpeg" alt="Three-layer memory graph: Facts → Episodes → Sentences" width="680" />
 </p>
 
-Search hits Facts, graph discovers Episodes, traces back to source Sentences. SQLite by default — swap to Postgres, Neo4j, or Qdrant when you're ready to scale.
+Search hits Facts, graph discovers Episodes, traces back to source Sentences. SQLite by default — swap to Postgres, Neo4j, Qdrant, or Milvus when you're ready to scale.
 
 ---
 
@@ -49,7 +49,8 @@ Still improving. Run your own in [`/benchmarks`](benchmarks/).
 pip install vektori                      # SQLite + Postgres
 pip install 'vektori[neo4j]'             # + Neo4j support
 pip install 'vektori[qdrant]'            # + Qdrant support
-pip install 'vektori[neo4j,qdrant]'      # all backends
+pip install 'vektori[milvus]'            # + Milvus support
+pip install 'vektori[neo4j,qdrant,milvus]'  # all backends
 ```
 
 No Docker, no external services. SQLite by default.
@@ -221,6 +222,21 @@ v = Vektori(
     embedding_dimension=1024,
 )
 
+# Milvus — high-scale vector store with partition-key isolation
+v = Vektori(
+    storage_backend="milvus",
+    database_url="http://localhost:19530",
+    embedding_dimension=1024,
+)
+
+# Milvus / Zilliz Cloud
+v = Vektori(
+    storage_backend="milvus",
+    database_url="https://your-cluster-endpoint",
+    milvus_token="your-api-key-or-token",
+    embedding_dimension=1024,
+)
+
 # In-memory — tests / CI
 v = Vektori(storage_backend="memory")
 ```
@@ -229,7 +245,7 @@ v = Vektori(storage_backend="memory")
 ```bash
 git clone https://github.com/vektori-ai/vektori
 cd vektori
-docker compose up -d                 # starts Postgres, Neo4j, and Qdrant
+docker compose up -d                 # starts Postgres, Neo4j, Qdrant, and Milvus
 
 # Postgres
 DATABASE_URL=postgresql://vektori:vektori@localhost:5432/vektori python examples/quickstart_postgres.py
@@ -239,11 +255,18 @@ VEKTORI_STORAGE_BACKEND=neo4j VEKTORI_DATABASE_URL=bolt://localhost:7687 vektori
 
 # Qdrant
 VEKTORI_STORAGE_BACKEND=qdrant VEKTORI_DATABASE_URL=http://localhost:6333 vektori add "I prefer dark mode" --user-id u1
+
+# Milvus
+VEKTORI_STORAGE_BACKEND=milvus VEKTORI_DATABASE_URL=http://localhost:19530 vektori add "I prefer dark mode" --user-id u1
+
+# Milvus Cloud
+MILVUS_TOKEN=your-api-key VEKTORI_STORAGE_BACKEND=milvus VEKTORI_DATABASE_URL=https://your-cluster-endpoint vektori add "I prefer dark mode" --user-id u1
 ```
 
 **CLI storage flags:**
 ```bash
 vektori config --storage-backend qdrant --database-url http://localhost:6333
+vektori config --storage-backend milvus --database-url http://localhost:19530
 vektori add "my note" --user-id u1
 vektori search "preferences" --user-id u1
 ```
