@@ -22,10 +22,36 @@ class ExtractionConfig:
                         competitors, product interests
       ``"sales"``     — deal stage, pricing, close dates, stakeholders, blockers,
                         next steps, legal concerns
+      ``"account_management"`` — renewals, expansions, health signals,
+                        escalations, stakeholder changes
       ``"support"``   — issue descriptions, error messages, resolution steps,
                         satisfaction signals, escalation triggers
+      ``"onboarding"`` — implementation milestones, blockers, integrations,
+                        go-live criteria, training gaps
       ``"hr"``        — employee feedback, performance, career goals, team
                         dynamics, policy questions
+      ``"recruiting"`` — candidate qualifications, interview stage,
+                        compensation expectations, next steps
+      ``"finance"``   — invoices, budgets, reconciliation issues, fraud signals,
+                        vendor financial terms
+      ``"legal"``     — contract clauses, compliance requirements, liabilities,
+                        disputes, filing deadlines
+      ``"coding"``    — architecture decisions, bugs, APIs, code review feedback,
+                        performance and security concerns
+      ``"data_analytics"`` — metrics, SQL, data quality issues, dashboards,
+                        ETL and reporting deliverables
+      ``"research"``  — hypotheses, sources, findings, methodology choices,
+                        evidence gaps and next questions
+      ``"cybersecurity"`` — threats, CVEs, affected systems, IOCs,
+                        remediation and compliance frameworks
+      ``"healthcare"`` — symptoms, medications, triage urgency, care plans,
+                        follow-up instructions
+      ``"supply_chain"`` — shipments, inventory, suppliers, purchase orders,
+                        logistics disruptions and cost changes
+      ``"retail"``    — products, SKUs, returns, promotions, preferences,
+                        loyalty signals
+      ``"operations"`` — scheduling, capacity constraints, SLAs, milestones,
+                        resource allocation and bottlenecks
 
     **Level 2 — Domain hints (low effort)**
     ``focus_on`` and ``ignore`` accept plain-English list items that are
