@@ -552,7 +552,7 @@
   </svg>
   <h2>Drop benchmark files here</h2>
   <p>Or <a href="#" onclick="document.getElementById('file-input').click();return false" style="color:var(--accent)">browse to select files</a></p>
-  <div class="file-types">Supports: judge_*.json · *_full_results.json · *_summary.json · *_qa_results.jsonl</div>
+  <div class="file-types">Supports: judge_*.json · *_full_results.json · *_summary.json · *_qa_results.jsonl · *_cache_report.json</div>
 </div>
 
 <!-- Main UI (shown after files loaded) -->
@@ -696,6 +696,17 @@ function parseFile(filename, text) {
 
   const data = JSON.parse(text);
 
+  // Cache report export
+  if (Array.isArray(data.cache_records)) {
+    return {
+      filename,
+      type: 'cache-report',
+      config: { provider: 'cache' },
+      records: data.cache_records,
+      summary: data.summary || null,
+    };
+  }
+
   // Judge file
   if (data.config && data.config.provider && Array.isArray(data.results)) {
     return {
@@ -766,13 +777,14 @@ function fileLabel(f) {
   if (f.type === 'full-results') return 'run';
   if (f.type === 'checkpoint') return 'ckpt';
   if (f.type === 'qa-jsonl') return 'jsonl';
+  if (f.type === 'cache-report') return 'cache';
   if (f.type === 'summary') return 'summary';
   return f.type;
 }
 
 function typeBadgeClass(type) {
   if (type === 'judge') return 'badge-judge';
-  if (type === 'full-results' || type === 'qa-jsonl' || type === 'checkpoint') return 'badge-run';
+  if (type === 'full-results' || type === 'qa-jsonl' || type === 'checkpoint' || type === 'cache-report') return 'badge-run';
   return 'badge-type';
 }
 
@@ -864,6 +876,33 @@ function renderSummaryCards() {
       <div class="accuracy-big">${m.answered}</div>
       <div class="accuracy-sub">answered / ${m.total_questions} total (${m.abstained} abstained)</div>
       <div class="type-breakdown">${typeRows}</div>
+    </div>`;
+  }
+
+  const activeCacheReports = state.files.filter(f => f.type === 'cache-report' && state.activeFileIds.has(f.id));
+  for (const f of activeCacheReports) {
+    const s = f.summary || {};
+    const total = s.total_cache_sessions ?? f.records.length;
+    const linked = s.linked_sessions ?? f.records.filter(r => (r.cache_meta?.linked_questions || []).length > 0).length;
+    const linkedAnswer = s.linked_answer_sessions ?? f.records.filter(r => r.cache_meta?.contains_answer_for_any).length;
+    const unlinked = s.unlinked_sessions ?? Math.max(0, total - linked);
+    const avgFacts = s.avg_facts_per_session ?? (
+      f.records.length > 0
+        ? (f.records.reduce((acc, r) => acc + (r.cache_meta?.fact_count || 0), 0) / f.records.length).toFixed(1)
+        : '0.0'
+    );
+
+    html += `<div class="summary-card">
+      <div class="card-title">Cache Report</div>
+      <div class="card-name" title="${f.filename}">${f.filename}</div>
+      <div class="accuracy-big">${total}</div>
+      <div class="accuracy-sub">cached sessions</div>
+      <div class="verdict-legend">
+        <span><span class="dot" style="background:var(--partial)"></span> ${linkedAnswer} contain answer session(s)</span>
+        <span><span class="dot" style="background:var(--correct)"></span> ${linked} linked to questions</span>
+        <span><span class="dot" style="background:var(--abstained)"></span> ${unlinked} unlinked</span>
+      </div>
+      <div class="avg-latency">Avg facts/session: ${avgFacts}</div>
     </div>`;
   }
 
@@ -1087,6 +1126,12 @@ function renderDetail(idx) {
   document.getElementById('detail-next').disabled = idx === state.filteredRecords.length - 1;
 
   const contextSections = parseContext(r.retrieved_context || '');
+  const cacheMeta = r.cache_meta || null;
+  const factList = cacheMeta
+    ? (Array.isArray(cacheMeta.all_facts) && cacheMeta.all_facts.length > 0
+      ? cacheMeta.all_facts
+      : (Array.isArray(cacheMeta.sample_facts) ? cacheMeta.sample_facts : []))
+    : [];
 
   document.getElementById('detail-body').innerHTML = `
     <div class="detail-section">
@@ -1144,6 +1189,29 @@ function renderDetail(idx) {
       <div class="detail-label">Retrieved Context</div>
       <div class="context-block">
         <div class="context-section-body">${esc(r.retrieved_context)}</div>
+      </div>
+    </div>` : ''}
+
+    ${cacheMeta ? `<div class="detail-section">
+      <div class="detail-label">Cache Session</div>
+      <div class="detail-value" style="color:var(--text2)">
+        <div><strong>Session ID:</strong> ${esc(cacheMeta.session_id || r.question_id || '—')}</div>
+        <div><strong>Facts cached:</strong> ${esc(cacheMeta.fact_count ?? '—')}</div>
+        ${cacheMeta.created_at ? `<div><strong>Cached at:</strong> ${esc(cacheMeta.created_at)}</div>` : ''}
+      </div>
+    </div>` : ''}
+
+    ${cacheMeta && Array.isArray(cacheMeta.linked_questions) && cacheMeta.linked_questions.length > 0 ? `<div class="detail-section">
+      <div class="detail-label">Linked Benchmark Questions (${cacheMeta.linked_questions.length})</div>
+      <div class="context-block">
+        <div class="context-section-body">${cacheMeta.linked_questions.map(q => `${q.contains_answer ? '★ ' : ''}${esc(q.question_id || '')} · ${esc(q.question_type || '—')}\n${esc(q.question || '—')}`).join('\n\n')}</div>
+      </div>
+    </div>` : ''}
+
+    ${factList.length > 0 ? `<div class="detail-section">
+      <div class="detail-label">Cached Facts (${factList.length})</div>
+      <div class="context-block">
+        <div class="context-section-body">${factList.map((f, i) => `${i + 1}. ${esc(f)}`).join('\n')}</div>
       </div>
     </div>` : ''}
 
