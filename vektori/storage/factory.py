@@ -102,6 +102,9 @@ async def create_storage(config: VektoriConfig) -> StorageBackend:
 
         backend = LanceDBBackend(
             uri=database_url or ".lancedb",
+            embedding_dim=config.embedding_dimension,
+        )
+
     elif backend_key == "milvus" or (
         database_url
         and (
