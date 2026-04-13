@@ -40,6 +40,7 @@ class Vektori:
         temporal_decay_rate: float = 0.001,
         async_extraction: bool = True,
         qdrant_api_key: str | None = None,
+        milvus_token: str | None = None,
         config: VektoriConfig | None = None,
     ) -> None:
         if config is not None:
@@ -58,6 +59,7 @@ class Vektori:
                 temporal_decay_rate=temporal_decay_rate,
                 async_extraction=async_extraction,
                 qdrant_api_key=qdrant_api_key,
+                milvus_token=milvus_token,
             )
 
         self._initialized = False
@@ -83,6 +85,8 @@ class Vektori:
 
         self.db = await create_storage(self.config)
         self.embedder = create_embedder(self.config.embedding_model)
+        if hasattr(self.db, "set_sentence_embedder"):
+            self.db.set_sentence_embedder(self.embedder)
         self.llm = create_llm(self.config.extraction_model)
         self._extractor = FactExtractor(
             db=self.db,

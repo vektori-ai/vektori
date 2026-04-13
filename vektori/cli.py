@@ -26,7 +26,7 @@ _EMBEDDING_HELP = (
     "'openai:text-embedding-3-small' [env: VEKTORI_EMBEDDING_MODEL]"
 )
 _BACKEND_HELP = (
-    "Storage backend: sqlite (default), postgres, memory, neo4j, qdrant. "
+    "Storage backend: sqlite (default), postgres, memory, neo4j, qdrant, milvus. "
     "[env: VEKTORI_STORAGE_BACKEND]"
 )
 _DATABASE_URL_HELP = (
@@ -34,6 +34,7 @@ _DATABASE_URL_HELP = (
     "Postgres: postgresql://user:pw@host/db  "
     "Neo4j: bolt://host:7687  "
     "Qdrant: http://host:6333  "
+    "Milvus: http://host:19530 or https://<cluster-endpoint>  "
     "[env: VEKTORI_DATABASE_URL]"
 )
 _QDRANT_API_KEY_HELP = "Qdrant Cloud API key. [env: QDRANT_API_KEY]"
@@ -135,6 +136,7 @@ def _client(
         storage_backend=storage_backend or _default_storage_backend(),
         database_url=database_url or _default_database_url(),
         qdrant_api_key=qdrant_api_key or os.environ.get("QDRANT_API_KEY"),
+        milvus_token=os.environ.get("MILVUS_TOKEN") or os.environ.get("MILVUS_API_KEY"),
     )
     return Vektori(config=cfg)
 
@@ -165,12 +167,13 @@ def config(
     """Set default models and storage so you don't have to pass flags every time.
 
     \b
-    Examples:
-      vektori config --extraction-model "litellm:groq/llama-3.3-70b-versatile"
-      vektori config --embedding-model "sentence-transformers:all-MiniLM-L6-v2"
-      vektori config --storage-backend qdrant --database-url http://localhost:6333
-      vektori config --storage-backend neo4j --database-url "bolt://localhost:7687"
-      vektori config --show
+        Examples:
+            vektori config --extraction-model "litellm:groq/llama-3.3-70b-versatile"
+            vektori config --embedding-model "sentence-transformers:all-MiniLM-L6-v2"
+            vektori config --storage-backend qdrant --database-url http://localhost:6333
+            vektori config --storage-backend neo4j --database-url "bolt://localhost:7687"
+            vektori config --storage-backend milvus --database-url http://localhost:19530
+            vektori config --show
     """
     if reset:
         if _CONFIG_PATH.exists():
