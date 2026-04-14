@@ -1,21 +1,39 @@
-<p align="center">
-  <img src="assets/logo/memory-stack-logo-transparent.svg" width="96" height="96" alt="Vektori logo" />
-</p>
+<div align="center">
 
-<h1 align="center">Vektori</h1>
+<img src="assets/logo/memory-stack-logo-transparent.svg" width="96" height="96" alt="Vektori logo" />
 
-<p align="center"><strong>Memory that remembers the story, not just the facts.</strong></p>
+<h1>Vektori</h1>
 
-<p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0" /></a>
-  <a href="https://pypi.org/project/vektori/"><img src="https://img.shields.io/pypi/v/vektori" alt="PyPI" /></a>
-  <a href="https://pypi.org/project/vektori/"><img src="https://img.shields.io/pypi/dm/vektori?color=blue" alt="PyPI Downloads" /></a>
-  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+" /></a>
-</p>
+<p><strong>Memory that remembers the story, not just the facts.</strong></p>
+
+<a href="https://github.com/vektori-ai/vektori">GitHub</a> · <a href="https://github.com/vektori-ai/vektori/issues">Issues</a> · <a href="./docs">Docs</a>
+
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/vektori)](https://pypi.org/project/vektori/)
+[![Downloads](https://img.shields.io/pypi/dm/vektori?color=blue)](https://pypi.org/project/vektori/)
+[![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Stars](https://img.shields.io/github/stars/vektori-ai/vektori?style=flat&color=ffcb47&labelColor=black)](https://github.com/vektori-ai/vektori)
+[![Issues](https://img.shields.io/github/issues/vektori-ai/vektori?labelColor=black&style=flat&color=ff80eb)](https://github.com/vektori-ai/vektori/issues)
+[![Contributors](https://img.shields.io/github/contributors/vektori-ai/vektori?color=c4f042&labelColor=black&style=flat)](https://github.com/vektori-ai/vektori/graphs/contributors)
+[![Last Commit](https://img.shields.io/github/last-commit/vektori-ai/vektori?color=c4f042&labelColor=black)](https://github.com/vektori-ai/vektori/commits/main)
+
+👋 Questions, ideas, bugs → [GitHub Issues](https://github.com/vektori-ai/vektori/issues) · [Discussions](https://github.com/vektori-ai/vektori/discussions)
+
+If Vektori has been useful, a ⭐ goes a long way.
+
+</div>
 
 ---
 
-Most memory systems compress conversations into entity-relationship triples. You get the answer, but you lose the texture, the reasoning, the trajectory. Vektori uses a **three-layer sentence graph** so agents don't just recall preferences, they understand how things got there.
+## Why Vektori
+
+Building agents that actually remember people is harder than it looks:
+
+- **Facts aren't enough.** Knowing a user prefers WhatsApp is different from knowing they've asked three times and are getting frustrated. Most systems give you the what, not the why or how it changed.
+- **Patterns stay invisible.** Spotting that someone's tone has been shifting across sessions requires more than point-in-time retrieval — you need to see the trajectory.
+- **Context overhead explodes.** Stuffing raw conversation history into every prompt doesn't scale. You need structure, not just storage.
+
+Vektori solves this with a **three-layer sentence graph**. Agents don't just recall preferences — they understand how things got there.
 
 ```
 FACT LAYER (L0)      <- vector search surface. Short, crisp statements.
@@ -35,11 +53,20 @@ Search hits Facts, graph discovers Episodes, traces back to source Sentences. SQ
 
 ## Benchmarks
 
-| Benchmark | Score | Depth | Models |
-|-----------|-------|-------|--------|
-| LongMemEval-S | **73%** | L1 | BGE-M3 + Gemini Flash |
+Tested on long-horizon memory benchmarks — hundreds of turns, real user details buried deep in history.
 
-Still improving. Run your own in [`/benchmarks`](benchmarks/).
+| Benchmark | Vektori | Mem0 | Zep | Supermemory | Letta |
+|-----------|---------|------|-----|-------------|-------|
+| LoCoMo | **66%** | 66% | 58%† | ~70% | ~83% |
+| LongMemEval-S | **73%** | — | 64% | 85% | — |
+
+†Zep's self-reported score is 75%; independently re-evaluated at 58%. Scores across systems are not always directly comparable — model choice (GPT-4o vs GPT-4.1-mini vs local) significantly affects results. 
+
+We used gemini-2.5-flash-lite because of token cost, better models imporve accuracy a lot. Benchmarks at L1 level
+
+On LoCoMo and longmemEval, **the retrieved context contains the answer in 95% of questions** — the gap to 66% is a synthesis problem, not a retrieval one. Actively working on closing it, exploring RL.
+
+Still improving — PRs and evals welcome. Run your own: [`/benchmarks`](benchmarks/)
 
 ---
 
@@ -338,24 +365,13 @@ v = Vektori(extraction_model="nvidia:z-ai/glm5")
 ```
 ---
 
-## Why Not Mem0 / Zep?
-
-| | Mem0 / Zep | **Vektori** |
-|---|---|---|
-| Memory model | Entity-relation triples | Three-layer sentence graph |
-| What you get | The answer | The answer + reasoning + story |
-| Patterns beyond facts | Manual graph queries | Auto-discovered (Episode layer) |
-| Default backend | Requires external DB | SQLite, zero config |
-| Fully local / offline | No | Yes (Ollama, BGE-M3, SentenceTransformers) |
-| License | Partial OSS | Apache 2.0 |
-
-Mem0 and Zep are solid tools. But they compress conversations into triples, so you get the *what* but not the *why* or how it changed over time. That matters when you're building agents that need to reason about a person's trajectory, not just their current state.
-
----
-
 ## Contributing
 
-Issues, PRs, and ideas welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Vektori is early and there's a lot of ground to cover. If you're building agents that need memory, your real-world feedback is the most valuable thing you can contribute.
+
+- Found a bug or an edge case? [Open an issue](https://github.com/vektori-ai/vektori/issues)
+- Have an idea or want to discuss direction? [Start a discussion](https://github.com/vektori-ai/vektori/discussions)
+- Want to contribute code? See [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ```bash
 git clone https://github.com/vektori-ai/vektori
@@ -363,6 +379,12 @@ cd vektori
 pip install -e ".[dev]"
 pytest tests/unit/
 ```
+
+---
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=vektori-ai/vektori&type=timeline)](https://www.star-history.com/#vektori-ai/vektori&type=timeline)
 
 ---
 
