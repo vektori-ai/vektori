@@ -101,9 +101,7 @@ def _last_message(context: OpenAILLMContext, role: str) -> str | None:
             content = m.get("content", "")
             if isinstance(content, list):
                 # Handle multi-part content (e.g. OpenAI vision format)
-                content = " ".join(
-                    p.get("text", "") for p in content if isinstance(p, dict)
-                )
+                content = " ".join(p.get("text", "") for p in content if isinstance(p, dict))
             return content or None
     return None
 
@@ -144,7 +142,7 @@ class VektoriMemoryProcessor(FrameProcessor):
 
     def __init__(
         self,
-        vektori: "Vektori",
+        vektori: Vektori,
         user_id: str,
         *,
         base_system_prompt: str = "",
@@ -205,10 +203,7 @@ class VektoriMemoryProcessor(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
 
-        if (
-            isinstance(frame, OpenAILLMContextFrame)
-            and direction == FrameDirection.DOWNSTREAM
-        ):
+        if isinstance(frame, OpenAILLMContextFrame) and direction == FrameDirection.DOWNSTREAM:
             await self._inject_memory(frame.context)
 
         await self.push_frame(frame, direction)
@@ -251,7 +246,7 @@ class VektoriStorageProcessor(FrameProcessor):
 
     def __init__(
         self,
-        vektori: "Vektori",
+        vektori: Vektori,
         user_id: str,
         session_id: str,
         context: OpenAILLMContext | None = None,

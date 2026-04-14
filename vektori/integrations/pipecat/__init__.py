@@ -14,6 +14,4 @@ try:
 
     __all__ = ["VektoriMemoryProcessor", "VektoriStorageProcessor"]
 except ImportError as exc:  # pipecat not installed
-    raise ImportError(
-        "Pipecat is not installed. Run: pip install 'vektori[pipecat]'"
-    ) from exc
+    raise ImportError("Pipecat is not installed. Run: pip install 'vektori[pipecat]'") from exc

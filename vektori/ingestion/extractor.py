@@ -32,7 +32,6 @@ Prioritise extracting:
 - Specific product features or capabilities the prospect expressed interest in
 - ICP qualification signals (company size, industry, tech stack)
 Deprioritise: general greetings, scheduling logistics unrelated to deal timeline, small talk.""",
-
     "sales": """
 Domain focus (sales agent):
 Prioritise extracting:
@@ -45,7 +44,6 @@ Prioritise extracting:
 - Legal, procurement, or security review concerns raised
 - Champion and economic buyer identification
 Deprioritise: general greetings, small talk.""",
-
     "account_management": """
 Domain focus (account management agent):
 Prioritise extracting:
@@ -57,7 +55,6 @@ Prioritise extracting:
 - Feature requests and product feedback from the customer
 - Commitments made by the account team
 Deprioritise: general pleasantries, unrelated small talk.""",
-
     # ── Customer experience ───────────────────────────────────────────────────
     "support": """
 Domain focus (customer support agent):
@@ -70,7 +67,6 @@ Prioritise extracting:
 - Escalation triggers or SLA/ticket references
 - Follow-up commitments and deadlines
 Deprioritise: scripted greetings, hold messages, boilerplate closing pleasantries.""",
-
     "onboarding": """
 Domain focus (customer onboarding agent):
 Prioritise extracting:
@@ -82,7 +78,6 @@ Prioritise extracting:
 - Go-live dates and success criteria defined
 - Configuration choices and setup decisions made
 Deprioritise: generic greetings, off-topic conversation.""",
-
     # ── People & talent ───────────────────────────────────────────────────────
     "hr": """
 Domain focus (HR agent):
@@ -95,7 +90,6 @@ Prioritise extracting:
 - Leave, absence, or schedule-related details
 - Compensation or benefits questions raised
 Deprioritise: casual small talk, water-cooler conversation, off-topic personal chat.""",
-
     "recruiting": """
 Domain focus (recruiting / talent acquisition agent):
 Prioritise extracting:
@@ -107,7 +101,6 @@ Prioritise extracting:
 - Red flags or concerns noted by the recruiter
 - Next steps and scheduled interviews
 Deprioritise: small talk, generic introductions.""",
-
     # ── Finance & legal ───────────────────────────────────────────────────────
     "finance": """
 Domain focus (finance / accounting agent):
@@ -120,7 +113,6 @@ Prioritise extracting:
 - Vendor names and contract financial terms
 - Reporting deadlines and period-close milestones
 Deprioritise: general chat, non-financial pleasantries.""",
-
     "legal": """
 Domain focus (legal agent):
 Prioritise extracting:
@@ -132,7 +124,6 @@ Prioritise extracting:
 - Dispute details, allegations, or litigation references
 - Legal advice or guidance provided
 Deprioritise: casual conversation, non-legal pleasantries.""",
-
     # ── Technical ────────────────────────────────────────────────────────────
     "coding": """
 Domain focus (software engineering / coding agent):
@@ -145,7 +136,6 @@ Prioritise extracting:
 - Performance or security concerns raised
 - Task assignments, PR numbers, and deadlines
 Deprioritise: generic greetings, non-technical small talk.""",
-
     "data_analytics": """
 Domain focus (data / analytics agent):
 Prioritise extracting:
@@ -157,7 +147,6 @@ Prioritise extracting:
 - Data pipeline or ETL issues mentioned
 - Deadlines for reports or model deliverables
 Deprioritise: general pleasantries, off-topic conversation.""",
-
     "research": """
 Domain focus (research agent):
 Prioritise extracting:
@@ -169,7 +158,6 @@ Prioritise extracting:
 - Next research steps and open questions
 - Authors, institutions, or publications mentioned
 Deprioritise: administrative filler, generic acknowledgements.""",
-
     "cybersecurity": """
 Domain focus (cybersecurity agent):
 Prioritise extracting:
@@ -181,7 +169,6 @@ Prioritise extracting:
 - Compliance frameworks referenced (ISO 27001, NIST, SOC 2)
 - Incident timeline and containment actions
 Deprioritise: routine greetings, non-security small talk.""",
-
     # ── Operations & industry ────────────────────────────────────────────────
     "healthcare": """
 Domain focus (healthcare / clinical agent):
@@ -195,7 +182,6 @@ Prioritise extracting:
 - Follow-up instructions and care commitments
 Deprioritise: general small talk, non-clinical pleasantries.
 Note: treat all health information with appropriate sensitivity.""",
-
     "supply_chain": """
 Domain focus (supply chain / logistics agent):
 Prioritise extracting:
@@ -207,7 +193,6 @@ Prioritise extracting:
 - Disruption signals (port delays, weather, supplier issues)
 - Cost-per-unit or freight cost changes mentioned
 Deprioritise: general pleasantries, unrelated conversation.""",
-
     "retail": """
 Domain focus (retail / e-commerce agent):
 Prioritise extracting:
@@ -219,7 +204,6 @@ Prioritise extracting:
 - Loyalty programme status and points
 - Competitor products or pricing mentioned
 Deprioritise: generic greetings, unrelated small talk.""",
-
     "operations": """
 Domain focus (operations / scheduling agent):
 Prioritise extracting:
@@ -433,7 +417,7 @@ class FactExtractor:
         max_facts: int = 8,
         max_input_tokens: int = 4000,
         max_output_tokens: int = 8192,
-        extraction_config: "ExtractionConfig | None" = None,
+        extraction_config: ExtractionConfig | None = None,
     ) -> None:
         self.db = db
         self.embedder = embedder
