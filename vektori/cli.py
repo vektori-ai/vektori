@@ -399,21 +399,26 @@ def search(
     facts = result.get("facts", [])
     sentences = result.get("sentences", [])
 
+    if not facts and not sentences:
+        typer.echo("No memories found.")
+        return
+
     if facts:
+        typer.echo("facts:")
         for i, fact in enumerate(facts, 1):
             score = fact.get("score")
-            score_str = f"  [{score:.3f}]" if score is not None else ""
-            typer.echo(f"{i}.{score_str} {fact['text']}")
-    elif sentences:
-        typer.echo(
-            "(showing raw sentences — run with an extraction model to get structured facts)\n"
-        )
-        for i, sent in enumerate(sentences, 1):
-            dist = sent.get("distance")
-            score_str = f"  [{1 - dist:.3f}]" if dist is not None else ""
-            typer.echo(f"{i}.{score_str} {sent['text']}")
-    else:
-        typer.echo("No memories found.")
+            score_str = f" [{score:.3f}]" if score is not None else ""
+            typer.echo(f"  {i}.{score_str} {fact['text']}")
+
+    if sentences:
+        typer.echo("\ncontext:")
+        cur_session = None
+        for s in sentences:
+            ssid = (s.get("session_id") or "")[:8]
+            if ssid != cur_session:
+                cur_session = ssid
+                typer.echo(f"  [{ssid}]")
+            typer.echo(f"    {s['text']}")
 
 
 # ---------------------------------------------------------------------------
@@ -588,6 +593,7 @@ def recall(
     query: str = typer.Argument(..., help="What to recall."),
     user_id: str = typer.Option(..., "--user-id", "-u", envvar="VEKTORI_USER_ID", help="User ID."),
     top_k: int = typer.Option(10, "--top-k", "-k", help="Max results to return."),
+    depth: str = typer.Option("l1", "--depth", "-d", help="Search depth: l0, l1, or l2."),
     extraction_model: str | None = typer.Option(
         None, "--extraction-model", "-m", envvar="VEKTORI_EXTRACTION_MODEL", help=_EXTRACTION_HELP
     ),
@@ -603,6 +609,7 @@ def recall(
     qdrant_api_key: str | None = typer.Option(
         None, "--qdrant-api-key", envvar="QDRANT_API_KEY", help=_QDRANT_API_KEY_HELP
     ),
+    synthesize: bool = typer.Option(False, "--synthesize", "-s", help="Use LLM to synthesize retrieved context into a direct answer."),
     as_json: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
     """Recall memories. Alias for `search` — reads naturally in agent prompts."""
@@ -618,7 +625,7 @@ def recall(
             qdrant_api_key=qdrant_api_key,
         )
         try:
-            result = await v.search(query, user_id=user_id, top_k=top_k, depth="l1")
+            result = await v.search(query, user_id=user_id, top_k=top_k, depth=depth)
         finally:
             await v.close()
         return result
@@ -633,7 +640,6 @@ def recall(
     sentences = result.get("sentences", [])
 
     if as_json:
-        # Richer output for agents — include session_id, created_at, source
         agent_facts = [
             {
                 "text": f["text"],
@@ -647,18 +653,47 @@ def recall(
         _out({"facts": agent_facts, "memory_found": len(agent_facts) > 0}, True)
         return
 
+    if not facts and not sentences:
+        typer.echo("No memories found.")
+        return
+
+    if synthesize:
+        context_parts = [f["text"] for f in facts]
+        context_parts += [s["text"] for s in sentences]
+        context_block = "\n".join(f"- {t}" for t in context_parts[:20])
+        prompt = (
+            f"Answer the following question using only the memory fragments below. "
+            f"Be concise and direct. Do not add anything not in the memories.\n\n"
+            f"Question: {query}\n\nMemory:\n{context_block}\n\nAnswer:"
+        )
+        async def _synthesize() -> str:
+            from vektori.models.factory import create_llm
+            _silence_litellm()
+            llm = create_llm(em)
+            return await llm.generate(prompt)
+        try:
+            answer = asyncio.run(_synthesize())
+            typer.echo(answer)
+        except Exception as e:
+            typer.echo(f"[synthesis failed: {e}]", err=True)
+        return
+
     if facts:
+        typer.echo("facts:")
         for i, fact in enumerate(facts, 1):
             score = fact.get("score")
-            score_str = f"  [{score:.3f}]" if score is not None else ""
-            typer.echo(f"{i}.{score_str} {fact['text']}")
-    elif sentences:
-        for i, sent in enumerate(sentences, 1):
-            dist = sent.get("distance")
-            score_str = f"  [{1 - dist:.3f}]" if dist is not None else ""
-            typer.echo(f"{i}.{score_str} {sent['text']}")
-    else:
-        typer.echo("No memories found.")
+            score_str = f" [{score:.3f}]" if score is not None else ""
+            typer.echo(f"  {i}.{score_str} {fact['text']}")
+
+    if sentences:
+        typer.echo("\ncontext:")
+        cur_session = None
+        for s in sentences:
+            ssid = (s.get("session_id") or "")[:8]
+            if ssid != cur_session:
+                cur_session = ssid
+                typer.echo(f"  [{ssid}]")
+            typer.echo(f"    {s['text']}")
 
 
 # ---------------------------------------------------------------------------

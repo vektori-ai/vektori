@@ -94,6 +94,16 @@ PRONOUNS = {
 JUNK_PATTERNS = [
     r"^(ok|okay|sure|yes|no|yeah|yep|nope|hmm|hm|ah|oh|uh|um|lol|haha|thanks|thank you|got it|right|cool|nice|great|fine|alright)\s*[.!?]*$",
     r"^(hey|hi|hello|bye|goodbye|cheers|ciao)\s*[.!?]*$",
+    # web/social media cruft
+    r"©\s*\d{4}",
+    r"(terms of service|privacy policy|cookie policy|accessibility|all rights reserved)",
+    r"^\s*(trending|trending now|what'?s happening)\s*$",
+    r"^\d[\d,\.]+\s*(views|likes|retweets|replies|reposts|followers|following)\s*$",
+    r"^(show more|load more|see more|view more|read more)\s*[.!?]*$",
+    r"(sports\s*·\s*trending|entertainment\s*·\s*trending|news\s*·\s*trending)",
+    r"^relevant\s+(people|chats|posts)\s*$",
+    # pipe-separated nav lists (e.g. "Terms | Privacy | Cookie")
+    r"^[^|]{1,40}\|[^|]{1,40}\|",
 ]
 
 CODE_PATTERNS = [

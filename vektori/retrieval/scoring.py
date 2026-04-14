@@ -115,7 +115,13 @@ def score_and_rank(
         # for preference/habit/life-event queries. Assistant facts capture what
         # the assistant said or recommended. De-weight assistant facts slightly
         # so they don't compete equally with user-stated preferences by default.
-        source = (fact.get("metadata") or {}).get("source", "user")
+        raw_meta = fact.get("metadata") or {}
+        if isinstance(raw_meta, str):
+            try:
+                import json as _json; raw_meta = _json.loads(raw_meta)
+            except Exception:
+                raw_meta = {}
+        source = raw_meta.get("source", "user")
         if source == "assistant":
             source_weight = assistant_source_weight
         else:

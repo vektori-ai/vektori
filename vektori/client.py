@@ -134,6 +134,7 @@ class Vektori:
         agent_id: str | None = None,
         metadata: dict[str, Any] | None = None,
         session_time: datetime | None = None,
+        skip_extraction: bool = False,
     ) -> dict[str, Any]:
         """
         Store a conversation session into the memory graph.
@@ -156,7 +157,8 @@ class Vektori:
         """
         await self._ensure_initialized()
         return await self._pipeline.ingest(
-            messages, session_id, user_id, agent_id, metadata, session_time=session_time
+            messages, session_id, user_id, agent_id, metadata, session_time=session_time,
+            skip_extraction=skip_extraction,
         )
 
     async def search(
