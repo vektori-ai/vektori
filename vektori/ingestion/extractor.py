@@ -685,7 +685,7 @@ class FactExtractor:
 
                 # Write-time semantic dedup
                 dedup = await self._check_dedup(
-                    fact_embedding, session_id, user_id, agent_id, subject
+                    fact_data["text"], fact_embedding, session_id, user_id, agent_id, subject
                 )
 
                 if dedup is not None:
@@ -787,7 +787,9 @@ class FactExtractor:
 
                 # Dedup check — in a fresh user context this always returns None,
                 # but we run it anyway for correctness if sessions overlap.
-                dedup = await self._check_dedup(fact_emb, session_id, user_id, agent_id, subject)
+                dedup = await self._check_dedup(
+                    fact_data["text"], fact_emb, session_id, user_id, agent_id, subject
+                )
                 if dedup is not None:
                     existing_id, same_session = dedup
                     await self.db.increment_fact_mentions(existing_id)
@@ -834,6 +836,7 @@ class FactExtractor:
 
     async def _check_dedup(
         self,
+        fact_text: str,
         fact_embedding: list[float],
         session_id: str,
         user_id: str,
@@ -869,6 +872,26 @@ class FactExtractor:
                 return (best["id"], True)
             if not same_session and sim > 0.85:
                 return (best["id"], False)
+
+            # Contradiction LLM check for near-misses
+            # If the fact wasn't deduped by bare similarity, check if it contradicts.
+            # Only consider same-subject facts that are reasonably close (sim > 0.65).
+            plausible_conflicts = [
+                c for c in candidates
+                if (1.0 - c.get("distance", 1.0)) > 0.65
+            ]
+            if plausible_conflicts:
+                facts_text = "\n".join(f"- [{c['id']}] {c['text']}" for c in plausible_conflicts)
+                prompt = CONTRADICTION_PROMPT.format(fact_text=fact_text, existing_facts=facts_text)
+                try:
+                    response = await self.llm.generate(prompt, max_tokens=100)
+                    data = _parse_json_response(response)
+                    supersedes_id = data.get("supersedes_id")
+                    if supersedes_id and any(c["id"] == supersedes_id for c in plausible_conflicts):
+                        return (supersedes_id, False)
+                except Exception as e:
+                    logger.debug("Contradiction check failed: %s", e)
+
         except Exception as e:
             logger.warning("Dedup lookup failed: %s", e)
         return None
@@ -1042,3 +1065,17 @@ def _parse_json_response(response: str) -> dict[str, Any]:
     except json.JSONDecodeError as e:
         logger.error("Failed to parse extraction JSON: %s\nResponse: %.500s", e, response)
         return {"facts": []}
+
+# ── Contradiction prompt ──────────────────────────────────────────────────────
+CONTRADICTION_PROMPT = """Do any of the existing facts contradict or get superseded by the new fact?
+New fact: "{fact_text}"
+
+Existing facts:
+{existing_facts}
+
+If the new fact updates, contradicts, or replaces an existing fact, return its ID. Otherwise return null.
+
+Return ONLY JSON:
+{{
+  "supersedes_id": "fact_id_here" or null
+}}"""
