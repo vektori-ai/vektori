@@ -321,6 +321,21 @@ v = Vektori(embedding_model="bge:BAAI/bge-m3")
 v = Vektori(extraction_model="litellm:groq/llama3-8b-8192")
 ```
 
+## NVIDIA NIM - GPU-optimized models via [NVIDIA NIM](https://build.nvidia.com).
+```python
+# NVIDIA embedding models (Matryoshka: 384-2048 dimensions)
+v = Vektori(
+    embedding_model="nvidia:llama-nemotron-embed-1b-v2",
+    embedding_dimension=1024,  # Optional: 384, 512, 768, 1024, or 2048
+)
+
+# NVIDIA LLM models (nvidia/ prefix auto-added)
+v = Vektori(extraction_model="nvidia:llama-3.3-nemotron-super-49b-v1")
+
+# Third-party models hosted on NVIDIA NIM (use full path)
+v = Vektori(extraction_model="nvidia:z-ai/glm5")
+
+```
 ---
 
 ## Why Not Mem0 / Zep?

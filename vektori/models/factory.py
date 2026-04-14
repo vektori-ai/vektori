@@ -20,6 +20,7 @@ EMBEDDING_REGISTRY: dict[str, str] = {
     "cloudflare": "vektori.models.cloudflare.CloudflareEmbedder",
     # LiteLLM: 100+ providers — Together AI, Cohere, Azure, Ollama, etc.
     "litellm": "vektori.models.litellm_embedder.LiteLLMEmbedder",
+    "nvidia": "vektori.models.nvidia.NvidiaEmbedder",
 }
 
 LLM_REGISTRY: dict[str, str] = {
@@ -31,6 +32,7 @@ LLM_REGISTRY: dict[str, str] = {
     "gemini": "vektori.models.gemini.GeminiLLM",  # Direct Gemini API
     # LiteLLM: single interface for 100+ providers — recommended for extraction
     "litellm": "vektori.models.litellm_provider.LiteLLMProvider",
+    "nvidia": "vektori.models.nvidia.NvidiaLLM",
 }
 
 

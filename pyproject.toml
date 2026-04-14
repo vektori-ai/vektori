@@ -42,6 +42,7 @@ sentence-transformers = ["sentence-transformers>=2.6"]
 bge = ["FlagEmbedding>=1.2"]
 litellm = ["litellm>=1.30"]
 pipecat = ["pipecat-ai>=0.0.50", "fastapi>=0.110", "uvicorn[standard]>=0.29"]
+nvidia = ["openai>=1.12"]  # NVIDIA NIM uses OpenAI-compatible API
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -60,6 +61,7 @@ all = [
     "sentence-transformers>=2.6",
     "FlagEmbedding>=1.2",
     "litellm>=1.30",
+    "openai>=1.12",  # NVIDIA NIM support
 ]
 
 [project.scripts]
