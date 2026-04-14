@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 
-from vektori.models.base import LLMProvider
+from vektori.models.base import ChatCompletionResult, ChatModelProvider, LLMProvider
 
 logger = logging.getLogger(__name__)
 
@@ -55,3 +55,54 @@ class LiteLLMProvider(LLMProvider):
             **kwargs,
         )
         return response.choices[0].message.content or ""
+
+
+class LiteLLMChatModel(ChatModelProvider):
+    """LiteLLM-backed chat provider for the native harness."""
+
+    def __init__(self, model: str | None = None, **kwargs) -> None:
+        self.model = model or DEFAULT_MODEL
+        self._kwargs = kwargs
+
+    async def complete(
+        self,
+        messages: list[dict[str, object]],
+        *,
+        tools: list[dict[str, object]] | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> ChatCompletionResult:
+        try:
+            import litellm
+        except ImportError as e:
+            raise ImportError("litellm required: pip install litellm") from e
+
+        kwargs = dict(self._kwargs)
+        if tools:
+            kwargs["tools"] = tools
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        response = await litellm.acompletion(
+            model=self.model,
+            messages=messages,
+            **kwargs,
+        )
+        message = response.choices[0].message
+        usage = None
+        if getattr(response, "usage", None) is not None:
+            usage = {
+                "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
+                "completion_tokens": getattr(response.usage, "completion_tokens", 0),
+                "total_tokens": getattr(response.usage, "total_tokens", 0),
+            }
+        tool_calls = []
+        if getattr(message, "tool_calls", None):
+            tool_calls = [call.model_dump() for call in message.tool_calls]
+        return ChatCompletionResult(
+            content=message.content,
+            tool_calls=tool_calls,
+            raw_response=response,
+            usage=usage,
+        )

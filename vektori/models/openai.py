@@ -1,10 +1,15 @@
-"""OpenAI embedding and LLM providers."""
+"""OpenAI embedding, extraction, and chat providers."""
 
 from __future__ import annotations
 
 import logging
 
-from vektori.models.base import EmbeddingProvider, LLMProvider
+from vektori.models.base import (
+    ChatCompletionResult,
+    ChatModelProvider,
+    EmbeddingProvider,
+    LLMProvider,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,3 +85,57 @@ class OpenAILLM(LLMProvider):
             kwargs["max_tokens"] = max_tokens
         response = await client.chat.completions.create(**kwargs)
         return response.choices[0].message.content or ""
+
+
+class OpenAIChatModel(ChatModelProvider):
+    """OpenAI chat model provider for the native harness."""
+
+    def __init__(self, model: str | None = None, api_key: str | None = None) -> None:
+        self.model = model or DEFAULT_LLM_MODEL
+        self._api_key = api_key
+        self._client = None
+
+    def _get_client(self):
+        if self._client is None:
+            from openai import AsyncOpenAI
+
+            self._client = AsyncOpenAI(api_key=self._api_key)
+        return self._client
+
+    async def complete(
+        self,
+        messages: list[dict[str, object]],
+        *,
+        tools: list[dict[str, object]] | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> ChatCompletionResult:
+        client = self._get_client()
+        kwargs: dict[str, object] = {
+            "model": self.model,
+            "messages": messages,
+        }
+        if tools:
+            kwargs["tools"] = tools
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        response = await client.chat.completions.create(**kwargs)
+        message = response.choices[0].message
+        usage = None
+        if response.usage is not None:
+            usage = {
+                "prompt_tokens": response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
+                "total_tokens": response.usage.total_tokens,
+            }
+        tool_calls = []
+        if getattr(message, "tool_calls", None):
+            tool_calls = [call.model_dump() for call in message.tool_calls]
+        return ChatCompletionResult(
+            content=message.content,
+            tool_calls=tool_calls,
+            raw_response=response,
+            usage=usage,
+        )

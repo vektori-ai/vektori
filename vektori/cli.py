@@ -16,6 +16,7 @@ _CONFIG_PATH = Path.home() / ".vektori" / "config.json"
 
 _FALLBACK_EXTRACTION = "openai:gpt-4o-mini"
 _FALLBACK_EMBEDDING = "sentence-transformers:all-MiniLM-L6-v2"
+_FALLBACK_CHAT = "openai:gpt-4o-mini"
 
 _EXTRACTION_HELP = (
     "LLM for fact extraction. e.g. 'litellm:groq/llama-3.3-70b-versatile', "
@@ -38,6 +39,10 @@ _DATABASE_URL_HELP = (
     "[env: VEKTORI_DATABASE_URL]"
 )
 _QDRANT_API_KEY_HELP = "Qdrant Cloud API key. [env: QDRANT_API_KEY]"
+_CHAT_HELP = (
+    "Chat model for the native harness. e.g. 'openai:gpt-4o-mini', "
+    "'litellm:groq/llama-3.3-70b-versatile' [env: VEKTORI_CHAT_MODEL]"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +80,11 @@ def _default_embedding() -> str:
         or cfg.get("embedding_model")
         or _FALLBACK_EMBEDDING
     )
+
+
+def _default_chat_model() -> str:
+    cfg = _load_config()
+    return os.environ.get("VEKTORI_CHAT_MODEL") or cfg.get("chat_model") or _FALLBACK_CHAT
 
 
 def _warn_openai(model: str, var: str) -> None:
@@ -159,6 +169,7 @@ def config(
     embedding_model: str | None = typer.Option(
         None, "--embedding-model", "-e", help=_EMBEDDING_HELP
     ),
+    chat_model: str | None = typer.Option(None, "--chat-model", help=_CHAT_HELP),
     storage_backend: str | None = typer.Option(None, "--storage-backend", help=_BACKEND_HELP),
     database_url: str | None = typer.Option(None, "--database-url", help=_DATABASE_URL_HELP),
     show: bool = typer.Option(False, "--show", help="Print current config."),
@@ -187,21 +198,24 @@ def config(
         cfg["extraction_model"] = extraction_model
     if embedding_model:
         cfg["embedding_model"] = embedding_model
+    if chat_model:
+        cfg["chat_model"] = chat_model
     if storage_backend:
         cfg["storage_backend"] = storage_backend
     if database_url:
         cfg["database_url"] = database_url
 
-    if extraction_model or embedding_model or storage_backend or database_url:
+    if extraction_model or embedding_model or chat_model or storage_backend or database_url:
         _save_config(cfg)
         typer.echo(f"Saved to {_CONFIG_PATH}")
 
     if show or not (
-        extraction_model or embedding_model or storage_backend or database_url or reset
+        extraction_model or embedding_model or chat_model or storage_backend or database_url or reset
     ):
         typer.echo(f"Config file     : {_CONFIG_PATH}")
         typer.echo(f"extraction      : {_default_extraction()}")
         typer.echo(f"embedding       : {_default_embedding()}")
+        typer.echo(f"chat            : {_default_chat_model()}")
         typer.echo(f"storage_backend : {_default_storage_backend()}")
         typer.echo(f"database_url    : {_default_database_url() or '(default)'}")
 
@@ -708,6 +722,507 @@ def stats(
             f"facts: {data['facts']}  sessions: {data['sessions']}  "
             f"oldest: {data['oldest']}  newest: {data['newest']}"
         )
+
+
+# ---------------------------------------------------------------------------
+# inject  — detect and ingest Claude Code / Codex sessions into memory
+# ---------------------------------------------------------------------------
+
+
+def _slug_to_path(slug: str) -> str:
+    """Convert Claude Code project slug back to a readable path."""
+    return slug.replace("-", "/", 1).replace("-", " ").strip()
+
+
+def _discover_claude_sessions() -> list[dict]:
+    """Find all Claude Code session JSONL files."""
+    base = Path.home() / ".claude" / "projects"
+    if not base.exists():
+        return []
+    sessions = []
+    for project_dir in sorted(base.iterdir()):
+        if not project_dir.is_dir():
+            continue
+        project_slug = project_dir.name
+        for jsonl in sorted(project_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True):
+            sessions.append({
+                "source": "claude-code",
+                "project": project_slug,
+                "session_id": jsonl.stem,
+                "path": jsonl,
+                "mtime": jsonl.stat().st_mtime,
+            })
+    return sessions
+
+
+def _discover_codex_sessions() -> list[dict]:
+    """Find all Codex session JSONL files."""
+    base = Path.home() / ".codex" / "sessions"
+    if not base.exists():
+        return []
+    sessions = []
+    for jsonl in sorted(base.rglob("rollout-*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True):
+        sessions.append({
+            "source": "codex",
+            "project": None,  # resolved from session_meta
+            "session_id": jsonl.stem,
+            "path": jsonl,
+            "mtime": jsonl.stat().st_mtime,
+        })
+    return sessions
+
+
+def _parse_claude_session(path: Path) -> tuple[str | None, list[dict]]:
+    """Parse a Claude Code JSONL transcript into messages. Returns (project_cwd, messages)."""
+    messages = []
+    cwd = None
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                # Extract cwd from summary if available
+                if obj.get("type") == "summary" and not cwd:
+                    cwd = obj.get("cwd")
+                msg_type = obj.get("type", "")
+                msg = obj.get("message", {})
+                role = msg.get("role", "")
+                if msg_type not in ("user", "assistant") or role not in ("user", "assistant"):
+                    continue
+                content = msg.get("content", "")
+                if isinstance(content, list):
+                    parts = []
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            parts.append(block["text"])
+                    text = " ".join(parts).strip()
+                elif isinstance(content, str):
+                    text = content.strip()
+                else:
+                    continue
+                if text:
+                    messages.append({"role": role, "content": text})
+    except Exception:
+        pass
+    return cwd, messages
+
+
+def _parse_codex_session(path: Path) -> tuple[str | None, list[dict]]:
+    """Parse a Codex rollout JSONL into messages. Returns (cwd, messages)."""
+    messages = []
+    cwd = None
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                obj_type = obj.get("type", "")
+                payload = obj.get("payload", {})
+                # Extract cwd from session_meta
+                if obj_type == "session_meta" and not cwd:
+                    cwd = payload.get("cwd")
+                    continue
+                if obj_type != "response_item":
+                    continue
+                role = payload.get("role", "")
+                if role not in ("user", "assistant"):
+                    continue
+                content = payload.get("content", [])
+                parts = []
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    btype = block.get("type", "")
+                    # user: input_text, assistant: output_text
+                    if btype in ("input_text", "output_text"):
+                        text = block.get("text", "").strip()
+                        # skip env context blocks injected by codex
+                        if text and not text.startswith("<environment_context>") and not text.startswith("<permissions"):
+                            parts.append(text)
+                text = " ".join(parts).strip()
+                if text:
+                    messages.append({"role": role, "content": text})
+    except Exception:
+        pass
+    return cwd, messages
+
+
+agent_app = typer.Typer(help="Native conversational harness commands.")
+app.add_typer(agent_app, name="agent")
+
+
+@agent_app.command("chat")
+def agent_chat(
+    user_id: str = typer.Option(..., "--user-id", "-u", envvar="VEKTORI_USER_ID", help="User ID."),
+    agent_id: str = typer.Option("default-agent", "--agent-id", "-a", help="Agent ID."),
+    context_path: str | None = typer.Option(
+        None,
+        "--context-path",
+        help="Optional path to agents.md or vektori.yaml for agent instructions.",
+    ),
+    session_id: str | None = typer.Option(
+        None,
+        "--session-id",
+        "-s",
+        help="Session ID to reuse for the native harness.",
+    ),
+    chat_model: str | None = typer.Option(
+        None,
+        "--chat-model",
+        envvar="VEKTORI_CHAT_MODEL",
+        help=_CHAT_HELP,
+    ),
+    extraction_model: str | None = typer.Option(
+        None,
+        "--extraction-model",
+        "-m",
+        envvar="VEKTORI_EXTRACTION_MODEL",
+        help=_EXTRACTION_HELP,
+    ),
+    embedding_model: str | None = typer.Option(
+        None,
+        "--embedding-model",
+        "-e",
+        envvar="VEKTORI_EMBEDDING_MODEL",
+        help=_EMBEDDING_HELP,
+    ),
+    storage_backend: str | None = typer.Option(
+        None, "--storage-backend", envvar="VEKTORI_STORAGE_BACKEND", help=_BACKEND_HELP
+    ),
+    database_url: str | None = typer.Option(
+        None, "--database-url", envvar="VEKTORI_DATABASE_URL", help=_DATABASE_URL_HELP
+    ),
+    qdrant_api_key: str | None = typer.Option(
+        None, "--qdrant-api-key", envvar="QDRANT_API_KEY", help=_QDRANT_API_KEY_HELP
+    ),
+    profile_store_path: str | None = typer.Option(
+        None,
+        "--profile-store-path",
+        help="Optional SQLite path for durable profile patches.",
+    ),
+) -> None:
+    """Start an interactive chat loop using `VektoriAgent`."""
+    em = extraction_model or _default_extraction()
+    eb = embedding_model or _default_embedding()
+    cm = chat_model or _default_chat_model()
+    _warn_openai(em, "--extraction-model")
+    _warn_openai(eb, "--embedding-model")
+    _warn_openai(cm, "--chat-model")
+
+    async def _run() -> None:
+        from vektori.agent import AgentConfig, VektoriAgent
+        from vektori.models.factory import create_chat_model
+
+        memory = _client(
+            em,
+            eb,
+            sync_extraction=True,
+            storage_backend=storage_backend,
+            database_url=database_url,
+            qdrant_api_key=qdrant_api_key,
+        )
+        agent = VektoriAgent(
+            memory=memory,
+            model=create_chat_model(cm),
+            user_id=user_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            config=AgentConfig(
+                background_add=True,
+                profile_store_path=profile_store_path,
+            ),
+            context_path=context_path,
+        )
+
+        typer.echo("Native agent chat (type 'quit' to exit)\n")
+        try:
+            while True:
+                user_input = typer.prompt("You").strip()
+                if user_input.lower() in {"quit", "exit"}:
+                    break
+                result = await agent.chat(user_input)
+                typer.echo(f"Assistant: {result.content}\n")
+        finally:
+            await agent.close()
+            await memory.close()
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        typer.echo("\nExiting.")
+    except Exception as e:
+        typer.echo(f"[error] {e}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command()
+def inject(
+    user_id: str = typer.Option(..., "--user-id", "-u", envvar="VEKTORI_USER_ID", help="User ID."),
+    source: str = typer.Option(
+        "auto",
+        "--source",
+        "-s",
+        help="Session source: auto (detect both), claude-code, codex.",
+    ),
+    project: str | None = typer.Option(
+        None,
+        "--project",
+        "-p",
+        help="Filter by project path substring (e.g. 'oss-vektori').",
+    ),
+    since: int | None = typer.Option(
+        None,
+        "--since",
+        help="Only ingest sessions modified in the last N days.",
+    ),
+    session_id: str | None = typer.Option(
+        None,
+        "--session",
+        help="Ingest a specific session ID only.",
+    ),
+    list_only: bool = typer.Option(False, "--list", help="List detected sessions without ingesting."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt."),
+    extraction_model: str | None = typer.Option(
+        None, "--extraction-model", "-m", envvar="VEKTORI_EXTRACTION_MODEL", help=_EXTRACTION_HELP
+    ),
+    embedding_model: str | None = typer.Option(
+        None, "--embedding-model", "-e", envvar="VEKTORI_EMBEDDING_MODEL", help=_EMBEDDING_HELP
+    ),
+    storage_backend: str | None = typer.Option(
+        None, "--storage-backend", envvar="VEKTORI_STORAGE_BACKEND", help=_BACKEND_HELP
+    ),
+    database_url: str | None = typer.Option(
+        None, "--database-url", envvar="VEKTORI_DATABASE_URL", help=_DATABASE_URL_HELP
+    ),
+) -> None:
+    """Detect Claude Code and Codex sessions and ingest them into memory.
+
+    \b
+        Examples:
+            # list what vektori found
+            vektori inject -u dev --list
+
+            # ingest all sessions from the last 7 days
+            vektori inject -u dev --since 7 --yes
+
+            # ingest only sessions from a specific project
+            vektori inject -u dev --project oss-vektori --yes
+
+            # ingest one session by ID
+            vektori inject -u dev --session d06bb817 --yes
+    """
+    import time
+
+    # Discover sessions
+    all_sessions: list[dict] = []
+    if source in ("auto", "claude-code"):
+        all_sessions.extend(_discover_claude_sessions())
+    if source in ("auto", "codex"):
+        all_sessions.extend(_discover_codex_sessions())
+
+    # Filters
+    if project:
+        all_sessions = [s for s in all_sessions if project.lower() in str(s["path"]).lower()]
+    if since is not None:
+        cutoff = time.time() - since * 86400
+        all_sessions = [s for s in all_sessions if s["mtime"] >= cutoff]
+    if session_id:
+        all_sessions = [s for s in all_sessions if session_id in s["session_id"]]
+
+    if not all_sessions:
+        typer.echo("No sessions found matching the given filters.")
+        return
+
+    # Show what was found
+    typer.echo(f"Found {len(all_sessions)} session(s):\n")
+    for i, s in enumerate(all_sessions, 1):
+        import datetime
+        ts = datetime.datetime.fromtimestamp(s["mtime"]).strftime("%Y-%m-%d %H:%M")
+        project_hint = s.get("project") or "unknown"
+        if len(project_hint) > 40:
+            project_hint = "..." + project_hint[-37:]
+        typer.echo(f"  {i:>3}. [{s['source']:11}] {ts}  {project_hint}  {s['session_id'][:8]}")
+
+    if list_only:
+        return
+
+    typer.echo("")
+    if not yes:
+        typer.confirm(f"Ingest {len(all_sessions)} session(s) into vektori?", abort=True)
+
+    em = extraction_model or _default_extraction()
+    eb = embedding_model or _default_embedding()
+    _warn_openai(em, "--extraction-model")
+
+    async def _run() -> dict:
+        v = _client(em, eb, storage_backend=storage_backend, database_url=database_url)
+        ok = 0
+        skipped = 0
+        try:
+            for s in all_sessions:
+                if s["source"] == "claude-code":
+                    cwd, messages = _parse_claude_session(s["path"])
+                else:
+                    cwd, messages = _parse_codex_session(s["path"])
+
+                # Skip near-empty sessions
+                if len(messages) < 2:
+                    skipped += 1
+                    continue
+
+                sid = f"{s['source']}:{s['session_id']}"
+                meta = {"source": s["source"], "project": s.get("project") or cwd or ""}
+                await v.add(messages, session_id=sid, user_id=user_id, metadata=meta)
+                ok += 1
+                typer.echo(f"  ✓ {s['source']} {s['session_id'][:8]}  ({len(messages)} turns)")
+        finally:
+            await v.close()
+        return {"ingested": ok, "skipped": skipped}
+
+    try:
+        result = asyncio.run(_run())
+    except Exception as e:
+        typer.echo(f"[error] {e}", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(f"\nDone — {result['ingested']} session(s) ingested, {result['skipped']} skipped (too short).")
+
+
+# ---------------------------------------------------------------------------
+# context  — dump memory as an injectable context block
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def context(
+    user_id: str = typer.Option(..., "--user-id", "-u", envvar="VEKTORI_USER_ID", help="User ID."),
+    query: str | None = typer.Argument(
+        None,
+        help="Optional query — returns relevant memories. Omit to dump all recent facts.",
+    ),
+    depth: str = typer.Option("l1", "--depth", "-d", help="Search depth: l0, l1, or l2."),
+    top_k: int = typer.Option(8, "--top-k", "-k", help="Max facts to include."),
+    extraction_model: str | None = typer.Option(
+        None, "--extraction-model", "-m", envvar="VEKTORI_EXTRACTION_MODEL", help=_EXTRACTION_HELP
+    ),
+    embedding_model: str | None = typer.Option(
+        None, "--embedding-model", "-e", envvar="VEKTORI_EMBEDDING_MODEL", help=_EMBEDDING_HELP
+    ),
+    storage_backend: str | None = typer.Option(
+        None, "--storage-backend", envvar="VEKTORI_STORAGE_BACKEND", help=_BACKEND_HELP
+    ),
+    database_url: str | None = typer.Option(
+        None, "--database-url", envvar="VEKTORI_DATABASE_URL", help=_DATABASE_URL_HELP
+    ),
+    qdrant_api_key: str | None = typer.Option(
+        None, "--qdrant-api-key", envvar="QDRANT_API_KEY", help=_QDRANT_API_KEY_HELP
+    ),
+    hook: bool = typer.Option(
+        False,
+        "--hook",
+        help="Output Claude Code hook JSON (additionalContext injection) instead of plain text.",
+    ),
+) -> None:
+    """Dump memory as a formatted context block — pipe into any AI or use as a Claude Code hook.
+
+    \b
+        Examples:
+            # paste into any AI session:
+            vektori context -u alice
+
+            # query-scoped context:
+            vektori context "auth bug" -u alice --depth l2
+
+            # Claude Code hook mode (outputs hookSpecificOutput JSON):
+            vektori context -u alice --hook
+    """
+    em = extraction_model or _default_extraction()
+    eb = embedding_model or _default_embedding()
+
+    async def _run() -> dict:
+        v = _client(
+            em,
+            eb,
+            storage_backend=storage_backend,
+            database_url=database_url,
+            qdrant_api_key=qdrant_api_key,
+        )
+        try:
+            if query:
+                result = await v.search(query, user_id=user_id, top_k=top_k, depth=depth)
+                facts = result.get("facts", [])
+                sentences = result.get("sentences", [])
+                episodes = result.get("episodes", [])
+            else:
+                facts = await v.get_facts(user_id=user_id)
+                facts = sorted(facts, key=lambda f: f.get("created_at", ""), reverse=True)[:top_k]
+                sentences = []
+                episodes = []
+        finally:
+            await v.close()
+        return {"facts": facts, "sentences": sentences, "episodes": episodes}
+
+    try:
+        data = asyncio.run(_run())
+    except Exception as e:
+        if hook:
+            typer.echo(json.dumps({"continue": True}))
+        else:
+            typer.echo(f"[error] {e}", err=True)
+            raise typer.Exit(1)
+        return
+
+    facts = data["facts"]
+    sentences = data["sentences"]
+    episodes = data["episodes"]
+
+    if not facts and not sentences:
+        if hook:
+            typer.echo(json.dumps({"continue": True}))
+        else:
+            typer.echo("No memories found.")
+        return
+
+    lines: list[str] = ["[vektori memory]"]
+
+    if facts:
+        lines.append("facts:")
+        for f in facts:
+            score = f.get("score")
+            prefix = f"  [{score:.2f}] " if score is not None else "  "
+            lines.append(f"{prefix}{f['text']}")
+
+    if episodes:
+        lines.append("episodes:")
+        for ep in episodes[:3]:
+            lines.append(f"  {ep.get('text', '')}")
+
+    if sentences:
+        lines.append("context:")
+        cur_session = None
+        for s in sentences:
+            ssid = s.get("session_id", "")
+            if ssid != cur_session:
+                cur_session = ssid
+                lines.append(f"  [{ssid[:8]}]")
+            lines.append(f"    {s['text']}")
+
+    block = "\n".join(lines)
+
+    if hook:
+        typer.echo(json.dumps({"continue": True, "hookSpecificOutput": {"additionalContext": block}}))
+    else:
+        typer.echo(block)
 
 
 def main() -> None:
