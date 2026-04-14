@@ -14,7 +14,7 @@ from vektori.context import AgentContextLoader
 from vektori.memory.profile import InMemoryProfileStore, ProfilePatch, ProfileStore, SQLiteProfileStore
 from vektori.memory.window import MessageWindow
 from vektori.models.base import ChatModelProvider
-from vektori.prompts import build_messages
+from vektori.prompts import build_prompt_result
 from vektori.retrieval.gate import should_retrieve
 
 
@@ -43,9 +43,11 @@ class AgentTurnResult:
     content: str
     messages: list[dict[str, str]]
     memories_used: dict[str, list[dict[str, Any]]]
+    retrieval_debug: dict[str, Any]
     summary_updated: bool
     profile_updates: list[ProfilePatch]
     tool_calls: list[dict[str, Any]]
+    prompt_debug: dict[str, Any]
     usage: dict[str, int] | None = None
 
 
@@ -88,7 +90,8 @@ class VektoriAgent:
         self.window.add("user", user_message)
 
         memories: dict[str, list[dict[str, Any]]] = {"facts": [], "episodes": [], "sentences": []}
-        if await self._should_retrieve(user_message):
+        retrieval_enabled, retrieval_reason = await self._should_retrieve(user_message)
+        if retrieval_enabled:
             memories = await self.memory.search(
                 query=user_message,
                 user_id=self.user_id,
@@ -102,13 +105,16 @@ class VektoriAgent:
             observer_id=self.agent_id or "default-agent",
             observed_id=self.user_id,
         )
-        messages = build_messages(
+        prompt_result = build_prompt_result(
             context=context,
             profile_patches=profile_patches,
             memories=memories,
             window_state=self.window.snapshot(),
+            max_context_tokens=self.config.max_context_tokens,
+            reserve_response_tokens=self.config.reserve_response_tokens,
             runtime_overrides=self.config.runtime_overrides,
         )
+        messages = prompt_result.messages
 
         completion = await self.model.complete(
             messages,
@@ -147,14 +153,21 @@ class VektoriAgent:
         return AgentTurnResult(
             content=assistant_content,
             messages=self.window.snapshot().recent_messages,
-            memories_used={
-                "facts": memories.get("facts", []),
-                "episodes": memories.get("episodes", []),
-                "sentences": memories.get("sentences", []),
+            memories_used=prompt_result.memories_used,
+            retrieval_debug={
+                "enabled": retrieval_enabled,
+                "reason": retrieval_reason,
+                "query": user_message,
+                "counts": {
+                    "facts": len(memories.get("facts", [])),
+                    "episodes": len(memories.get("episodes", [])),
+                    "sentences": len(memories.get("sentences", [])),
+                },
             },
             summary_updated=summary_updated,
             profile_updates=profile_updates,
             tool_calls=completion.tool_calls,
+            prompt_debug=prompt_result.prompt_debug,
             usage=completion.usage,
         )
 
@@ -182,12 +195,14 @@ class VektoriAgent:
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
         await self.profile_store.close()
 
-    async def _should_retrieve(self, user_message: str) -> bool:
+    async def _should_retrieve(self, user_message: str) -> tuple[bool, str]:
         if self.config.retrieve_on_every_turn:
-            return True
+            return True, "retrieve_on_every_turn"
         if not self.config.enable_retrieval_gate:
-            return True
-        return should_retrieve(user_message)
+            return True, "retrieval_gate_disabled"
+        if should_retrieve(user_message):
+            return True, "retrieval_gate_matched"
+        return False, "retrieval_gate_skipped"
 
     def _schedule_background(self, coroutine: Any) -> None:
         task = asyncio.create_task(coroutine)

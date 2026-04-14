@@ -33,6 +33,9 @@ class ProfileStore(Protocol):
     async def list_active(self, observer_id: str, observed_id: str) -> list[ProfilePatch]:
         ...
 
+    async def list_all(self, observer_id: str, observed_id: str) -> list[ProfilePatch]:
+        ...
+
     async def save(self, patch: ProfilePatch) -> None:
         ...
 
@@ -50,9 +53,25 @@ class InMemoryProfileStore:
         patches = self._patches.get((observer_id, observed_id), [])
         return [patch for patch in patches if patch.active]
 
+    async def list_all(self, observer_id: str, observed_id: str) -> list[ProfilePatch]:
+        return list(self._patches.get((observer_id, observed_id), []))
+
     async def save(self, patch: ProfilePatch) -> None:
         key = (patch.observer_id, patch.observed_id)
-        self._patches.setdefault(key, []).append(patch)
+        patches = self._patches.setdefault(key, [])
+        now = datetime.now(timezone.utc)
+        for existing in reversed(patches):
+            if existing.key != patch.key or not existing.active:
+                continue
+            if existing.value == patch.value:
+                existing.last_confirmed_at = now
+                existing.confidence = max(existing.confidence, patch.confidence)
+                existing.reason = patch.reason
+                existing.source = patch.source
+                return
+            existing.active = False
+            existing.last_confirmed_at = now
+        patches.append(patch)
 
     async def close(self) -> None:
         return None
@@ -83,9 +102,68 @@ class SQLiteProfileStore:
         cursor.close()
         return [self._row_to_patch(row) for row in rows]
 
+    async def list_all(self, observer_id: str, observed_id: str) -> list[ProfilePatch]:
+        await self._ensure_initialized()
+        assert self._connection is not None
+        cursor = self._connection.execute(
+            """
+            SELECT key, value_json, reason, source, observer_id, observed_id,
+                   confidence, created_at, last_confirmed_at, active
+            FROM profile_patches
+            WHERE observer_id = ? AND observed_id = ?
+            ORDER BY created_at ASC
+            """,
+            (observer_id, observed_id),
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        return [self._row_to_patch(row) for row in rows]
+
     async def save(self, patch: ProfilePatch) -> None:
         await self._ensure_initialized()
         assert self._connection is not None
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = self._connection.execute(
+            """
+            SELECT id, value_json, confidence
+            FROM profile_patches
+            WHERE observer_id = ? AND observed_id = ? AND key = ? AND active = 1
+            ORDER BY created_at DESC
+            """,
+            (patch.observer_id, patch.observed_id, patch.key),
+        )
+        existing_rows = cursor.fetchall()
+        cursor.close()
+
+        for row_id, value_json, existing_confidence in existing_rows:
+            if json.loads(value_json) == patch.value:
+                self._connection.execute(
+                    """
+                    UPDATE profile_patches
+                    SET confidence = ?, reason = ?, source = ?, last_confirmed_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        max(float(existing_confidence), patch.confidence),
+                        patch.reason,
+                        patch.source,
+                        now,
+                        row_id,
+                    ),
+                )
+                self._connection.commit()
+                return
+
+        if existing_rows:
+            self._connection.execute(
+                """
+                UPDATE profile_patches
+                SET active = 0, last_confirmed_at = ?
+                WHERE observer_id = ? AND observed_id = ? AND key = ? AND active = 1
+                """,
+                (now, patch.observer_id, patch.observed_id, patch.key),
+            )
+
         self._connection.execute(
             """
             INSERT INTO profile_patches (
@@ -102,7 +180,7 @@ class SQLiteProfileStore:
                 patch.observed_id,
                 patch.confidence,
                 patch.created_at.isoformat(),
-                patch.last_confirmed_at.isoformat() if patch.last_confirmed_at else None,
+                patch.last_confirmed_at.isoformat() if patch.last_confirmed_at else now,
                 1 if patch.active else 0,
             ),
         )

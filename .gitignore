@@ -51,6 +51,7 @@ htmlcov/
 
 # Plans/Documentation (auto-generated or planning)
 plans/
+.codex
 
 # OS
 .DS_Store

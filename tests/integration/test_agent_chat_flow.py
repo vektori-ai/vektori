@@ -44,6 +44,9 @@ async def test_agent_chat_runs_search_prompt_and_persistence():
     memory.search.assert_awaited_once()
     memory.add.assert_awaited_once()
     assert result.memories_used["facts"][0]["text"] == "User prefers concise answers."
+    assert result.retrieval_debug["enabled"] is True
+    assert result.retrieval_debug["reason"] == "retrieval_gate_disabled"
+    assert result.retrieval_debug["counts"]["facts"] == 1
 
 
 async def test_agent_chat_learns_explicit_profile_patch(tmp_path):
@@ -67,3 +70,20 @@ async def test_agent_chat_learns_explicit_profile_patch(tmp_path):
     assert result.profile_updates
     assert result.profile_updates[0].key == "response_style.verbosity"
     assert patches[0].value == "short"
+
+
+async def test_agent_chat_reports_retrieval_skip_when_gate_declines():
+    memory = StubMemory()
+    agent = VektoriAgent(
+        memory=memory,
+        model=FakeChatModel(),
+        user_id="user-1",
+        agent_id="agent-1",
+        config=AgentConfig(background_add=False),
+    )
+
+    result = await agent.chat("Thanks")
+
+    memory.search.assert_not_awaited()
+    assert result.retrieval_debug["enabled"] is False
+    assert result.retrieval_debug["reason"] == "retrieval_gate_skipped"
