@@ -10,6 +10,7 @@ from typing import Any
 def score_and_rank(
     facts: list[dict[str, Any]],
     temporal_decay_rate: float = 0.001,
+    preference_decay_rate: float = 0.0001,
     use_mentions: bool = True,
     user_source_weight: float = 1.0,
     assistant_source_weight: float = 0.9,
@@ -91,12 +92,16 @@ def score_and_rank(
 
         # ── Recency ─────────────────────────────────────────────────────────
         # Prefer event_time (when the conversation happened) over created_at
-        # (when the row was inserted). In benchmark runs all rows are inserted
-        # today so created_at gives age_days≈0 for every fact, making decay
-        # a no-op. event_time carries the actual historical session date.
+        # (when the row was inserted).
         timestamp = fact.get("event_time") or fact.get("created_at")
         age_days = _age_in_days(timestamp, now)
-        recency = math.exp(-temporal_decay_rate * age_days)
+
+        meta = fact.get("metadata") or {}
+        # Facts with explicit time markers (or explicit type="event") decay normally;
+        # standing preferences decay much slower.
+        is_event = "temporal_expr" in meta or meta.get("type") == "event"
+        rate = temporal_decay_rate if is_event else preference_decay_rate
+        recency = math.exp(-rate * age_days)
 
         # ── Mentions boost ───────────────────────────────────────────────────
         # log(1 + mentions) gives diminishing returns: 1→1.0, 5→1.79, 50→3.93.

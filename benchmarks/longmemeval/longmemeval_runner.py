@@ -355,11 +355,13 @@ class LongMemEvalBenchmark:
         question_date = instance.get("question_date") or ""
 
         retrieval_t0 = time.perf_counter()
+        use_expansion = question_type in ("multi-session", "temporal-reasoning")
         search_results = await self.vektori_client.search(
             query=question,
             user_id=user_id,
             depth=self.config.retrieval_depth,
             reference_date=_parse_date(question_date) if question_date else None,
+            expand=use_expansion,
         )
         retrieval_ms = (time.perf_counter() - retrieval_t0) * 1000
 
