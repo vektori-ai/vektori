@@ -129,51 +129,65 @@ results = await v.search(query, user_id, depth="l2", context_window=3)
 
 ## Build an Agent with Memory
 
-The low-level way is still available, but the new native harness is the right default.
+Three lines to wire memory into any agent loop:
 
 ```python
 import asyncio
-from vektori import AgentConfig, Vektori, VektoriAgent
-from vektori.models.factory import create_chat_model
+from openai import AsyncOpenAI
+from vektori import Vektori
+
+client = AsyncOpenAI()
 
 async def chat(user_id: str):
-    memory = Vektori(
+    v = Vektori(
         embedding_model="openai:text-embedding-3-small",
         extraction_model="openai:gpt-4o-mini",
     )
-    agent = VektoriAgent(
-        memory=memory,
-        model=create_chat_model("openai:gpt-4o-mini"),
-        user_id=user_id,
-        agent_id="demo-agent",
-        session_id=f"session-{user_id}-001",
-        config=AgentConfig(background_add=True),
-    )
+    session_id = f"session-{user_id}-001"
+    history = []
 
     print("Chat with memory (type 'quit' to exit)\n")
     while True:
         user_input = input("You: ").strip()
         if user_input.lower() == "quit":
             break
-        result = await agent.chat(user_input)
-        print(f"Assistant: {result.content}\n")
 
-    await agent.close()
-    await memory.close()
+        # 1. Pull relevant memory
+        mem = await v.search(query=user_input, user_id=user_id, depth="l1")
+        facts = "\n".join(f"- {f['text']}" for f in mem.get("facts", []))
+        episodes = "\n".join(f"- {ep['text']}" for ep in mem.get("episodes", []))
+
+        # 2. Inject into system prompt
+        system = "You are a helpful assistant with memory.\n"
+        if facts:    system += f"\nKnown facts:\n{facts}"
+        if episodes: system += f"\nBehavioral episodes:\n{episodes}"
+
+        # 3. Get response
+        history.append({"role": "user", "content": user_input})
+        resp = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "system", "content": system}, *history],
+        )
+        reply = resp.choices[0].message.content
+        history.append({"role": "assistant", "content": reply})
+        print(f"Assistant: {reply}\n")
+
+        # 4. Store exchange
+        await v.add(
+            messages=[{"role": "user", "content": user_input},
+                      {"role": "assistant", "content": reply}],
+            session_id=session_id,
+            user_id=user_id,
+        )
+
+    await v.close()
 
 asyncio.run(chat("demo-user"))
 ```
 
-You can also run the harness from the CLI:
-
-```bash
-vektori agent chat --user-id demo-user --agent-id support-agent
-```
-
 More examples in [`/examples`](examples/):
 - [`quickstart.py`](examples/quickstart.py) — fully local, zero API keys (Ollama)
-- [`openai_agent.py`](examples/openai_agent.py) — OpenAI native harness loop
-- [`vektori_agent_demo.py`](examples/vektori_agent_demo.py) — minimal `VektoriAgent` demo
+- [`openai_agent.py`](examples/openai_agent.py) — OpenAI agent loop
 
 ---
 
