@@ -41,6 +41,7 @@ anthropic = ["anthropic>=0.20", "voyageai>=0.2"]
 sentence-transformers = ["sentence-transformers>=2.6"]
 bge = ["FlagEmbedding>=1.2"]
 litellm = ["litellm>=1.30"]
+pipecat = ["pipecat-ai>=0.0.50", "fastapi>=0.110", "uvicorn[standard]>=0.29"]
 nvidia = ["openai>=1.12"]  # NVIDIA NIM uses OpenAI-compatible API
 dev = [
     "pytest>=8.0",

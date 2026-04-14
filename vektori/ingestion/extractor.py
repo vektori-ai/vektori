@@ -3,12 +3,290 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from vektori.models.base import EmbeddingProvider, LLMProvider
 from vektori.storage.base import StorageBackend
 
+if TYPE_CHECKING:
+    from vektori.config import ExtractionConfig
+
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Agent-type presets — domain-specific extraction guidance injected into prompts
+# ---------------------------------------------------------------------------
+
+_AGENT_FACTS_GUIDANCE: dict[str, str] = {
+    # ── Revenue & GTM ─────────────────────────────────────────────────────────
+    "presales": """
+Domain focus (pre-sales agent):
+Prioritise extracting:
+- Prospect pain points and current challenges they described
+- Budget signals and spending capacity indicators
+- Purchase timeline and urgency level
+- Decision-maker names, titles, and their role in the buying process
+- Objections, blockers, and concerns raised
+- Current tools, vendors, or competitors in use
+- Specific product features or capabilities the prospect expressed interest in
+- ICP qualification signals (company size, industry, tech stack)
+Deprioritise: general greetings, scheduling logistics unrelated to deal timeline, small talk.""",
+    "sales": """
+Domain focus (sales agent):
+Prioritise extracting:
+- Deal stage and progression updates
+- Pricing, discounts, or contract values discussed
+- Expected close date or decision timeline
+- Stakeholder names, roles, and level of influence
+- Agreed-upon next steps and who owns them
+- Deal blockers, open risks, and unresolved questions
+- Legal, procurement, or security review concerns raised
+- Champion and economic buyer identification
+Deprioritise: general greetings, small talk.""",
+    "account_management": """
+Domain focus (account management agent):
+Prioritise extracting:
+- Renewal dates and contract terms mentioned
+- Upsell and expansion opportunities surfaced
+- Customer health signals (satisfaction, adoption, usage concerns)
+- Escalations or at-risk account indicators
+- Stakeholder changes (new contacts, departures, reorgs)
+- Feature requests and product feedback from the customer
+- Commitments made by the account team
+Deprioritise: general pleasantries, unrelated small talk.""",
+    # ── Customer experience ───────────────────────────────────────────────────
+    "support": """
+Domain focus (customer support agent):
+Prioritise extracting:
+- Issue descriptions, symptoms, and exact error messages reported
+- Product area, feature, or platform affected
+- Steps the customer already tried and their outcomes
+- Resolution or workaround provided by the agent
+- Customer satisfaction signals and frustration level
+- Escalation triggers or SLA/ticket references
+- Follow-up commitments and deadlines
+Deprioritise: scripted greetings, hold messages, boilerplate closing pleasantries.""",
+    "onboarding": """
+Domain focus (customer onboarding agent):
+Prioritise extracting:
+- Customer's technical environment (stack, infrastructure, integrations needed)
+- Onboarding milestones reached or blocked
+- Implementation blockers and dependencies
+- Key contacts on the customer side (technical lead, project owner)
+- Training gaps or knowledge areas requiring follow-up
+- Go-live dates and success criteria defined
+- Configuration choices and setup decisions made
+Deprioritise: generic greetings, off-topic conversation.""",
+    # ── People & talent ───────────────────────────────────────────────────────
+    "hr": """
+Domain focus (HR agent):
+Prioritise extracting:
+- Employee satisfaction, engagement, or feedback signals
+- Performance achievements or concerns mentioned
+- Career goals, aspirations, and development interests
+- Team dynamics and interpersonal issues raised
+- HR policy questions and compliance topics
+- Leave, absence, or schedule-related details
+- Compensation or benefits questions raised
+Deprioritise: casual small talk, water-cooler conversation, off-topic personal chat.""",
+    "recruiting": """
+Domain focus (recruiting / talent acquisition agent):
+Prioritise extracting:
+- Candidate name, role applied for, and current employer
+- Skills, experience, and qualifications mentioned
+- Compensation expectations and availability / notice period
+- Interview stage and feedback given
+- Candidate interest level and motivations for changing
+- Red flags or concerns noted by the recruiter
+- Next steps and scheduled interviews
+Deprioritise: small talk, generic introductions.""",
+    # ── Finance & legal ───────────────────────────────────────────────────────
+    "finance": """
+Domain focus (finance / accounting agent):
+Prioritise extracting:
+- Invoice numbers, amounts, and payment terms discussed
+- Budget approvals or rejections and the amounts involved
+- Expense categories and cost-centre details
+- Fraud indicators or anomalies flagged
+- Reconciliation discrepancies and their resolution
+- Vendor names and contract financial terms
+- Reporting deadlines and period-close milestones
+Deprioritise: general chat, non-financial pleasantries.""",
+    "legal": """
+Domain focus (legal agent):
+Prioritise extracting:
+- Contract clauses, obligations, and terms discussed
+- Compliance requirements and regulatory references (GDPR, HIPAA, SOC 2, etc.)
+- Risk items, liabilities, and indemnification points raised
+- Deadlines for filings, signatures, or regulatory submissions
+- Parties involved in the agreement and their roles
+- Dispute details, allegations, or litigation references
+- Legal advice or guidance provided
+Deprioritise: casual conversation, non-legal pleasantries.""",
+    # ── Technical ────────────────────────────────────────────────────────────
+    "coding": """
+Domain focus (software engineering / coding agent):
+Prioritise extracting:
+- Programming languages, frameworks, and libraries mentioned
+- Architecture decisions and design patterns discussed
+- Bugs, errors, and their root causes identified
+- Code review feedback and requested changes
+- APIs, endpoints, or data models referenced
+- Performance or security concerns raised
+- Task assignments, PR numbers, and deadlines
+Deprioritise: generic greetings, non-technical small talk.""",
+    "data_analytics": """
+Domain focus (data / analytics agent):
+Prioritise extracting:
+- Metrics, KPIs, and data sources discussed
+- SQL queries, schemas, or tables referenced
+- Data quality issues or anomalies surfaced
+- Dashboard or report requests and their owners
+- Analysis findings and key insights shared
+- Data pipeline or ETL issues mentioned
+- Deadlines for reports or model deliverables
+Deprioritise: general pleasantries, off-topic conversation.""",
+    "research": """
+Domain focus (research agent):
+Prioritise extracting:
+- Research questions and hypotheses being investigated
+- Sources, papers, or datasets referenced
+- Key findings and evidence cited
+- Conflicting viewpoints or gaps in the literature noted
+- Methodology choices and their rationale
+- Next research steps and open questions
+- Authors, institutions, or publications mentioned
+Deprioritise: administrative filler, generic acknowledgements.""",
+    "cybersecurity": """
+Domain focus (cybersecurity agent):
+Prioritise extracting:
+- Threat types, attack vectors, and CVE identifiers mentioned
+- Affected systems, services, or IP ranges
+- Indicators of compromise (IOCs) and evidence cited
+- Remediation steps taken or recommended
+- Vulnerabilities discovered and their severity
+- Compliance frameworks referenced (ISO 27001, NIST, SOC 2)
+- Incident timeline and containment actions
+Deprioritise: routine greetings, non-security small talk.""",
+    # ── Operations & industry ────────────────────────────────────────────────
+    "healthcare": """
+Domain focus (healthcare / clinical agent):
+Prioritise extracting:
+- Patient-reported symptoms, conditions, and medical history
+- Medications, dosages, and allergies mentioned
+- Appointment details, referrals, and care-team members
+- Triage urgency signals and red-flag symptoms
+- Treatment plans, procedures, or diagnoses discussed
+- Insurance, billing, or authorisation questions raised
+- Follow-up instructions and care commitments
+Deprioritise: general small talk, non-clinical pleasantries.
+Note: treat all health information with appropriate sensitivity.""",
+    "supply_chain": """
+Domain focus (supply chain / logistics agent):
+Prioritise extracting:
+- Shipment IDs, tracking numbers, and carrier details
+- Inventory levels, stockout risks, and reorder points
+- Supplier names, lead times, and delivery delays
+- Purchase order numbers and order quantities
+- Warehouse or fulfilment centre locations involved
+- Disruption signals (port delays, weather, supplier issues)
+- Cost-per-unit or freight cost changes mentioned
+Deprioritise: general pleasantries, unrelated conversation.""",
+    "retail": """
+Domain focus (retail / e-commerce agent):
+Prioritise extracting:
+- Product names, SKUs, and categories discussed
+- Customer purchase history and return requests
+- Pricing changes, promotions, and discount codes applied
+- Inventory availability and shelf or warehouse location
+- Customer preferences, sizes, and style interests
+- Loyalty programme status and points
+- Competitor products or pricing mentioned
+Deprioritise: generic greetings, unrelated small talk.""",
+    "operations": """
+Domain focus (operations / scheduling agent):
+Prioritise extracting:
+- Resource names (people, equipment, rooms) and their availability
+- Appointment or shift bookings, changes, and cancellations
+- Deadlines, project milestones, and blockers
+- Capacity constraints and overbooked resources flagged
+- SLA breaches or at-risk deliverables
+- Vendor or contractor commitments and delivery dates
+- Process bottlenecks and improvement suggestions
+Deprioritise: casual small talk, non-operational chat.""",
+}
+
+_AGENT_EPISODES_GUIDANCE: dict[str, str] = {
+    "presales": (
+        "For pre-sales conversations, episodes should capture the prospect's "
+        "qualification status, key pain points surfaced, and the next steps agreed."
+    ),
+    "sales": (
+        "For sales conversations, episodes should capture the deal's current stage, "
+        "key commitments or pricing discussed, blockers identified, and next actions."
+    ),
+    "account_management": (
+        "For account management conversations, episodes should capture the customer's "
+        "health signal, any expansion or renewal discussion, and commitments made."
+    ),
+    "support": (
+        "For support conversations, episodes should capture the issue reported, "
+        "the resolution or outcome reached, and any follow-up agreed."
+    ),
+    "onboarding": (
+        "For onboarding conversations, episodes should capture the milestone reached or "
+        "blocked, the blocker details, and the agreed next step toward go-live."
+    ),
+    "hr": (
+        "For HR conversations, episodes should capture the employee concern raised, "
+        "the guidance provided, and any actions or commitments made."
+    ),
+    "recruiting": (
+        "For recruiting conversations, episodes should capture the candidate's current "
+        "stage, key strengths or concerns noted, and the next interview or decision step."
+    ),
+    "finance": (
+        "For finance conversations, episodes should capture the financial decision or "
+        "issue discussed, the amount involved, and the resolution or next approval step."
+    ),
+    "legal": (
+        "For legal conversations, episodes should capture the legal topic or risk raised, "
+        "the guidance or clause discussed, and any deadline or action required."
+    ),
+    "coding": (
+        "For engineering conversations, episodes should capture the technical problem or "
+        "decision discussed, the solution or approach agreed, and any open action items."
+    ),
+    "data_analytics": (
+        "For data conversations, episodes should capture the analysis question, "
+        "the key finding or data issue surfaced, and the next analytical step."
+    ),
+    "research": (
+        "For research conversations, episodes should capture the research question explored, "
+        "key evidence or findings cited, and the next investigative step."
+    ),
+    "cybersecurity": (
+        "For security conversations, episodes should capture the threat or vulnerability "
+        "identified, the impact scope, and remediation steps taken or planned."
+    ),
+    "healthcare": (
+        "For healthcare conversations, episodes should capture the clinical concern raised, "
+        "the triage or care decision made, and follow-up instructions given."
+    ),
+    "supply_chain": (
+        "For supply chain conversations, episodes should capture the logistics issue or "
+        "risk surfaced, supplier or shipment details involved, and the resolution path."
+    ),
+    "retail": (
+        "For retail conversations, episodes should capture the customer's product interest "
+        "or service issue, the outcome reached, and any preference or loyalty signal noted."
+    ),
+    "operations": (
+        "For operations conversations, episodes should capture the scheduling or resource "
+        "issue discussed, the resolution agreed, and any SLA or deadline risk flagged."
+    ),
+}
 
 # ── Prompts ──────────────────────────────────────────────────────────────────
 
@@ -58,7 +336,7 @@ General:
 - Dates in `text`: if CONVERSATION DATE is provided, replace relative time references with the actual date.
   "today" → "on YYYY-MM-DD", "yesterday" → "on YYYY-MM-DD", "last week" → "on week of YYYY-MM-DD", etc.
   Do NOT use relative expressions if you know the absolute date.
-
+{domain_guidance}
 Return ONLY the JSON."""
 
 
@@ -93,7 +371,7 @@ Rules:
   BAD:  "User said X, assistant said Y" ← that is a transcript summary, not an episode
 - One episode per distinct topic in the batch; {max_episodes} maximum
 - Return {{"episodes": []}} if nothing notable
-
+{domain_guidance}
 Return ONLY the JSON."""
 
 EPISODES_FALLBACK_PROMPT = """You are writing a brief episodic memory record summarising what was discussed in this conversation.
@@ -139,6 +417,7 @@ class FactExtractor:
         max_facts: int = 8,
         max_input_tokens: int = 4000,
         max_output_tokens: int = 8192,
+        extraction_config: ExtractionConfig | None = None,
     ) -> None:
         self.db = db
         self.embedder = embedder
@@ -149,6 +428,86 @@ class FactExtractor:
         # from the full history, not just the most recent window.
         self._max_chunk_chars = max_input_tokens * 4
         self._max_output_tokens = max_output_tokens
+        self._extraction_config = extraction_config
+
+    # ── Prompt builders ───────────────────────────────────────────────────────
+
+    def _build_domain_guidance_facts(self) -> str:
+        """Assemble the domain_guidance block for the facts prompt."""
+        cfg = self._extraction_config
+        if cfg is None:
+            return ""
+
+        parts: list[str] = []
+
+        preset = _AGENT_FACTS_GUIDANCE.get(cfg.agent_type, "")
+        if preset:
+            parts.append(preset.strip())
+
+        if cfg.focus_on:
+            parts.append("Also prioritise extracting: " + ", ".join(cfg.focus_on) + ".")
+        if cfg.ignore:
+            parts.append("Do NOT extract facts about: " + ", ".join(cfg.ignore) + ".")
+
+        if cfg.facts_prompt_suffix:
+            parts.append(cfg.facts_prompt_suffix.strip())
+
+        return ("\n\n" + "\n".join(parts)) if parts else ""
+
+    def _build_domain_guidance_episodes(self) -> str:
+        """Assemble the domain_guidance block for the episodes prompt."""
+        cfg = self._extraction_config
+        if cfg is None:
+            return ""
+
+        parts: list[str] = []
+
+        preset = _AGENT_EPISODES_GUIDANCE.get(cfg.agent_type, "")
+        if preset:
+            parts.append(preset.strip())
+
+        if cfg.episodes_prompt_suffix:
+            parts.append(cfg.episodes_prompt_suffix.strip())
+
+        return ("\n\n" + "\n".join(parts)) if parts else ""
+
+    def _facts_prompt(self, conversation: str, session_date_line: str) -> str:
+        """Return the complete facts extraction prompt, respecting ExtractionConfig."""
+        cfg = self._extraction_config
+        if cfg is not None and cfg.custom_facts_prompt:
+            return cfg.custom_facts_prompt.format(
+                conversation=conversation,
+                max_facts=self.max_facts,
+                session_date_line=session_date_line,
+                domain_guidance=self._build_domain_guidance_facts(),
+            )
+        return FACTS_PROMPT.format(
+            conversation=conversation,
+            max_facts=self.max_facts,
+            session_date_line=session_date_line,
+            domain_guidance=self._build_domain_guidance_facts(),
+        )
+
+    def _episodes_prompt(
+        self, conversation: str, facts_list: str, max_episodes: int, session_date_line: str
+    ) -> str:
+        """Return the complete episodes extraction prompt, respecting ExtractionConfig."""
+        cfg = self._extraction_config
+        if cfg is not None and cfg.custom_episodes_prompt:
+            return cfg.custom_episodes_prompt.format(
+                conversation=conversation,
+                facts_list=facts_list,
+                max_episodes=max_episodes,
+                session_date_line=session_date_line,
+                domain_guidance=self._build_domain_guidance_episodes(),
+            )
+        return EPISODES_PROMPT.format(
+            conversation=conversation,
+            facts_list=facts_list,
+            max_episodes=max_episodes,
+            session_date_line=session_date_line,
+            domain_guidance=self._build_domain_guidance_episodes(),
+        )
 
     async def extract(
         self,
@@ -218,15 +577,10 @@ class FactExtractor:
     async def _extract_facts(
         self, conversation: str, session_time: datetime | None = None
     ) -> list[dict[str, Any]]:
-        if session_time:
-            session_date_line = f"CONVERSATION DATE: {session_time.strftime('%Y-%m-%d')}\n\n"
-        else:
-            session_date_line = ""
-        prompt = FACTS_PROMPT.format(
-            conversation=conversation,
-            max_facts=self.max_facts,
-            session_date_line=session_date_line,
+        session_date_line = (
+            f"CONVERSATION DATE: {session_time.strftime('%Y-%m-%d')}\n\n" if session_time else ""
         )
+        prompt = self._facts_prompt(conversation, session_date_line)
         response = await self.llm.generate(prompt, max_tokens=self._max_output_tokens)
         return _parse_json_response(response).get("facts", [])
 
@@ -550,12 +904,7 @@ class FactExtractor:
         session_date_line = (
             f"SESSION DATE: {session_time.strftime('%Y-%m-%d')}\n\n" if session_time else ""
         )
-        prompt = EPISODES_PROMPT.format(
-            conversation=conv_snippet,
-            facts_list=facts_list,
-            max_episodes=max_episodes,
-            session_date_line=session_date_line,
-        )
+        prompt = self._episodes_prompt(conv_snippet, facts_list, max_episodes, session_date_line)
         try:
             response = await self.llm.generate(prompt, max_tokens=1024)
             data = _parse_json_response(response)

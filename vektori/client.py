@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from vektori.config import QualityConfig, VektoriConfig
+from vektori.config import ExtractionConfig, QualityConfig, VektoriConfig
 
 logger = logging.getLogger(__name__)
 
@@ -41,12 +41,15 @@ class Vektori:
         async_extraction: bool = True,
         qdrant_api_key: str | None = None,
         milvus_token: str | None = None,
+        agent_type: str = "general",
+        extraction_config: ExtractionConfig | None = None,
         config: VektoriConfig | None = None,
     ) -> None:
         if config is not None:
             self.config = config
         else:
             resolved_backend = storage_backend or ("postgres" if database_url else "sqlite")
+            ec = extraction_config or ExtractionConfig(agent_type=agent_type)
             self.config = VektoriConfig(
                 database_url=database_url,
                 storage_backend=resolved_backend,
@@ -60,6 +63,7 @@ class Vektori:
                 async_extraction=async_extraction,
                 qdrant_api_key=qdrant_api_key,
                 milvus_token=milvus_token,
+                extraction_config=ec,
             )
 
         self._initialized = False
@@ -95,6 +99,7 @@ class Vektori:
             max_facts=self.config.max_facts,
             max_input_tokens=self.config.max_extraction_input_tokens,
             max_output_tokens=self.config.max_extraction_output_tokens,
+            extraction_config=self.config.extraction_config,
         )
         self._search = SearchPipeline(
             db=self.db,

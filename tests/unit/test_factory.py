@@ -64,20 +64,24 @@ def test_create_nvidia_embedder_default_model():
     assert isinstance(embedder, NvidiaEmbedder)
     assert embedder.model == DEFAULT_EMBEDDING_MODEL
 
+
 def test_create_nvidia_embedder_custom_dimensions():
     embedder = create_embedder("nvidia:llama-nemotron-embed-1b-v2", dimensions=1024)
     assert isinstance(embedder, NvidiaEmbedder)
     assert embedder.dimension == 1024  # Matryoshka support
+
 
 def test_create_nvidia_llm():
     llm = create_llm("nvidia:llama-3.3-nemotron-super-49b-v1")
     assert isinstance(llm, NvidiaLLM)
     assert llm.model == "nvidia/llama-3.3-nemotron-super-49b-v1"
 
+
 def test_create_nvidia_llm_default_model():
     llm = create_llm("nvidia")
     assert isinstance(llm, NvidiaLLM)
     assert "nvidia/llama-3.3-nemotron-super-49b-v1" == llm.model
+
 
 def test_nvidia_llm_registered():
     """Verify NVIDIA LLM is registered in factory."""
