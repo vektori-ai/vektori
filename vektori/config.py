@@ -153,6 +153,10 @@ class VektoriConfig:
     # Token-threshold batching — fire extraction once buffered input exceeds this
     token_batch_threshold: int = 800  # ~800 tokens ≈ 3-4 turns before extraction fires
 
+    # Automatically synthesize aggregate cross-session facts every N sessions
+    # (None disables auto-synthesis)
+    synthesis_interval: int | None = 5
+
     # Hard token limits for extraction LLM calls (API-level, not prompt hints)
     max_extraction_input_tokens: int = 4000  # truncate conversation before sending to LLM
     max_extraction_output_tokens: int = (

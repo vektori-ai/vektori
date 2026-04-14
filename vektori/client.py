@@ -39,6 +39,7 @@ class Vektori:
         context_window: int = 3,
         temporal_decay_rate: float = 0.001,
         async_extraction: bool = True,
+        synthesis_interval: int | None = 5,
         qdrant_api_key: str | None = None,
         milvus_token: str | None = None,
         agent_type: str = "general",
@@ -61,6 +62,7 @@ class Vektori:
                 context_window=context_window,
                 temporal_decay_rate=temporal_decay_rate,
                 async_extraction=async_extraction,
+                synthesis_interval=synthesis_interval,
                 qdrant_api_key=qdrant_api_key,
                 milvus_token=milvus_token,
                 extraction_config=ec,
@@ -100,6 +102,13 @@ class Vektori:
             max_input_tokens=self.config.max_extraction_input_tokens,
             max_output_tokens=self.config.max_extraction_output_tokens,
             extraction_config=self.config.extraction_config,
+        )
+        # Import syntheizer lazily or at module level. Let's do it inside the file at the top or here.
+        from vektori.ingestion.synthesis import Synthesizer
+        self._synthesizer = Synthesizer(
+            db=self.db,
+            embedder=self.embedder,
+            llm=self.llm,
         )
         self._search = SearchPipeline(
             db=self.db,
@@ -155,9 +164,51 @@ class Vektori:
             {"status": "ok", "sentences_stored": N, "extraction": "queued"|"done"|"skipped"}
         """
         await self._ensure_initialized()
-        return await self._pipeline.ingest(
+        
+        result = await self._pipeline.ingest(
             messages, session_id, user_id, agent_id, metadata, session_time=session_time
         )
+
+        n = self.config.synthesis_interval
+        if n is not None and n > 0:
+            # We don't want to block the caller on synthesis since it could be slow.
+            # However, if async_extraction is False, we should do it inline.
+            if getattr(self.config, "async_extraction", True):
+                import asyncio
+                if getattr(self, "_bg_tasks", None) is None:
+                    self._bg_tasks = set()
+                # Fire and forget safely
+                async def _bg_synthesize(uid: str, aid: str | None) -> None:
+                    try:
+                        count = await self.db.count_sessions(user_id=uid, agent_id=aid)
+                        if count > 0 and count % n == 0:
+                            await self.synthesize(user_id=uid, agent_id=aid)
+                    except Exception as e:
+                        logger.error("Auto-synthesis failed: %s", e)
+                        
+                task = asyncio.create_task(_bg_synthesize(user_id, agent_id))
+                self._bg_tasks.add(task)
+                task.add_done_callback(self._bg_tasks.discard)
+            else:
+                count = await self.db.count_sessions(user_id=user_id, agent_id=agent_id)
+                if count > 0 and count % n == 0:
+                    await self.synthesize(user_id=user_id, agent_id=agent_id)
+
+        return result
+
+    async def synthesize(self, user_id: str, agent_id: str | None = None) -> int:
+        """
+        Run a cross-session synthesis pass for the user.
+        Examines active facts across sessions to form aggregate/macro facts
+        (e.g., "User consistently prefers X", "User has done Y across multiple sessions").
+        
+        Returns the number of new aggregate facts inserted.
+        """
+        await self._ensure_initialized()
+        if not hasattr(self, "_synthesizer"):
+            logger.warning("Synthesizer not initialized.")
+            return 0
+        return await self._synthesizer.synthesize(user_id, agent_id)
 
     async def search(
         self,
