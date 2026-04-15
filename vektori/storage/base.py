@@ -198,19 +198,19 @@ class StorageBackend(ABC):
 
     # ── Syntheses ──
 
-    
+
     async def insert_synthesis(self, text: str, embedding: list[float], user_id: str, agent_id: str | None = None, score: float = 1.0, mentions: int = 1, metadata: dict | None = None) -> str:
         raise NotImplementedError()
 
-    
+
     async def insert_synthesis_fact(self, synthesis_id: str, fact_id: str) -> None:
         raise NotImplementedError()
 
-    
+
     async def get_syntheses_for_facts(self, fact_ids: list[str]) -> list[dict[str, Any]]:
         return []
 
-    
+
     async def search_syntheses(self, embedding: list[float], user_id: str, agent_id: str | None = None, limit: int = 10, threshold: float = 0.0) -> list[dict[str, Any]]:
         return []
 
@@ -223,37 +223,6 @@ class StorageBackend(ABC):
     async def get_sentences_by_ids(self, sentence_ids: list[str]) -> list[dict[str, Any]]:
         """Fetch full sentence rows for the given IDs."""
         ...
-
-
-    # ── Syntheses ──
-
-    
-    async def insert_synthesis(self, text: str, embedding: list[float], user_id: str, agent_id: str | None = None, score: float = 1.0, mentions: int = 1, metadata: dict | None = None) -> str:
-        raise NotImplementedError()
-
-    
-    async def insert_synthesis_fact(self, synthesis_id: str, fact_id: str) -> None:
-        raise NotImplementedError()
-
-    
-    async def get_syntheses_for_facts(self, fact_ids: list[str]) -> list[dict[str, Any]]:
-        return []
-
-    
-    async def search_syntheses(self, embedding: list[float], user_id: str, agent_id: str | None = None, limit: int = 10, threshold: float = 0.0) -> list[dict[str, Any]]:
-        return []
-
-    @abstractmethod
-    async def get_source_sentences(self, fact_ids: list[str]) -> list[str]:
-        """Return sentence IDs that are sources for the given facts (via fact_sources)."""
-        ...
-
-    @abstractmethod
-    async def get_sentences_by_ids(self, sentence_ids: list[str]) -> list[dict[str, Any]]:
-        """Fetch full sentence rows for the given IDs."""
-        ...
-
-
     # ── Episodes ──
 
     @abstractmethod
@@ -301,16 +270,6 @@ class StorageBackend(ABC):
         didn't land in the top-k but whose episode text is semantically close to
         the query.
         """
-        ...
-
-    @abstractmethod
-    async def get_source_sentences(self, fact_ids: list[str]) -> list[str]:
-        """Return sentence IDs that are sources for the given facts (via fact_sources)."""
-        ...
-
-    @abstractmethod
-    async def get_sentences_by_ids(self, sentence_ids: list[str]) -> list[dict[str, Any]]:
-        """Fetch full sentence rows for the given IDs."""
         ...
 
     # ── Sessions ──

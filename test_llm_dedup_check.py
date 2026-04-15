@@ -1,13 +1,18 @@
 import asyncio
-from vektori.storage.memory import MemoryBackend
+
 from vektori.ingestion.extractor import FactExtractor
-from vektori.models.base import LLMProvider, EmbeddingProvider
+from vektori.models.base import EmbeddingProvider, LLMProvider
+from vektori.storage.memory import MemoryBackend
+
 
 class MockEmbedder(EmbeddingProvider):
     @property
-    def dimension(self): return 2
+    def dimension(self):
+        return 2
+
     async def embed(self, text):
-        if "hate" in text: return [0.5, 0.4] # Give sim around 0.8 to test LLM
+        if "hate" in text:
+            return [0.5, 0.4]  # Give sim around 0.8 to test LLM
         return [0.5, 0.5]
     async def embed_batch(self, texts):
         return [await self.embed(t) for t in texts]
@@ -26,8 +31,8 @@ async def test():
     await db.initialize()
     embedder = MockEmbedder()
     llm = MockLLM()
-    extractor = FactExtractor(db, embedder, llm)
-    
+    _ = FactExtractor(db, embedder, llm)
+
     # Needs actual logic in Extractor...
-    
+
 asyncio.run(test())

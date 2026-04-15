@@ -585,88 +585,6 @@ CREATE INDEX IF NOT EXISTS idx_synthesis_facts_fact ON synthesis_facts (fact_id)
 
     # ── Syntheses ──
 
-    async def insert_synthesis(
-        self,
-        text: str,
-        embedding: list[float],
-        user_id: str,
-        agent_id: str | None = None,
-        session_id: str | None = None,
-    ) -> str:
-        synthesis_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{user_id}::{text}"))
-        await self._conn.execute(
-            """INSERT OR IGNORE INTO syntheses (id, text, embedding, user_id, agent_id, session_id)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (synthesis_id, text, json.dumps(embedding), user_id, agent_id, session_id),
-        )
-        await self._conn.commit()
-        return synthesis_id
-
-    async def insert_synthesis_fact(self, synthesis_id: str, fact_id: str) -> None:
-        await self._conn.execute(
-            "INSERT OR IGNORE INTO synthesis_facts (synthesis_id, fact_id) VALUES (?, ?)",
-            (synthesis_id, fact_id),
-        )
-        await self._conn.commit()
-
-    async def get_syntheses_for_facts(self, fact_ids: list[str]) -> list[dict[str, Any]]:
-        if not fact_ids:
-            return []
-        placeholders = ",".join("?" * len(fact_ids))
-        async with self._conn.execute(
-            f"""SELECT DISTINCT e.id, e.text, e.session_id, e.created_at
-                FROM syntheses e
-                JOIN synthesis_facts ef2 ON e.id = ef2.synthesis_id
-                WHERE ef2.fact_id IN ({placeholders}) AND e.is_active = 1""",
-            fact_ids,
-        ) as cursor:
-            rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
-
-    async def search_syntheses(
-        self,
-        embedding: list[float],
-        user_id: str,
-        agent_id: str | None = None,
-        limit: int = 5,
-    ) -> list[dict[str, Any]]:
-        query = "SELECT id, text, session_id, embedding, created_at FROM syntheses WHERE user_id = ? AND is_active = 1"
-        params: list[Any] = [user_id]
-        if agent_id:
-            query += " AND agent_id = ?"
-            params.append(agent_id)
-        async with self._conn.execute(query, params) as cursor:
-            rows = await cursor.fetchall()
-        results = []
-        for row in rows:
-            row_dict = dict(row)
-            emb = json.loads(row_dict.pop("embedding") or "null")
-            if emb:
-                sim = _cosine_similarity(embedding, emb)
-                results.append({**row_dict, "distance": 1.0 - sim})
-        results.sort(key=lambda x: x["distance"])
-        return results[:limit]
-
-    async def get_sentences_by_ids(self, sentence_ids: list[str]) -> list[dict[str, Any]]:
-        if not sentence_ids:
-            return []
-        placeholders = ",".join("?" * len(sentence_ids))
-        async with self._conn.execute(
-            f"""
-            SELECT id, text, session_id, turn_number, sentence_index, role, created_at
-            FROM sentences
-            WHERE id IN ({placeholders}) AND is_active = 1
-            ORDER BY session_id, turn_number, sentence_index
-            """,
-            sentence_ids,
-        ) as cursor:
-            rows = await cursor.fetchall()
-            cols = [d[0] for d in cursor.description]
-        return [dict(zip(cols, row)) for row in rows]
-
-
-    # ── Episodes ──
-
     async def insert_episode(
         self,
         text: str,
@@ -728,25 +646,6 @@ CREATE INDEX IF NOT EXISTS idx_synthesis_facts_fact ON synthesis_facts (fact_id)
                 results.append({**row_dict, "distance": 1.0 - sim})
         results.sort(key=lambda x: x["distance"])
         return results[:limit]
-
-    async def get_sentences_by_ids(self, sentence_ids: list[str]) -> list[dict[str, Any]]:
-        if not sentence_ids:
-            return []
-        placeholders = ",".join("?" * len(sentence_ids))
-        async with self._conn.execute(
-            f"""
-            SELECT id, text, session_id, turn_number, sentence_index, role, created_at
-            FROM sentences
-            WHERE id IN ({placeholders}) AND is_active = 1
-            ORDER BY session_id, turn_number, sentence_index
-            """,
-            sentence_ids,
-        ) as cursor:
-            rows = await cursor.fetchall()
-            cols = [d[0] for d in cursor.description]
-        return [dict(zip(cols, row)) for row in rows]
-
-    # ── Sessions ──
 
     async def upsert_session(
         self,

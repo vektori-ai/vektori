@@ -1,11 +1,8 @@
-import json
 import logging
-from datetime import datetime, timezone
-from typing import Any
 
-from vektori.models.base import LLMProvider, EmbeddingProvider
-from vektori.storage.base import StorageBackend
 from vektori.ingestion.extractor import _parse_json_response
+from vektori.models.base import EmbeddingProvider, LLMProvider
+from vektori.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
 
@@ -45,17 +42,17 @@ class Synthesizer:
     async def synthesize(self, user_id: str, agent_id: str | None = None) -> int:
         # Get active facts for the user
         facts = await self.db.get_active_facts(user_id=user_id, agent_id=agent_id, limit=300)
-        
+
         # Filter out existing synthesis facts so we don't synthesize the syntheses too much,
         # or maybe we do want to? For now, let's keep it simple: filter them out to avoid feedback loops unless needed.
         # Actually, let's just feed them all, but maybe limit to non-synthesis for base patterns.
         base_facts = [f for f in facts if f.get("metadata", {}).get("source") != "synthesis"]
-        
+
         if len(base_facts) < 5:
             return 0  # Not enough facts to form a pattern
-            
+
         facts_list = "\n".join(f"- {f['text']} (Session: {f.get('session_id', 'unknown')}, Date: {f.get('created_at', 'unknown')})" for f in base_facts)
-        
+
         prompt = SYNTHESIS_PROMPT.format(facts_list=facts_list, max_facts=5)
         try:
             response = await self.llm.generate(prompt, max_tokens=1000)
@@ -64,10 +61,10 @@ class Synthesizer:
         except Exception as e:
             logger.warning("Synthesis LLM call failed: %s", e)
             return 0
-            
+
         if not new_facts:
             return 0
-            
+
         texts = [f["text"] for f in new_facts]
         try:
             embeddings = await self.embedder.embed_batch(texts)
@@ -75,7 +72,7 @@ class Synthesizer:
             logger.error("Synthesis batch embed failed: %s", e)
             return 0
 
-        now = datetime.now(timezone.utc)
+
         inserted = 0
 
         for fact_dict, emb in zip(new_facts, embeddings):
@@ -86,7 +83,7 @@ class Synthesizer:
                 agent_id=agent_id,
                 limit=1
             )
-            
+
             skip = False
             if existing:
                 best = existing[0]
@@ -94,14 +91,14 @@ class Synthesizer:
                 if sim > 0.85:
                     # We already have this synthesis, let's just skip it
                     skip = True
-                    
+
             if skip:
                 continue
-                
+
             try:
                 # Need to link the synthesis to the facts that generated it if we want graph traversal
                 # But for now we just insert it
-                synthesis_id = await self.db.insert_synthesis(
+                _ = await self.db.insert_synthesis(
                     text=fact_dict["text"],
                     embedding=emb,
                     user_id=user_id,
@@ -111,5 +108,5 @@ class Synthesizer:
                 inserted += 1
             except Exception as e:
                 logger.warning("Failed to insert synthesis: %s", e)
-                
+
         return inserted

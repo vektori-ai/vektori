@@ -164,7 +164,7 @@ class Vektori:
             {"status": "ok", "sentences_stored": N, "extraction": "queued"|"done"|"skipped"}
         """
         await self._ensure_initialized()
-        
+
         result = await self._pipeline.ingest(
             messages, session_id, user_id, agent_id, metadata, session_time=session_time
         )
@@ -185,7 +185,7 @@ class Vektori:
                             await self.synthesize(user_id=uid, agent_id=aid)
                     except Exception as e:
                         logger.error("Auto-synthesis failed: %s", e)
-                        
+
                 task = asyncio.create_task(_bg_synthesize(user_id, agent_id))
                 self._bg_tasks.add(task)
                 task.add_done_callback(self._bg_tasks.discard)
@@ -201,7 +201,7 @@ class Vektori:
         Run a cross-session synthesis pass for the user.
         Examines active facts across sessions to form aggregate/macro facts
         (e.g., "User consistently prefers X", "User has done Y across multiple sessions").
-        
+
         Returns the number of new aggregate facts inserted.
         """
         await self._ensure_initialized()
