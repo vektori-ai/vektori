@@ -39,8 +39,6 @@ class MemoryBackend(StorageBackend):
         self._sessions: dict[str, dict[str, Any]] = {}
         self._syntheses: dict[str, dict[str, Any]] = {}
         self._synthesis_facts: list[dict[str, str]] = []
-        self._syntheses: dict[str, dict[str, Any]] = {}
-        self._synthesis_facts: list[dict[str, str]] = []
         self._episodes: dict[str, dict[str, Any]] = {}
         self._episode_facts: list[dict[str, str]] = []  # [{episode_id, fact_id}]
 
@@ -301,7 +299,8 @@ class MemoryBackend(StorageBackend):
         agent_id: str | None = None,
         session_id: str | None = None,
     ) -> str:
-        synthesis_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{user_id}::{text}"))
+        scope = agent_id or ""
+        synthesis_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{user_id}::{scope}::{text}"))
         if synthesis_id not in self._syntheses:
             self._syntheses[synthesis_id] = {
                 "id": synthesis_id,
@@ -341,6 +340,7 @@ class MemoryBackend(StorageBackend):
         user_id: str,
         agent_id: str | None = None,
         limit: int = 5,
+        threshold: float = 0.0,
     ) -> list[dict[str, Any]]:
         results = []
         for ep in self._syntheses.values():
@@ -354,6 +354,8 @@ class MemoryBackend(StorageBackend):
             if not emb:
                 continue
             sim = _cosine_similarity(embedding, emb)
+            if sim < threshold:
+                continue
             row = {k: v for k, v in ep.items() if k != "embedding"}
             results.append({**row, "distance": 1.0 - sim})
         results.sort(key=lambda x: x["distance"])
@@ -381,7 +383,6 @@ class MemoryBackend(StorageBackend):
                 x.get("sentence_index", 0),
             ),
         )
-
 
     # ── Syntheses ──
 
@@ -499,9 +500,25 @@ class MemoryBackend(StorageBackend):
 
     async def delete_user(self, user_id: str) -> int:
         count = 0
-        for store in [self._sentences, self._facts, self._syntheses, self._syntheses, self._episodes, self._sessions]:
+        for store in [
+            self._sentences,
+            self._facts,
+            self._syntheses,
+            self._episodes,
+            self._sessions,
+        ]:
             keys = [k for k, v in store.items() if v.get("user_id") == user_id]
             for k in keys:
                 del store[k]
                 count += 1
+        self._synthesis_facts = [
+            link
+            for link in self._synthesis_facts
+            if link["synthesis_id"] in self._syntheses and link["fact_id"] in self._facts
+        ]
+        self._episode_facts = [
+            link
+            for link in self._episode_facts
+            if link["episode_id"] in self._episodes and link["fact_id"] in self._facts
+        ]
         return count

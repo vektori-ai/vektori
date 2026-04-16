@@ -148,8 +148,9 @@ CREATE TABLE IF NOT EXISTS syntheses (
 CREATE INDEX IF NOT EXISTS idx_syntheses_user ON syntheses (user_id);
 CREATE INDEX IF NOT EXISTS idx_syntheses_embedding ON syntheses
     USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
--- Dedup: same synthesis text for same user is idempotent
-CREATE UNIQUE INDEX IF NOT EXISTS idx_syntheses_user_text ON syntheses (user_id, text);
+-- Dedup: same synthesis text for same user and agent scope is idempotent
+CREATE UNIQUE INDEX IF NOT EXISTS idx_syntheses_user_agent_text
+    ON syntheses (user_id, COALESCE(agent_id, ''), text);
 
 
 -- ============================================================

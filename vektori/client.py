@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime
 from typing import Any
@@ -76,6 +77,7 @@ class Vektori:
         self._search = None
         self._pipeline = None
         self._expander = None
+        self._bg_tasks: set[asyncio.Task[Any]] = set()
 
     async def _ensure_initialized(self) -> None:
         if not self._initialized:
@@ -105,6 +107,7 @@ class Vektori:
         )
         # Import syntheizer lazily or at module level. Let's do it inside the file at the top or here.
         from vektori.ingestion.synthesis import Synthesizer
+
         self._synthesizer = Synthesizer(
             db=self.db,
             embedder=self.embedder,
@@ -171,30 +174,33 @@ class Vektori:
 
         n = self.config.synthesis_interval
         if n is not None and n > 0:
-            # We don't want to block the caller on synthesis since it could be slow.
-            # However, if async_extraction is False, we should do it inline.
             if getattr(self.config, "async_extraction", True):
-                import asyncio
-                if getattr(self, "_bg_tasks", None) is None:
-                    self._bg_tasks = set()
-                # Fire and forget safely
-                async def _bg_synthesize(uid: str, aid: str | None) -> None:
+
+                async def _bg_synthesize_after_extraction() -> None:
                     try:
-                        count = await self.db.count_sessions(user_id=uid, agent_id=aid)
-                        if count > 0 and count % n == 0:
-                            await self.synthesize(user_id=uid, agent_id=aid)
+                        worker = self._pipeline.worker if self._pipeline else None
+                        if worker is not None:
+                            await worker.wait_for_idle(user_id, agent_id)
+                        await self._auto_synthesize_if_due(user_id, agent_id, n)
+                    except asyncio.CancelledError:
+                        raise
                     except Exception as e:
                         logger.error("Auto-synthesis failed: %s", e)
 
-                task = asyncio.create_task(_bg_synthesize(user_id, agent_id))
+                task = asyncio.create_task(_bg_synthesize_after_extraction())
                 self._bg_tasks.add(task)
                 task.add_done_callback(self._bg_tasks.discard)
             else:
-                count = await self.db.count_sessions(user_id=user_id, agent_id=agent_id)
-                if count > 0 and count % n == 0:
-                    await self.synthesize(user_id=user_id, agent_id=agent_id)
+                await self._auto_synthesize_if_due(user_id, agent_id, n)
 
         return result
+
+    async def _auto_synthesize_if_due(
+        self, user_id: str, agent_id: str | None, interval: int
+    ) -> None:
+        count = await self.db.count_sessions(user_id=user_id, agent_id=agent_id)
+        if count > 0 and count % interval == 0:
+            await self.synthesize(user_id=user_id, agent_id=agent_id)
 
     async def synthesize(self, user_id: str, agent_id: str | None = None) -> int:
         """
@@ -312,6 +318,11 @@ class Vektori:
 
     async def close(self) -> None:
         """Close database connections and gracefully shut down background workers."""
+        if self._bg_tasks:
+            for task in list(self._bg_tasks):
+                task.cancel()
+            await asyncio.gather(*self._bg_tasks, return_exceptions=True)
+            self._bg_tasks.clear()
         if self._pipeline and self._pipeline.worker:
             await self._pipeline.worker.shutdown()
         if self.db:
