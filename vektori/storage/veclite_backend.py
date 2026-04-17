@@ -344,10 +344,17 @@ class VecLiteBackend(StorageBackend):
     # ── Edges ──
 
     async def insert_edges(self, edges: list[dict[str, Any]]) -> int:
+        added = 0
+        existing_reps = {json.dumps(e, sort_keys=True) for e in self._edges}
         for edge in edges:
-            self._edges.append(edge)
-            self._sync_relation(f"edge:{uuid.uuid4()}", edge)
-        return len(edges)
+            rep = json.dumps(edge, sort_keys=True)
+            if rep not in existing_reps:
+                existing_reps.add(rep)
+                self._edges.append(edge)
+                edge_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"edge::{rep}"))
+                self._sync_relation(f"edge:{edge_id}", edge)
+                added += 1
+        return added
 
     async def expand_session_context(
         self,
@@ -452,6 +459,9 @@ class VecLiteBackend(StorageBackend):
         return results
 
     async def insert_fact_source(self, fact_id: str, sentence_id: str) -> None:
+        for link in self._fact_sources:
+            if link["fact_id"] == fact_id and link["sentence_id"] == sentence_id:
+                return
         link = {"fact_id": fact_id, "sentence_id": sentence_id}
         self._fact_sources.append(link)
         self._sync_relation(f"fs:{uuid.uuid4()}", link)
@@ -574,7 +584,27 @@ class VecLiteBackend(StorageBackend):
             if ef["episode_id"] not in episode_ids and ef["fact_id"] not in fact_ids
         ]
 
-        # Deleting individual relation entries natively via veclite is complicated since we append to lists
-        # We can implement a sweep here, but for now we just keep the active lists in memory.
+        if hasattr(self._vec_relations, "delete"):
+            sent_set = set(sentence_ids)
+            fact_set = set(fact_ids)
+            ep_set = set(episode_ids)
+
+            for rid, meta_str in self._vec_relations.get_all():
+                if not meta_str:
+                    continue
+                try:
+                    data = json.loads(meta_str)
+                except Exception:
+                    continue
+
+                if rid.startswith("edge:"):
+                    if data.get("source") in sent_set or data.get("target") in sent_set:
+                        self._vec_relations.delete(rid)
+                elif rid.startswith("fs:"):
+                    if data.get("fact_id") in fact_set or data.get("sentence_id") in sent_set:
+                        self._vec_relations.delete(rid)
+                elif rid.startswith("ef:"):
+                    if data.get("episode_id") in ep_set or data.get("fact_id") in fact_set:
+                        self._vec_relations.delete(rid)
 
         return count

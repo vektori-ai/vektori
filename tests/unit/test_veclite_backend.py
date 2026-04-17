@@ -1,5 +1,7 @@
 import pytest
 
+pytest.importorskip("veclite")
+
 from vektori.storage.veclite_backend import VecLiteBackend
 
 
