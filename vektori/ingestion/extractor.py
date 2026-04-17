@@ -876,10 +876,7 @@ class FactExtractor:
             # Contradiction LLM check for near-misses
             # If the fact wasn't deduped by bare similarity, check if it contradicts.
             # Only consider same-subject facts that are reasonably close (sim > 0.65).
-            plausible_conflicts = [
-                c for c in candidates
-                if (1.0 - c.get("distance", 1.0)) > 0.65
-            ]
+            plausible_conflicts = [c for c in candidates if (1.0 - c.get("distance", 1.0)) > 0.65]
             if plausible_conflicts:
                 facts_text = "\n".join(f"- [{c['id']}] {c['text']}" for c in plausible_conflicts)
                 prompt = CONTRADICTION_PROMPT.format(fact_text=fact_text, existing_facts=facts_text)
@@ -1065,6 +1062,7 @@ def _parse_json_response(response: str) -> dict[str, Any]:
     except json.JSONDecodeError as e:
         logger.error("Failed to parse extraction JSON: %s\nResponse: %.500s", e, response)
         return {"facts": []}
+
 
 # ── Contradiction prompt ──────────────────────────────────────────────────────
 CONTRADICTION_PROMPT = """Do any of the existing facts contradict or get superseded by the new fact?

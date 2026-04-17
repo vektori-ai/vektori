@@ -38,12 +38,13 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from benchmarks.longmemeval.checkpoint import BenchmarkCheckpoint
 from benchmarks.longmemeval.session_cache import SessionExtractCache
+from vektori.qa import generate_answer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -80,7 +81,8 @@ class LoCoMoConfig:
     run_name: str | None = None
 
     # Evaluation
-    eval_model: str = "gemini:gemini-2.5-flash-lite"
+    eval_model: str = "vllm:Qwen/Qwen3-8B"
+    qa_prompt_path: str | None = None
 
     # Pilot mode — set to a small number to test before full run
     max_questions: int | None = None
@@ -106,6 +108,7 @@ class LoCoMoBenchmark:
         self.dataset_path: Path | None = None
         self._session_cache: SessionExtractCache | None = None
         self._checkpoint: BenchmarkCheckpoint | None = None
+        self._qa_prompt_override = _load_qa_prompt_override(config.qa_prompt_path)
 
     # ── Setup ────────────────────────────────────────────────────────────────
 
@@ -460,33 +463,14 @@ class LoCoMoBenchmark:
     async def _generate_answer(
         self, question: str, context: str, question_date: str = ""
     ) -> str:
-        from vektori.models.factory import create_llm
-
-        if "No relevant context" in context:
-            return "I don't have relevant information to answer this question."
-
-        llm = create_llm(self.config.eval_model)
-        date_line = f"TODAY'S DATE: {question_date}\n\n" if question_date else ""
-
-        prompt = (
-            "You are an AI assistant answering questions based on provided context "
-            "from a long-term conversation history.\n\n"
-            f"{date_line}"
-            f"CONTEXT:\n{context}\n\n"
-            f"QUESTION:\n{question}\n\n"
-            "INSTRUCTIONS:\n"
-            "- Answer the question based ONLY on the provided context\n"
-            "- Be concise and direct — a short phrase or sentence is preferred\n"
-            "- If the context does not contain enough information, say "
-            "\"I don't have that information\"\n\n"
-            "ANSWER:"
+        return await generate_answer(
+            question=question,
+            context=context,
+            question_date=question_date,
+            model=self.config.eval_model,
+            prompt_template=self._qa_prompt_override,
+            max_tokens=500,
         )
-        max_tokens = 500
-        try:
-            return (await llm.generate(prompt, max_tokens=max_tokens)).strip()
-        except Exception as e:
-            logger.warning("Answer generation failed: %s", e)
-            return "Unable to generate answer due to API error."
 
     # ── Evaluation ────────────────────────────────────────────────────────────
 
@@ -677,6 +661,144 @@ def _parse_date(date_str: str) -> datetime | None:
     return None
 
 
+def _load_qa_prompt_override(path: str | None) -> str | None:
+    if not path:
+        return None
+
+    prompt_path = Path(path)
+    if not prompt_path.exists():
+        raise FileNotFoundError(f"QA prompt override file not found: {prompt_path}")
+
+    prompt = prompt_path.read_text(encoding="utf-8").strip()
+    required = ("{date_line}", "{context}", "{question}")
+    missing = [field for field in required if field not in prompt]
+    if missing:
+        raise ValueError(
+            f"QA prompt override {prompt_path} is missing required placeholders: {missing}"
+        )
+    logger.info("Loaded QA prompt override from %s", prompt_path)
+    return prompt
+
+
+def _coerce_datetime(value: Any) -> datetime | None:
+    """Convert common timestamp shapes into a naive datetime."""
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+    if not value:
+        return None
+
+    clean = str(value).strip()
+    if not clean:
+        return None
+    if clean.endswith("Z"):
+        clean = f"{clean[:-1]}+00:00"
+
+    try:
+        return datetime.fromisoformat(clean).replace(tzinfo=None)
+    except ValueError:
+        return _parse_date(clean)
+
+
+def _timestamp_for_context(item: dict[str, Any]) -> Any:
+    return item.get("event_time") or item.get("created_at") or ""
+
+
+def _date_prefix(timestamp: Any) -> str:
+    parsed = _coerce_datetime(timestamp)
+    if parsed:
+        return parsed.date().isoformat()
+    text = str(timestamp).strip()
+    return text[:10] if text else ""
+
+
+def _as_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _fact_relevance_score(fact: dict[str, Any]) -> float:
+    score = _as_float(fact.get("score"))
+    if score is not None:
+        return score
+
+    distance = _as_float(fact.get("distance"))
+    if distance is not None:
+        return 1.0 - distance
+
+    return 0.0
+
+
+def _fact_specificity_score(fact: dict[str, Any]) -> int:
+    text = str(fact.get("text", ""))
+    metadata = fact.get("metadata") or {}
+    score = 0
+    if _timestamp_for_context(fact):
+        score += 3
+    if metadata.get("temporal_expr"):
+        score += 2
+    if re.search(r"\b\d{4}-\d{2}-\d{2}\b", text):
+        score += 2
+    score += min(len(re.findall(r"\b\d[\w:/.-]*\b", text)), 3)
+    score += min(len(re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3}\b", text)), 3)
+    if len(text) <= 240:
+        score += 1
+    return score
+
+
+def _fact_context_sort_key(fact: dict[str, Any]) -> tuple[float, int, float]:
+    timestamp = _coerce_datetime(_timestamp_for_context(fact))
+    timestamp_value = timestamp.timestamp() if timestamp else 0.0
+    return (
+        -_fact_relevance_score(fact),
+        -_fact_specificity_score(fact),
+        -timestamp_value,
+    )
+
+
+def _relative_time_note(text: str, timestamp: Any) -> str:
+    reference_dt = _coerce_datetime(timestamp)
+    if not text or not reference_dt:
+        return ""
+
+    reference_date = reference_dt.date()
+    lower = text.lower()
+    notes: list[str] = []
+    for phrase, offset_days in (
+        ("yesterday", -1),
+        ("today", 0),
+        ("tomorrow", 1),
+    ):
+        if re.search(rf"\b{re.escape(phrase)}\b", lower):
+            resolved = (reference_dt + timedelta(days=offset_days)).date().isoformat()
+            notes.append(
+                f'"{phrase}" resolves to {resolved} from session date {reference_date.isoformat()}'
+            )
+
+    generic_phrases = [
+        "last week",
+        "next week",
+        "last month",
+        "next month",
+        "last year",
+        "next year",
+        "recently",
+        "earlier this week",
+        "later this week",
+    ]
+    generic_found = [phrase for phrase in generic_phrases if phrase in lower]
+    if generic_found:
+        joined = ", ".join(f'"{phrase}"' for phrase in generic_found)
+        notes.append(
+            f"{joined} anchored to session date {reference_date.isoformat()}"
+        )
+
+    if not notes:
+        return ""
+    return f" [Temporal note: {'; '.join(notes)}.]"
+
+
 def _format_retrieved_context(search_results: Any) -> str:
     if not search_results:
         return "No relevant context retrieved."
@@ -687,27 +809,36 @@ def _format_retrieved_context(search_results: Any) -> str:
     if facts:
         facts = sorted(
             facts,
-            key=lambda f: f.get("event_time") or f.get("created_at") or "",
+            key=_fact_context_sort_key,
         )
-        lines.append("## Facts")
+        lines.append("## Facts (ranked by relevance and specificity)")
         for i, fact in enumerate(facts, 1):
-            date_prefix = ""
-            ts = fact.get("event_time") or fact.get("created_at") or ""
-            if ts:
-                date_prefix = f"[{str(ts)[:10]}] "
-            lines.append(f"{i}. {date_prefix}{fact.get('text', str(fact))}")
+            timestamp = _timestamp_for_context(fact)
+            date = _date_prefix(timestamp)
+            date_prefix = f"[{date}] " if date else ""
+            text = str(fact.get("text", str(fact))).strip()
+            text = f"{text}{_relative_time_note(text, timestamp)}"
+            lines.append(f"{i}. {date_prefix}{text}")
 
     episodes = search_results.get("episodes") or []
     if episodes:
         lines.append("\n## Episodes")
         for i, ep in enumerate(episodes, 1):
-            lines.append(f"{i}. {ep.get('text', str(ep))}")
+            timestamp = _timestamp_for_context(ep)
+            date = _date_prefix(timestamp)
+            date_prefix = f"[{date}] " if date else ""
+            text = str(ep.get("text", str(ep))).strip()
+            lines.append(f"{i}. {date_prefix}{text}")
 
     syntheses = search_results.get("syntheses") or []
     if syntheses:
         lines.append("\n## Syntheses")
         for i, sy in enumerate(syntheses, 1):
-            lines.append(f"{i}. {sy.get('text', str(sy))}")
+            timestamp = _timestamp_for_context(sy)
+            date = _date_prefix(timestamp)
+            date_prefix = f"[{date}] " if date else ""
+            text = str(sy.get("text", str(sy))).strip()
+            lines.append(f"{i}. {date_prefix}{text}")
 
     sentences = search_results.get("sentences") or []
     if sentences:
@@ -725,15 +856,19 @@ def _format_retrieved_context(search_results: Any) -> str:
             sents = session_sents[ssid]
             date_hint = ""
             for s in sents:
-                ts = s.get("created_at") or ""
+                ts = _timestamp_for_context(s)
                 if ts:
-                    date_hint = f" [{str(ts)[:10]}]"
+                    date = _date_prefix(ts)
+                    date_hint = f" [{date}]" if date else ""
                     break
             lines.append(f"\n### Session {n}{date_hint}")
             for sent in sents:
                 role = sent.get("role", "")
                 prefix = f"[{role.upper()}] " if role else ""
-                lines.append(f"  {prefix}{sent.get('text', str(sent))}")
+                timestamp = _timestamp_for_context(sent)
+                text = str(sent.get("text", str(sent))).strip()
+                text = f"{text}{_relative_time_note(text, timestamp)}"
+                lines.append(f"  {prefix}{text}")
 
     return "\n".join(lines) if lines else "No relevant context retrieved."
 
@@ -754,8 +889,12 @@ async def main() -> None:
         help="LLM for fact/episode extraction"
     )
     parser.add_argument(
-        "--eval-model", default="gemini:gemini-2.5-flash-lite",
+        "--eval-model", default="vllm:Qwen/Qwen3-8B",
         help="LLM for QA answer generation"
+    )
+    parser.add_argument(
+        "--qa-prompt-file", default=None,
+        help="Optional path to GEPA-optimized QA prompt text"
     )
     parser.add_argument(
         "--max-extraction-output-tokens", type=int, default=32768,
@@ -785,6 +924,7 @@ async def main() -> None:
         embedding_model=args.embedding_model,
         extraction_model=args.extraction_model,
         eval_model=args.eval_model,
+        qa_prompt_path=args.qa_prompt_file,
         max_extraction_output_tokens=args.max_extraction_output_tokens,
         output_dir=args.output_dir,
         data_dir=args.data_dir,

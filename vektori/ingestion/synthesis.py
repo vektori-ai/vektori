@@ -28,6 +28,7 @@ If nothing aggregates meaningfully, return {{"facts": []}}.
 Return ONLY the JSON.
 """
 
+
 class Synthesizer:
     def __init__(
         self,
@@ -51,7 +52,10 @@ class Synthesizer:
         if len(base_facts) < 5:
             return 0  # Not enough facts to form a pattern
 
-        facts_list = "\n".join(f"- {f['text']} (Session: {f.get('session_id', 'unknown')}, Date: {f.get('created_at', 'unknown')})" for f in base_facts)
+        facts_list = "\n".join(
+            f"- {f['text']} (Session: {f.get('session_id', 'unknown')}, Date: {f.get('created_at', 'unknown')})"
+            for f in base_facts
+        )
 
         prompt = SYNTHESIS_PROMPT.format(facts_list=facts_list, max_facts=5)
         try:
@@ -65,23 +69,32 @@ class Synthesizer:
         if not new_facts:
             return 0
 
-        texts = [f["text"] for f in new_facts]
+        valid_facts: list[dict] = []
+        for item in new_facts:
+            if not isinstance(item, dict):
+                continue
+            text = item.get("text")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            valid_facts.append({**item, "text": text.strip()})
+
+        if not valid_facts:
+            return 0
+
+        texts = [f["text"] for f in valid_facts]
         try:
             embeddings = await self.embedder.embed_batch(texts)
         except Exception as e:
             logger.error("Synthesis batch embed failed: %s", e)
             return 0
 
-
         inserted = 0
+        source_fact_ids = [f["id"] for f in base_facts if f.get("id")]
 
-        for fact_dict, emb in zip(new_facts, embeddings):
+        for fact_dict, emb in zip(valid_facts, embeddings):
             # Check dedup against existing synthesis
             existing = await self.db.search_syntheses(
-                embedding=emb,
-                user_id=user_id,
-                agent_id=agent_id,
-                limit=1
+                embedding=emb, user_id=user_id, agent_id=agent_id, limit=5
             )
 
             skip = False
@@ -96,15 +109,15 @@ class Synthesizer:
                 continue
 
             try:
-                # Need to link the synthesis to the facts that generated it if we want graph traversal
-                # But for now we just insert it
-                _ = await self.db.insert_synthesis(
+                synthesis_id = await self.db.insert_synthesis(
                     text=fact_dict["text"],
                     embedding=emb,
                     user_id=user_id,
                     agent_id=agent_id,
-                    session_id="synthesis"
+                    session_id=None,
                 )
+                for fact_id in source_fact_ids:
+                    await self.db.insert_synthesis_fact(synthesis_id, fact_id)
                 inserted += 1
             except Exception as e:
                 logger.warning("Failed to insert synthesis: %s", e)

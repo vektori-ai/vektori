@@ -7,6 +7,7 @@ from vektori.models.factory import LLM_REGISTRY, create_embedder, create_llm
 from vektori.models.nvidia import DEFAULT_EMBEDDING_MODEL, NvidiaEmbedder, NvidiaLLM
 from vektori.models.ollama import OllamaEmbedder, OllamaLLM
 from vektori.models.openai import OpenAIEmbedder, OpenAILLM
+from vektori.models.openai_compatible import VLLMLLM, LMStudioLLM, OpenAICompatibleLLM
 
 
 def test_create_openai_embedder():
@@ -47,6 +48,29 @@ def test_create_openai_llm():
 def test_create_ollama_llm():
     llm = create_llm("ollama:llama3")
     assert isinstance(llm, OllamaLLM)
+
+
+def test_create_vllm_llm():
+    llm = create_llm("vllm:Qwen/Qwen3-8B")
+    assert isinstance(llm, VLLMLLM)
+    assert llm.model == "Qwen/Qwen3-8B"
+    assert llm.base_url == "http://localhost:8000/v1"
+
+
+def test_create_lmstudio_llm():
+    llm = create_llm("lmstudio:qwen3-8b")
+    assert isinstance(llm, LMStudioLLM)
+    assert llm.model == "qwen3-8b"
+    assert llm.base_url == "http://localhost:1234/v1"
+
+
+def test_create_openai_compatible_llm():
+    llm = create_llm(
+        "openai-compatible:Qwen/Qwen3-8B",
+        base_url="http://localhost:9999/v1",
+    )
+    assert isinstance(llm, OpenAICompatibleLLM)
+    assert llm.base_url == "http://localhost:9999/v1"
 
 
 def test_create_anthropic_llm():

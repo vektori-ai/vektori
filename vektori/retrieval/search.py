@@ -210,7 +210,8 @@ class SearchPipeline:
                 return {"facts": [], "episodes": [], "syntheses": [], "memory_found": False}
             return {
                 "facts": [],
-                "episodes": [], "syntheses": [],
+                "episodes": [],
+                "syntheses": [],
                 "sentences": direct_sentences,
                 "memory_found": False,
             }
@@ -241,7 +242,12 @@ class SearchPipeline:
             episodes = await self.db.get_episodes_for_facts(seed_fact_ids)
             syntheses = await self.db.get_syntheses_for_facts(seed_fact_ids)
             top = _clean(top_k_facts)
-            return {"facts": top, "episodes": episodes, "syntheses": syntheses, "memory_found": len(top) > 0}
+            return {
+                "facts": top,
+                "episodes": episodes,
+                "syntheses": syntheses,
+                "memory_found": len(top) > 0,
+            }
 
         # ── Step 2: Episodes (L1/L2) — graph traversal + vector search ────────
         # Run both concurrently: graph edges from matched facts, and direct
@@ -300,7 +306,8 @@ class SearchPipeline:
         if not all_candidate_ids:
             return {
                 "facts": top_facts,
-                "episodes": episodes, "syntheses": syntheses,
+                "episodes": episodes,
+                "syntheses": syntheses,
                 "sentences": [],
                 "memory_found": memory_found,
             }
@@ -353,7 +360,8 @@ class SearchPipeline:
 
         return {
             "facts": top_facts,
-            "episodes": episodes, "syntheses": syntheses,
+            "episodes": episodes,
+            "syntheses": syntheses,
             "sentences": _dedup(result_sentences),
             "memory_found": memory_found,
         }
@@ -429,7 +437,8 @@ class SearchPipeline:
 
         return {
             "facts": top_facts,
-            "episodes": episodes, "syntheses": syntheses,
+            "episodes": episodes,
+            "syntheses": syntheses,
             "sentences": _dedup(raw.get("sentences", [])),
             "memory_found": len(top_facts) > 0,
         }
@@ -503,7 +512,8 @@ class SearchPipeline:
             logger.debug("search_expanded: no facts found, falling back to sentence search")
             return {
                 "facts": [],
-                "episodes": [], "syntheses": [],
+                "episodes": [],
+                "syntheses": [],
                 "sentences": direct_sentences,
                 "memory_found": False,
             }
@@ -529,7 +539,13 @@ class SearchPipeline:
         top_facts = _diverse_top_k(scored_facts, top_k)
         fact_ids = [f["id"] for f in top_facts]
 
-        graph_episodes, vec_episodes, graph_syntheses, vec_syntheses, source_sentence_ids = await asyncio.gather(
+        (
+            graph_episodes,
+            vec_episodes,
+            graph_syntheses,
+            vec_syntheses,
+            source_sentence_ids,
+        ) = await asyncio.gather(
             self.db.get_episodes_for_facts(fact_ids),
             self.db.search_episodes(embeddings[0], user_id, agent_id),
             self.db.get_syntheses_for_facts(fact_ids),
@@ -605,7 +621,8 @@ class SearchPipeline:
 
         return {
             "facts": _clean(top_facts),
-            "episodes": episodes, "syntheses": syntheses,
+            "episodes": episodes,
+            "syntheses": syntheses,
             "sentences": _dedup(result_sentences),
             "memory_found": len(top_facts) > 0,
         }
@@ -635,7 +652,13 @@ class SearchPipeline:
             agent_id=agent_id,
             limit=top_k,
         )
-        return {"facts": [], "episodes": [], "syntheses": [], "sentences": sentences, "memory_found": False}
+        return {
+            "facts": [],
+            "episodes": [],
+            "syntheses": [],
+            "sentences": sentences,
+            "memory_found": False,
+        }
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

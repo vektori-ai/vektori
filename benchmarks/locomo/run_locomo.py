@@ -4,7 +4,8 @@ LoCoMo Benchmark Entry Point
 
 Runs Vektori on the LoCoMo-10 dataset using:
   - Cloudflare Workers AI: BGE-M3 embeddings (zero local GPU)
-    - Gemini 2.5 Flash-Lite: fact extraction + QA evaluation
+  - Gemini 2.5 Flash-Lite: fact/episode extraction by default
+  - Qwen3-8B via local vLLM: QA evaluation by default
 
 Required environment variables (set in .env or shell):
     CLOUDFLARE_API_TOKEN   — Workers AI token (Account > Workers AI > Read)
@@ -57,10 +58,11 @@ def _check_env() -> None:
 
 
 async def _main() -> None:
+    import argparse
     from datetime import datetime as _dt
+
     from benchmarks.locomo.locomo_runner import LoCoMoBenchmark, LoCoMoConfig
 
-    import argparse
     parser = argparse.ArgumentParser(description="Run Vektori on LoCoMo-10")
     parser.add_argument(
         "--max-questions", type=int, default=5,
@@ -75,8 +77,12 @@ async def _main() -> None:
         help="LLM for fact/episode extraction"
     )
     parser.add_argument(
-        "--eval-model", default="gemini:gemini-2.5-flash-lite",
+        "--eval-model", default="vllm:Qwen/Qwen3-8B",
         help="LLM for QA answer generation"
+    )
+    parser.add_argument(
+        "--qa-prompt-file", default=None,
+        help="Optional path to GEPA-optimized QA prompt text"
     )
     parser.add_argument(
         "--max-extraction-output-tokens", type=int, default=32768,
@@ -110,6 +116,7 @@ async def _main() -> None:
         embedding_model="cloudflare:@cf/baai/bge-m3",
         extraction_model=args.extraction_model,
         eval_model=args.eval_model,
+        qa_prompt_path=args.qa_prompt_file,
         max_extraction_output_tokens=args.max_extraction_output_tokens,
         retrieval_depth=args.depth,
         output_dir=output_dir,

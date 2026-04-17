@@ -112,6 +112,13 @@ class PostgresBackend(StorageBackend):
             )
         if "mentions" not in existing:
             await conn.execute("ALTER TABLE facts ADD COLUMN mentions INTEGER DEFAULT 1")
+        await conn.execute("DROP INDEX IF EXISTS idx_syntheses_user_text")
+        await conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_syntheses_user_agent_text
+            ON syntheses (user_id, COALESCE(agent_id, ''), text)
+            """
+        )
 
     async def close(self) -> None:
         if self._pool:
@@ -525,7 +532,8 @@ class PostgresBackend(StorageBackend):
         agent_id: str | None = None,
         session_id: str | None = None,
     ) -> str:
-        synthesis_id = uuid.uuid5(uuid.NAMESPACE_OID, f"{user_id}::{text}")
+        scope = agent_id or ""
+        synthesis_id = uuid.uuid5(uuid.NAMESPACE_OID, f"{user_id}::{scope}::{text}")
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """
@@ -577,6 +585,7 @@ class PostgresBackend(StorageBackend):
         user_id: str,
         agent_id: str | None = None,
         limit: int = 5,
+        threshold: float = 0.0,
     ) -> list[dict[str, Any]]:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
@@ -587,6 +596,7 @@ class PostgresBackend(StorageBackend):
                 WHERE user_id = $2
                   AND ($3::text IS NULL OR agent_id = $3)
                   AND is_active = true
+                  AND ($5::float <= 0 OR 1.0 - (embedding <=> $1::vector) >= $5)
                 ORDER BY embedding <=> $1::vector
                 LIMIT $4
                 """,
@@ -594,6 +604,7 @@ class PostgresBackend(StorageBackend):
                 user_id,
                 agent_id,
                 limit,
+                threshold,
             )
         return [_row(r) for r in rows]
 
@@ -612,7 +623,6 @@ class PostgresBackend(StorageBackend):
                 uuid_ids,
             )
         return [str(row["sentence_id"]) for row in rows]
-
 
     # ── Syntheses ──
 
@@ -887,7 +897,6 @@ class PostgresBackend(StorageBackend):
                         (SELECT COUNT(*) FROM facts    WHERE user_id = $1) +
                         (SELECT COUNT(*) FROM episodes WHERE user_id = $1) +
                         (SELECT COUNT(*) FROM syntheses WHERE user_id = $1) +
-                        (SELECT COUNT(*) FROM syntheses WHERE user_id = $1) +
                         (SELECT COUNT(*) FROM sessions WHERE user_id = $1) AS total
                     """,
                     user_id,
@@ -896,7 +905,6 @@ class PostgresBackend(StorageBackend):
                 await conn.execute("DELETE FROM sentences WHERE user_id = $1", user_id)
                 await conn.execute("DELETE FROM facts    WHERE user_id = $1", user_id)
                 await conn.execute("DELETE FROM episodes WHERE user_id = $1", user_id)
-                await conn.execute("DELETE FROM syntheses WHERE user_id = $1", user_id)
                 await conn.execute("DELETE FROM syntheses WHERE user_id = $1", user_id)
                 await conn.execute("DELETE FROM sessions WHERE user_id = $1", user_id)
 

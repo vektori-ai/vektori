@@ -33,6 +33,9 @@ LLM_REGISTRY: dict[str, str] = {
     # LiteLLM: single interface for 100+ providers — recommended for extraction
     "litellm": "vektori.models.litellm_provider.LiteLLMProvider",
     "nvidia": "vektori.models.nvidia.NvidiaLLM",
+    "vllm": "vektori.models.openai_compatible.VLLMLLM",
+    "lmstudio": "vektori.models.openai_compatible.LMStudioLLM",
+    "openai-compatible": "vektori.models.openai_compatible.OpenAICompatibleLLM",
 }
 
 

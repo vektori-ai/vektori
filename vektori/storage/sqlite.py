@@ -133,7 +133,8 @@ class SQLiteBackend(StorageBackend):
                 created_at TEXT DEFAULT (datetime('now')),
                 UNIQUE (user_id, text)
             );
-CREATE TABLE IF NOT EXISTS syntheses (
+
+            CREATE TABLE IF NOT EXISTS syntheses (
                 id TEXT PRIMARY KEY,
                 text TEXT NOT NULL,
                 embedding TEXT,            -- JSON array of floats
@@ -142,18 +143,7 @@ CREATE TABLE IF NOT EXISTS syntheses (
                 session_id TEXT,
                 is_active INTEGER DEFAULT 1,
                 created_at TEXT DEFAULT (datetime('now')),
-                UNIQUE (user_id, text)
-            );
-CREATE TABLE IF NOT EXISTS syntheses (
-                id TEXT PRIMARY KEY,
-                text TEXT NOT NULL,
-                embedding TEXT,            -- JSON array of floats
-                user_id TEXT NOT NULL,
-                agent_id TEXT,
-                session_id TEXT,
-                is_active INTEGER DEFAULT 1,
-                created_at TEXT DEFAULT (datetime('now')),
-                UNIQUE (user_id, text)
+                UNIQUE (user_id, agent_id, text)
             );
 
             CREATE TABLE IF NOT EXISTS episode_facts (
@@ -161,13 +151,9 @@ CREATE TABLE IF NOT EXISTS syntheses (
                 fact_id TEXT NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
                 PRIMARY KEY (episode_id, fact_id)
             );
-CREATE TABLE IF NOT EXISTS synthesis_facts (
-                synthesis_id TEXT NOT NULL REFERENCES synthesiss(id) ON DELETE CASCADE,
-                fact_id TEXT NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
-                PRIMARY KEY (synthesis_id, fact_id)
-            );
-CREATE TABLE IF NOT EXISTS synthesis_facts (
-                synthesis_id TEXT NOT NULL REFERENCES synthesiss(id) ON DELETE CASCADE,
+
+            CREATE TABLE IF NOT EXISTS synthesis_facts (
+                synthesis_id TEXT NOT NULL REFERENCES syntheses(id) ON DELETE CASCADE,
                 fact_id TEXT NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
                 PRIMARY KEY (synthesis_id, fact_id)
             );
@@ -176,8 +162,7 @@ CREATE TABLE IF NOT EXISTS synthesis_facts (
             CREATE INDEX IF NOT EXISTS idx_facts_active ON facts (user_id, is_active);
             CREATE INDEX IF NOT EXISTS idx_fact_sources_fact ON fact_sources (fact_id);
             CREATE INDEX IF NOT EXISTS idx_episode_facts_fact ON episode_facts (fact_id);
-CREATE INDEX IF NOT EXISTS idx_synthesis_facts_fact ON synthesis_facts (fact_id);
-CREATE INDEX IF NOT EXISTS idx_synthesis_facts_fact ON synthesis_facts (fact_id);
+            CREATE INDEX IF NOT EXISTS idx_synthesis_facts_fact ON synthesis_facts (fact_id);
         """)
 
     async def _migrate(self) -> None:
@@ -190,6 +175,27 @@ CREATE INDEX IF NOT EXISTS idx_synthesis_facts_fact ON synthesis_facts (fact_id)
             await self._conn.execute("ALTER TABLE facts ADD COLUMN subject TEXT")
         if "mentions" not in cols:
             await self._conn.execute("ALTER TABLE facts ADD COLUMN mentions INTEGER DEFAULT 1")
+
+        async with self._conn.execute("PRAGMA foreign_key_list(synthesis_facts)") as cursor:
+            fk_rows = await cursor.fetchall()
+        if any(row["table"] == "synthesiss" for row in fk_rows):
+            await self._conn.execute("ALTER TABLE synthesis_facts RENAME TO synthesis_facts_bad")
+            await self._conn.execute(
+                """
+                CREATE TABLE synthesis_facts (
+                    synthesis_id TEXT NOT NULL REFERENCES syntheses(id) ON DELETE CASCADE,
+                    fact_id TEXT NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
+                    PRIMARY KEY (synthesis_id, fact_id)
+                )
+                """
+            )
+            await self._conn.execute(
+                """
+                INSERT OR IGNORE INTO synthesis_facts (synthesis_id, fact_id)
+                SELECT synthesis_id, fact_id FROM synthesis_facts_bad
+                """
+            )
+            await self._conn.execute("DROP TABLE synthesis_facts_bad")
         if "event_time" not in cols:
             await self._conn.execute("ALTER TABLE facts ADD COLUMN event_time TEXT")
 
@@ -511,7 +517,8 @@ CREATE INDEX IF NOT EXISTS idx_synthesis_facts_fact ON synthesis_facts (fact_id)
         agent_id: str | None = None,
         session_id: str | None = None,
     ) -> str:
-        synthesis_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{user_id}::{text}"))
+        scope = agent_id or ""
+        synthesis_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{user_id}::{scope}::{text}"))
         await self._conn.execute(
             """INSERT OR IGNORE INTO syntheses (id, text, embedding, user_id, agent_id, session_id)
                VALUES (?, ?, ?, ?, ?, ?)""",
@@ -547,6 +554,7 @@ CREATE INDEX IF NOT EXISTS idx_synthesis_facts_fact ON synthesis_facts (fact_id)
         user_id: str,
         agent_id: str | None = None,
         limit: int = 5,
+        threshold: float = 0.0,
     ) -> list[dict[str, Any]]:
         query = "SELECT id, text, session_id, embedding, created_at FROM syntheses WHERE user_id = ? AND is_active = 1"
         params: list[Any] = [user_id]
@@ -561,6 +569,8 @@ CREATE INDEX IF NOT EXISTS idx_synthesis_facts_fact ON synthesis_facts (fact_id)
             emb = json.loads(row_dict.pop("embedding") or "null")
             if emb:
                 sim = _cosine_similarity(embedding, emb)
+                if sim < threshold:
+                    continue
                 results.append({**row_dict, "distance": 1.0 - sim})
         results.sort(key=lambda x: x["distance"])
         return results[:limit]
@@ -581,7 +591,6 @@ CREATE INDEX IF NOT EXISTS idx_synthesis_facts_fact ON synthesis_facts (fact_id)
             rows = await cursor.fetchall()
             cols = [d[0] for d in cursor.description]
         return [dict(zip(cols, row)) for row in rows]
-
 
     # ── Syntheses ──
 

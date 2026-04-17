@@ -100,6 +100,28 @@ class ExtractionWorker:
             # Not enough signal yet — wait for debounce window (low-traffic fallback)
             self._timers[key] = asyncio.create_task(self._debounced_process(key))
 
+    async def wait_for_idle(
+        self, user_id: str, agent_id: str | None = None, timeout: float = 60.0
+    ) -> None:
+        """Wait until queued extraction for a user scope has finished processing."""
+        key = f"{user_id}:{agent_id or ''}"
+        while True:
+            task = self._timers.get(key)
+            if task is None:
+                if key in self._buffers:
+                    await self._process(key)
+                return
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+            except asyncio.TimeoutError:
+                logger.warning("Timed out waiting for extraction worker to go idle for key=%s", key)
+                return
+            except asyncio.CancelledError:
+                if task.cancelled():
+                    await asyncio.sleep(0)
+                    continue
+                raise
+
     async def _debounced_process(self, key: str) -> None:
         await asyncio.sleep(self.debounce_seconds)
         await self._process(key)
