@@ -131,9 +131,10 @@ class GeminiLLM(LLMProvider):
         """
         genai = self._get_client()
 
-        # Build request kwargs
+        # Build request kwargs — force JSON output so the model never returns prose
         kwargs: dict[str, Any] = {
             "temperature": 0.1,  # Low randomness for extraction tasks
+            "response_mime_type": "application/json",
         }
 
         if max_tokens is not None:

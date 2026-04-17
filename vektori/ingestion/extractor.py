@@ -881,7 +881,7 @@ class FactExtractor:
                 facts_text = "\n".join(f"- [{c['id']}] {c['text']}" for c in plausible_conflicts)
                 prompt = CONTRADICTION_PROMPT.format(fact_text=fact_text, existing_facts=facts_text)
                 try:
-                    response = await self.llm.generate(prompt, max_tokens=100)
+                    response = await self.llm.generate(prompt, max_tokens=512)
                     data = _parse_json_response(response)
                     supersedes_id = data.get("supersedes_id")
                     if supersedes_id and any(c["id"] == supersedes_id for c in plausible_conflicts):
@@ -1050,18 +1050,48 @@ class FactExtractor:
 
 
 def _parse_json_response(response: str) -> dict[str, Any]:
-    """Parse LLM JSON response, stripping markdown code fences if present."""
+    """Parse LLM JSON response, stripping markdown code fences if present.
+
+    Handles three common model output patterns:
+    1. Raw JSON
+    2. ```json ... ``` fenced block at the start
+    3. Prose followed by a fenced or bare JSON block anywhere in the response
+    """
+    import re
+
     text = response.strip()
+
+    # Pattern 1: starts with a fence — strip it
     if text.startswith("```"):
         lines = text.split("\n")
         start = 1
         end = len(lines) - 1 if lines[-1].strip() == "```" else len(lines)
-        text = "\n".join(lines[start:end])
+        text = "\n".join(lines[start:end]).strip()
+
+    # Try direct parse first (handles pattern 1 and raw JSON)
     try:
         return json.loads(text)
-    except json.JSONDecodeError as e:
-        logger.error("Failed to parse extraction JSON: %s\nResponse: %.500s", e, response)
-        return {"facts": []}
+    except json.JSONDecodeError:
+        pass
+
+    # Pattern 3: prose with an embedded fenced block — extract the last JSON object/array
+    # Try fenced blocks first (```...```)
+    fenced = re.findall(r"```(?:json)?\s*([\s\S]*?)```", response)
+    for block in reversed(fenced):
+        try:
+            return json.loads(block.strip())
+        except json.JSONDecodeError:
+            continue
+
+    # Last resort: find the last {...} or [...] in the response
+    for match in reversed(list(re.finditer(r"(\{[\s\S]*\}|\[[\s\S]*\])", response))):
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError:
+            continue
+
+    logger.error("Failed to parse extraction JSON: %s\nResponse: %.500s", "no valid JSON found", response)
+    return {"facts": []}
 
 
 # ── Contradiction prompt ──────────────────────────────────────────────────────

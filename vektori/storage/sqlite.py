@@ -77,6 +77,7 @@ class SQLiteBackend(StorageBackend):
                 content_hash TEXT NOT NULL UNIQUE,
                 mentions INTEGER DEFAULT 1,
                 is_active INTEGER DEFAULT 1,
+                event_time TEXT,
                 created_at TEXT DEFAULT (datetime('now'))
             );
 
@@ -222,8 +223,8 @@ class SQLiteBackend(StorageBackend):
             await self._conn.execute(
                 """INSERT INTO sentences
                    (id, text, embedding, user_id, agent_id, session_id, turn_number,
-                    sentence_index, role, content_hash)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    sentence_index, role, content_hash, event_time)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT (content_hash) DO UPDATE SET mentions = mentions + 1""",
                 (
                     sent["id"],
@@ -236,6 +237,7 @@ class SQLiteBackend(StorageBackend):
                     sent["sentence_index"],
                     sent.get("role", "user"),
                     content_hash,
+                    sent.get("event_time"),
                 ),
             )
             count += 1
@@ -387,6 +389,7 @@ class SQLiteBackend(StorageBackend):
             emb = json.loads(row_dict.pop("embedding") or "null")
             if emb:
                 sim = _cosine_similarity(embedding, emb)
+                row_dict["metadata"] = json.loads(row_dict.get("metadata") or "{}")
                 results.append(
                     {
                         **row_dict,

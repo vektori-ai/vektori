@@ -732,7 +732,13 @@ def _fact_relevance_score(fact: dict[str, Any]) -> float:
 
 def _fact_specificity_score(fact: dict[str, Any]) -> int:
     text = str(fact.get("text", ""))
-    metadata = fact.get("metadata") or {}
+    raw_meta = fact.get("metadata") or {}
+    if isinstance(raw_meta, str):
+        try:
+            raw_meta = json.loads(raw_meta)
+        except Exception:
+            raw_meta = {}
+    metadata = raw_meta if isinstance(raw_meta, dict) else {}
     score = 0
     if _timestamp_for_context(fact):
         score += 3

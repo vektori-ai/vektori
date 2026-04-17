@@ -300,6 +300,10 @@ class LocomoQAAdapter:
     def __init__(self, model: str, max_tokens: int = 500) -> None:
         self.llm = create_llm(model)
         self.max_tokens = max_tokens
+        # GEPA compatibility: newer reflective mutation paths probe this optional
+        # hook directly. When absent, AttributeError stops optimization.
+        # Setting to None keeps default GEPA proposal behavior.
+        self.propose_new_texts = None
 
     def evaluate(
         self,

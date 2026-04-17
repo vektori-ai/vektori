@@ -84,6 +84,7 @@ class IngestionPipeline:
                             "sentence_index": idx,
                             "role": role,
                             "id": generate_sentence_id(session_id, f"{turn_num}_{idx}", text),
+                            "event_time": session_time.isoformat() if session_time else None,
                         }
                     )
 

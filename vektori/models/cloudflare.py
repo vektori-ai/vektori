@@ -23,6 +23,7 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 
@@ -89,24 +90,50 @@ class CloudflareEmbedder(EmbeddingProvider):
             # Cloudflare enforces ≤ 100 texts per request — batch accordingly.
             for start in range(0, len(texts), _BATCH_LIMIT):
                 batch = texts[start : start + _BATCH_LIMIT]
+                all_embeddings.extend(await self._post_with_retry(client, batch))
 
+        return all_embeddings
+
+    async def _post_with_retry(
+        self, client: httpx.AsyncClient, batch: list[str], max_retries: int = 3
+    ) -> list[list[float]]:
+        """POST a single batch with exponential backoff on 5xx errors."""
+        delay = 1.0
+        last_error: Exception | None = None
+        for attempt in range(max_retries):
+            try:
                 resp = await client.post(
                     self._url,
                     headers=self._headers,
                     json={"text": batch},
                 )
-
-                if resp.status_code != 200:
-                    raise RuntimeError(
-                        f"Cloudflare Workers AI returned HTTP {resp.status_code}: {resp.text[:500]}"
-                    )
-
-                payload = resp.json()
-                if not payload.get("success"):
+                if resp.status_code == 200:
+                    payload = resp.json()
+                    if payload.get("success"):
+                        return payload["result"]["data"]
                     errors = payload.get("errors") or payload
                     raise RuntimeError(f"Cloudflare Workers AI error: {errors}")
+                if resp.status_code >= 500:
+                    last_error = RuntimeError(
+                        f"Cloudflare Workers AI returned HTTP {resp.status_code}: {resp.text[:500]}"
+                    )
+                    logger.warning(
+                        "Cloudflare 5xx on attempt %d/%d — retrying in %.1fs",
+                        attempt + 1, max_retries, delay,
+                    )
+                    await asyncio.sleep(delay)
+                    delay *= 2
+                    continue
+                raise RuntimeError(
+                    f"Cloudflare Workers AI returned HTTP {resp.status_code}: {resp.text[:500]}"
+                )
+            except httpx.TransportError as e:
+                last_error = e
+                logger.warning(
+                    "Cloudflare transport error on attempt %d/%d — retrying in %.1fs: %s",
+                    attempt + 1, max_retries, delay, e,
+                )
+                await asyncio.sleep(delay)
+                delay *= 2
 
-                data = payload["result"]["data"]
-                all_embeddings.extend(data)
-
-        return all_embeddings
+        raise RuntimeError(f"Cloudflare embed failed after {max_retries} attempts") from last_error
