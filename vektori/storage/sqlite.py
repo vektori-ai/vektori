@@ -159,11 +159,21 @@ class SQLiteBackend(StorageBackend):
                 PRIMARY KEY (synthesis_id, fact_id)
             );
 
+            CREATE TABLE IF NOT EXISTS fact_edges (
+                source_id TEXT NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
+                target_id TEXT NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
+                user_id TEXT NOT NULL,
+                weight REAL DEFAULT 1.0,
+                created_at TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (source_id, target_id)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_facts_user ON facts (user_id);
             CREATE INDEX IF NOT EXISTS idx_facts_active ON facts (user_id, is_active);
             CREATE INDEX IF NOT EXISTS idx_fact_sources_fact ON fact_sources (fact_id);
             CREATE INDEX IF NOT EXISTS idx_episode_facts_fact ON episode_facts (fact_id);
             CREATE INDEX IF NOT EXISTS idx_synthesis_facts_fact ON synthesis_facts (fact_id);
+            CREATE INDEX IF NOT EXISTS idx_fact_edges_user ON fact_edges (user_id);
         """)
 
     async def _migrate(self) -> None:
@@ -199,6 +209,25 @@ class SQLiteBackend(StorageBackend):
             await self._conn.execute("DROP TABLE synthesis_facts_bad")
         if "event_time" not in cols:
             await self._conn.execute("ALTER TABLE facts ADD COLUMN event_time TEXT")
+
+        # fact_edges table (PPR graph) — added post-initial schema
+        async with self._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_edges'"
+        ) as cursor:
+            if not await cursor.fetchone():
+                await self._conn.execute("""
+                    CREATE TABLE fact_edges (
+                        source_id TEXT NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
+                        target_id TEXT NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
+                        user_id TEXT NOT NULL,
+                        weight REAL DEFAULT 1.0,
+                        created_at TEXT DEFAULT (datetime('now')),
+                        PRIMARY KEY (source_id, target_id)
+                    )
+                """)
+                await self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_fact_edges_user ON fact_edges (user_id)"
+                )
 
     async def close(self) -> None:
         if self._conn:
@@ -594,6 +623,58 @@ class SQLiteBackend(StorageBackend):
             rows = await cursor.fetchall()
             cols = [d[0] for d in cursor.description]
         return [dict(zip(cols, row)) for row in rows]
+
+    # ── Fact similarity edges (PPR graph) ──
+
+    async def insert_fact_edge(
+        self,
+        source_id: str,
+        target_id: str,
+        user_id: str,
+        weight: float = 1.0,
+    ) -> None:
+        # Store canonical order (smaller ID first) so (A,B) and (B,A) don't duplicate
+        a, b = (source_id, target_id) if source_id < target_id else (target_id, source_id)
+        await self._conn.execute(
+            """INSERT OR IGNORE INTO fact_edges (source_id, target_id, user_id, weight)
+               VALUES (?, ?, ?, ?)""",
+            (a, b, user_id, weight),
+        )
+        await self._conn.commit()
+
+    async def get_fact_edges_for_user(
+        self,
+        user_id: str,
+        agent_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        async with self._conn.execute(
+            "SELECT source_id, target_id, weight FROM fact_edges WHERE user_id = ?",
+            (user_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [{"source_id": r[0], "target_id": r[1], "weight": r[2]} for r in rows]
+
+    async def get_episode_fact_map(
+        self,
+        user_id: str,
+        agent_id: str | None = None,
+    ) -> dict[str, list[str]]:
+        query = """
+            SELECT ef.episode_id, ef.fact_id
+            FROM episode_facts ef
+            JOIN facts f ON ef.fact_id = f.id
+            WHERE f.user_id = ? AND f.is_active = 1
+        """
+        params: list[Any] = [user_id]
+        if agent_id:
+            query += " AND f.agent_id = ?"
+            params.append(agent_id)
+        async with self._conn.execute(query, params) as cursor:
+            rows = await cursor.fetchall()
+        result: dict[str, list[str]] = {}
+        for ep_id, fact_id in rows:
+            result.setdefault(ep_id, []).append(fact_id)
+        return result
 
     # ── Syntheses ──
 
