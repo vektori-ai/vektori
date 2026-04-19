@@ -35,7 +35,10 @@ async def lifespan(app: FastAPI):
     # Separate asyncpg pool for auth lookups (api_keys table)
     pool = await asyncpg.create_pool(db_url, min_size=2, max_size=5)
     async with pool.acquire() as conn:
-        await conn.execute(_API_KEYS_DDL)
+        try:
+            await conn.execute(_API_KEYS_DDL)
+        except asyncpg.UniqueViolationError:
+            pass  # another worker already created the table simultaneously — fine
     app.state.pool = pool
 
     embedding_model = os.getenv("EMBEDDING_MODEL", "sentence-transformers:all-MiniLM-L6-v2")
