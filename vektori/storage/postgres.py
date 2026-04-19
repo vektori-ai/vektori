@@ -692,6 +692,42 @@ class PostgresBackend(StorageBackend):
         session["sentences"] = [_row(r) for r in sentence_rows]
         return session
 
+    async def count_sessions(self, user_id: str, agent_id: str | None = None) -> int:
+        async with self._pool.acquire() as conn:
+            if agent_id is not None:
+                row = await conn.fetchrow(
+                    "SELECT COUNT(*) AS count FROM sessions WHERE user_id = $1 AND agent_id = $2",
+                    user_id, agent_id,
+                )
+            else:
+                row = await conn.fetchrow(
+                    "SELECT COUNT(*) AS count FROM sessions WHERE user_id = $1", user_id
+                )
+        return int(row["count"]) if row else 0
+
+    async def find_sentence_containing(self, session_id: str, quote: str) -> dict[str, Any] | None:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM sentences WHERE session_id = $1 AND text ILIKE $2 LIMIT 1",
+                session_id, f"%{quote}%",
+            )
+        return _row(row) if row else None
+
+    async def get_sentences_by_ids(self, sentence_ids: list[str]) -> list[dict[str, Any]]:
+        if not sentence_ids:
+            return []
+        uuid_ids = [uuid.UUID(s) for s in sentence_ids]
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, text, session_id, turn_number, sentence_index, role, created_at
+                FROM sentences WHERE id = ANY($1::uuid[]) AND is_active = true
+                ORDER BY session_id, turn_number, sentence_index
+                """,
+                uuid_ids,
+            )
+        return [_row(r) for r in rows]
+
     # ── Single-query L2 fast path ──────────────────────────────────────────────
 
     async def search_l2_single_query(

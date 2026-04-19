@@ -158,6 +158,7 @@ class StorageBackend(ABC):
         user_id: str,
         text: str,
         agent_id: str | None = None,
+        similarity_threshold: float = 0.5,
     ) -> dict[str, Any] | None: ...
 
     @abstractmethod
@@ -301,6 +302,11 @@ class StorageBackend(ABC):
     @abstractmethod
     async def delete_user(self, user_id: str) -> int:
         """Cascade delete all data for a user (GDPR). Returns rows deleted. Includes profiles."""
+        ...
+
+    @abstractmethod
+    async def delete_user_scoped(self, user_id: str, agent_id: str) -> int:
+        """Delete all data for a user scoped to a specific agent/tenant. Returns rows deleted."""
         ...
 
     # ── Profiles ──

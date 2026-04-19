@@ -629,6 +629,28 @@ class SQLiteBackend(StorageBackend):
             row = await cursor.fetchone()
         return row[0] if row else 0
 
+    async def delete_user_scoped(self, user_id: str, agent_id: str) -> int:
+        count = 0
+        for table in ["sentences", "facts", "insights", "sessions"]:
+            async with self._conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE user_id = ? AND agent_id = ?", (user_id, agent_id)
+            ) as cursor:
+                row = await cursor.fetchone()
+                count += row[0] if row else 0
+            await self._conn.execute(
+                f"DELETE FROM {table} WHERE user_id = ? AND agent_id = ?", (user_id, agent_id)
+            )
+        async with self._conn.execute(
+            "SELECT COUNT(*) FROM profiles WHERE user_id = ? AND agent_id = ?", (user_id, agent_id)
+        ) as cursor:
+            row = await cursor.fetchone()
+            count += row[0] if row else 0
+        await self._conn.execute(
+            "DELETE FROM profiles WHERE user_id = ? AND agent_id = ?", (user_id, agent_id)
+        )
+        await self._conn.commit()
+        return count
+
     # ── Lifecycle ──
 
     async def delete_user(self, user_id: str) -> int:

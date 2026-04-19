@@ -420,6 +420,19 @@ class MemoryBackend(StorageBackend):
             count += 1
         return count
 
+    async def delete_user_scoped(self, user_id: str, agent_id: str) -> int:
+        count = 0
+        for store in [self._sentences, self._facts, self._insights, self._sessions]:
+            keys = [k for k, v in store.items() if v.get("user_id") == user_id and v.get("agent_id") == agent_id]
+            for k in keys:
+                del store[k]
+                count += 1
+        profile_keys = [k for k in self._profiles if k[0] == user_id and k[1] == agent_id]
+        for k in profile_keys:
+            del self._profiles[k]
+            count += 1
+        return count
+
     # ── Lifecycle ──
 
     async def delete_user(self, user_id: str) -> int:

@@ -28,7 +28,9 @@ CREATE TABLE IF NOT EXISTS api_keys (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    db_url = os.environ["DATABASE_URL"]
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        raise RuntimeError("DATABASE_URL is required")
 
     # Separate asyncpg pool for auth lookups (api_keys table)
     pool = await asyncpg.create_pool(db_url, min_size=2, max_size=5)
