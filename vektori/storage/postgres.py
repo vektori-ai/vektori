@@ -92,8 +92,13 @@ class PostgresBackend(StorageBackend):
         if self.embedding_dim is not None:
             schema = schema.replace("vector(1536)", f"vector({self.embedding_dim})")
         async with self._pool.acquire() as conn:
-            await conn.execute(schema)
-            await self._migrate(conn)
+            # Advisory lock prevents concurrent schema init across multiple workers
+            await conn.execute("SELECT pg_advisory_lock(8877990)")
+            try:
+                await conn.execute(schema)
+                await self._migrate(conn)
+            finally:
+                await conn.execute("SELECT pg_advisory_unlock(8877990)")
         logger.info("PostgreSQL backend initialized")
 
     async def _migrate(self, conn: Any) -> None:
