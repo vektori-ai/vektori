@@ -89,6 +89,8 @@ class PostgresBackend(StorageBackend):
             max_size=10,
         )
         schema = SCHEMA_PATH.read_text()
+        if self.embedding_dim is not None:
+            schema = schema.replace("vector(1536)", f"vector({self.embedding_dim})")
         async with self._pool.acquire() as conn:
             await conn.execute(schema)
             await self._migrate(conn)
@@ -868,4 +870,27 @@ class PostgresBackend(StorageBackend):
                 await conn.execute("DELETE FROM profiles WHERE user_id = $1", user_id)
 
         logger.info("Deleted %d rows for user %s", total, user_id)
+        return int(total)
+
+    async def delete_user_scoped(self, user_id: str, agent_id: str) -> int:
+        """Delete all data for a user scoped to a specific agent/tenant."""
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                counts = await conn.fetchrow(
+                    """
+                    SELECT
+                        (SELECT COUNT(*) FROM sentences WHERE user_id = $1 AND agent_id = $2) +
+                        (SELECT COUNT(*) FROM facts    WHERE user_id = $1 AND agent_id = $2) +
+                        (SELECT COUNT(*) FROM insights WHERE user_id = $1 AND agent_id = $2) +
+                        (SELECT COUNT(*) FROM sessions WHERE user_id = $1 AND agent_id = $2) AS total
+                    """,
+                    user_id, agent_id,
+                )
+                total = counts["total"] if counts else 0
+                await conn.execute("DELETE FROM sentences WHERE user_id = $1 AND agent_id = $2", user_id, agent_id)
+                await conn.execute("DELETE FROM facts    WHERE user_id = $1 AND agent_id = $2", user_id, agent_id)
+                await conn.execute("DELETE FROM insights WHERE user_id = $1 AND agent_id = $2", user_id, agent_id)
+                await conn.execute("DELETE FROM sessions WHERE user_id = $1 AND agent_id = $2", user_id, agent_id)
+                await conn.execute("DELETE FROM profiles WHERE user_id = $1 AND agent_id = $2", user_id, agent_id)
+        logger.info("Deleted %d rows for user %s (agent %s)", total, user_id, agent_id)
         return int(total)

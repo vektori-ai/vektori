@@ -5,17 +5,36 @@ services:
     environment:
       POSTGRES_DB: vektori
       POSTGRES_USER: vektori
-      POSTGRES_PASSWORD: vektori
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./vektori/storage/schema.sql:/docker-entrypoint-initdb.d/schema.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U vektori"]
       interval: 5s
       timeout: 5s
       retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://vektori:${POSTGRES_PASSWORD}@postgres:5432/vektori
+      ADMIN_KEY: ${ADMIN_KEY}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      EXTRACTION_MODEL: ${EXTRACTION_MODEL:-gemini:gemini-2.5-flash-lite}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-sentence-transformers:all-MiniLM-L6-v2}
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-384}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   pgdata:

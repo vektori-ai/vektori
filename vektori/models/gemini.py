@@ -76,8 +76,9 @@ class GeminiLLM(LLMProvider):
             initial_backoff: Initial backoff time in seconds (default: 1.0)
             max_backoff: Maximum backoff time in seconds (default: 32.0)
         """
+        import os
         self.model = model or DEFAULT_MODEL
-        self._api_key = api_key
+        self._api_key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
         self._client = None
 
         # Retry configuration
