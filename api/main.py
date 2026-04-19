@@ -45,6 +45,10 @@ async def lifespan(app: FastAPI):
     extraction_model = os.getenv("EXTRACTION_MODEL", "gemini:gemini-2.5-flash-lite")
     embedding_dim = int(os.getenv("EMBEDDING_DIM", "384"))
 
+    # min_retrieval_score: lower threshold needed for smaller models
+    # (all-MiniLM scores ~0.1-0.3 vs OpenAI text-embedding-3-small ~0.4-0.8)
+    min_score = float(os.getenv("MIN_RETRIEVAL_SCORE", "0.1"))
+
     # Single shared Vektori instance (asyncpg pool internally)
     v = Vektori(
         database_url=db_url,
@@ -53,6 +57,7 @@ async def lifespan(app: FastAPI):
         embedding_dimension=embedding_dim,
         async_extraction=True,
     )
+    v.config.min_retrieval_score = min_score  # set before _ensure_initialized()
     await v._ensure_initialized()
     app.state.vektori = v
 
