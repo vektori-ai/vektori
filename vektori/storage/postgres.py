@@ -813,8 +813,8 @@ class PostgresBackend(StorageBackend):
                               metadata::text, distance
             FROM seed_facts
             UNION ALL
-            SELECT 'insight'  AS layer, id, text, confidence, NULL::integer AS mentions, created_at,
-                              metadata::text, NULL AS distance
+            SELECT 'insight'  AS layer, id, text, NULL AS confidence, NULL::integer AS mentions, created_at,
+                              NULL AS metadata, NULL AS distance
             FROM related_insights
             UNION ALL
             SELECT 'sentence' AS layer, id, text, NULL AS confidence, NULL::integer AS mentions, created_at,
