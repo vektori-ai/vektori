@@ -778,7 +778,7 @@ class PostgresBackend(StorageBackend):
             -- Step 2: Insights linked to matched facts (L1)
             -- Graph traversal via insight_facts — NOT vector search.
             related_insights AS (
-                SELECT DISTINCT i.id, i.text, i.confidence, i.created_at, i.metadata
+                SELECT DISTINCT i.id, i.text, i.created_at
                 FROM insights i
                 INNER JOIN insight_facts inf ON i.id = inf.insight_id
                 WHERE inf.fact_id IN (SELECT id FROM seed_facts)
