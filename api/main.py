@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 
 import asyncpg
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 
 from api.routes import router
 from vektori import Vektori
@@ -76,5 +78,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def latency_middleware(request: Request, call_next) -> Response:
+    t0 = time.perf_counter()
+    response = await call_next(request)
+    ms = (time.perf_counter() - t0) * 1000
+    response.headers["X-Response-Time"] = f"{ms:.1f}ms"
+    logger.info("%.1fms %s %s", ms, request.method, request.url.path)
+    return response
 
 app.include_router(router)
