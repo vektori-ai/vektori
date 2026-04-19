@@ -138,8 +138,8 @@ Pick how deep you want to go.
 | Depth | Returns | ~Tokens | When to use |
 |-------|---------|---------|-------------|
 | `l0`  | Facts only | 50-200 | Fast lookup, agent planning, tool calls |
-| `l1`  | Facts + Episodes | 200-500 | **Default.** Full answer with context |
-| `l2`  | Facts + Episodes + raw Sentences | 1000-3000 | Trajectory analysis, full story replay |
+| `l1`  | Facts + Episodes + source Sentences | 300-800 | **Default.** Full answer with context |
+| `l2`  | Facts + Episodes + Sentences + ±N context window | 1000-3000 | Trajectory analysis, full story replay |
 
 ```python
 # Just the facts
