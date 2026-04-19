@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 from vektori.models.base import EmbeddingProvider
 
@@ -37,11 +38,15 @@ class SentenceTransformerEmbedder(EmbeddingProvider):
     def _get_model(self):
         if self._model is None:
             try:
+                import torch
                 from sentence_transformers import SentenceTransformer
             except ImportError as e:
                 raise ImportError(
                     "sentence-transformers required: pip install 'vektori[sentence-transformers]'"
                 ) from e
+            # Cap CPU threads — prevents thrashing on burstable instances (t3/t2)
+            n_threads = int(os.getenv("TORCH_NUM_THREADS", "2"))
+            torch.set_num_threads(n_threads)
             self._model = SentenceTransformer(self.model_name)
         return self._model
 
@@ -51,8 +56,7 @@ class SentenceTransformerEmbedder(EmbeddingProvider):
 
     async def embed(self, text: str) -> list[float]:
         model = self._get_model()
-        # sentence-transformers is sync — run in executor to not block event loop
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(None, model.encode, text)
         return result.tolist()
 
@@ -60,6 +64,6 @@ class SentenceTransformerEmbedder(EmbeddingProvider):
         if not texts:
             return []
         model = self._get_model()
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         results = await loop.run_in_executor(None, model.encode, texts)
         return [r.tolist() for r in results]
