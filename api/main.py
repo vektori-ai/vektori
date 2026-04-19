@@ -61,8 +61,12 @@ async def lifespan(app: FastAPI):
     )
     v.config.min_retrieval_score = min_score  # set before _ensure_initialized()
     await v._ensure_initialized()
-    app.state.vektori = v
 
+    # Pre-warm embedder — forces model load at startup, not on first request
+    await v.embedder.embed("warmup")
+    logger.info("Embedder pre-warmed")
+
+    app.state.vektori = v
     logger.info("Vektori API ready")
     yield
 
