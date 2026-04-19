@@ -124,11 +124,11 @@ class PostgresBackend(StorageBackend):
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS profiles (
                     user_id  TEXT NOT NULL,
-                    agent_id TEXT,
+                    agent_id TEXT NOT NULL DEFAULT '',
                     content  TEXT NOT NULL DEFAULT '',
                     session_count_at_update INTEGER DEFAULT 0,
                     updated_at TIMESTAMPTZ DEFAULT now(),
-                    PRIMARY KEY (user_id, COALESCE(agent_id, ''))
+                    PRIMARY KEY (user_id, agent_id)
                 )
             """)
             await conn.execute(
@@ -814,9 +814,9 @@ class PostgresBackend(StorageBackend):
     async def get_profile(self, user_id: str, agent_id: str | None = None) -> str | None:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT content FROM profiles WHERE user_id = $1 AND COALESCE(agent_id, '') = COALESCE($2, '')",
+                "SELECT content FROM profiles WHERE user_id = $1 AND agent_id = $2",
                 user_id,
-                agent_id,
+                agent_id or "",
             )
         return row["content"] if row else None
 
@@ -831,12 +831,12 @@ class PostgresBackend(StorageBackend):
             await conn.execute(
                 """INSERT INTO profiles (user_id, agent_id, content, session_count_at_update)
                    VALUES ($1, $2, $3, $4)
-                   ON CONFLICT (user_id, COALESCE(agent_id, ''))
+                   ON CONFLICT (user_id, agent_id)
                    DO UPDATE SET content = excluded.content,
                                  session_count_at_update = excluded.session_count_at_update,
                                  updated_at = now()""",
                 user_id,
-                agent_id,
+                agent_id or "",
                 content,
                 session_count,
             )

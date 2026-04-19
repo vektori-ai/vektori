@@ -172,11 +172,11 @@ CREATE INDEX IF NOT EXISTS idx_insight_facts_fact ON insight_facts (fact_id);
 -- ============================================================
 CREATE TABLE IF NOT EXISTS profiles (
     user_id  TEXT NOT NULL,
-    agent_id TEXT,
+    agent_id TEXT NOT NULL DEFAULT '',
     content  TEXT NOT NULL DEFAULT '',
     session_count_at_update INTEGER DEFAULT 0,
     updated_at TIMESTAMPTZ DEFAULT now(),
-    PRIMARY KEY (user_id, COALESCE(agent_id, ''))
+    PRIMARY KEY (user_id, agent_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_profiles_user ON profiles (user_id);
