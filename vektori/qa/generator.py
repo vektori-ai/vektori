@@ -39,7 +39,7 @@ INSTRUCTIONS:
 6. Copy critical names, dates, places, titles, quantities, and field names exactly from the context. Do not blur them into a generic paraphrase.
 7. Say "I don't have that information" only when no context item supports an answer.
 8. For answers expressed as "N days/weeks/months before/after DATE": use the temporal note in the context to compute the actual calendar date and give it as an absolute date (e.g. "18 May 2023"). Do not echo the anchor date as the answer.
-9. If the context contains facts about multiple people, only use facts that explicitly name the person the question is about. Do not attribute a fact to someone unless their name appears in that fact.
+9. If the context contains facts about multiple named people, only use facts about the person the question asks about. Facts labeled "User" or "Assistant" refer to the primary conversation participant — if other facts establish that person's name (e.g. "User's name is Caroline"), treat "User" facts as belonging to that person.
 
 ANSWER:
 """
@@ -94,7 +94,16 @@ async def generate_answer(
         prompt_template=prompt_template,
     )
     try:
-        return (await llm.generate(prompt, max_tokens=max_tokens)).strip()
+        answer = (await llm.generate(prompt, max_tokens=max_tokens)).strip()
+        # Unwrap {"answer": "..."} JSON that some models (e.g. gemini) occasionally return
+        try:
+            import json as _json
+            parsed = _json.loads(answer)
+            if isinstance(parsed, dict) and "answer" in parsed:
+                answer = str(parsed["answer"]).strip()
+        except Exception:
+            pass
+        return answer
     except Exception as e:
         logger.warning("Answer generation failed: %s", e)
         return "Unable to generate answer due to API error."

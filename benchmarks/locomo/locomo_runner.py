@@ -32,6 +32,7 @@ sanity-check before committing to the full dataset.
 from __future__ import annotations
 
 import asyncio
+import calendar
 import hashlib
 import json
 import logging
@@ -323,11 +324,12 @@ class LoCoMoBenchmark:
             session_time = _parse_date(session_date) if session_date else None
 
             sess_t0 = time.perf_counter()
-            cached_facts = (
+            cached_entry = (
                 await self._session_cache.get(self._cache_key(hsid))
                 if self._session_cache
                 else None
             )
+            cached_facts = cached_entry.get("facts", []) if isinstance(cached_entry, dict) else cached_entry
             if cached_facts is not None:
                 await self._replay_session(session, hsid, user_id, session_time, session_date, cached_facts)
                 elapsed = (time.perf_counter() - sess_t0) * 1000
@@ -778,6 +780,33 @@ def _fact_context_sort_key(fact: dict[str, Any]) -> tuple[float, int, float]:
     )
 
 
+def _add_months(dt: datetime, n: int) -> datetime:
+    """Add n months to dt, clamping day to last day of target month."""
+    month = dt.month - 1 + n
+    year = dt.year + month // 12
+    month = month % 12 + 1
+    day = min(dt.day, calendar.monthrange(year, month)[1])
+    return dt.replace(year=year, month=month, day=day)
+
+
+_TEMPORAL_WORD_TO_N: dict[str, int] = {
+    "a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4,
+    "five": 5, "six": 6, "seven": 7, "a few": 3, "several": 4, "couple": 2,
+}
+
+_AGO_PAT = re.compile(
+    r"\b(a few|several|a|an|\d+|one|two|three|four|five|six|seven|couple)"
+    r"\s+(day|week|month|year)s?\s+ago\b",
+    re.IGNORECASE,
+)
+
+_DOW_PAT = re.compile(
+    r"\b(last|next|this)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+    re.IGNORECASE,
+)
+_DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+
+
 def _relative_time_note(text: str, timestamp: Any) -> str:
     reference_dt = _coerce_datetime(timestamp)
     if not text or not reference_dt:
@@ -797,23 +826,75 @@ def _relative_time_note(text: str, timestamp: Any) -> str:
                 f'"{phrase}" resolves to {resolved} from session date {reference_date.isoformat()}'
             )
 
-    generic_phrases = [
-        "last week",
-        "next week",
-        "last month",
-        "next month",
-        "last year",
-        "next year",
-        "recently",
-        "earlier this week",
-        "later this week",
+    # Fix 3: "N days/weeks/months/years ago" — resolve to actual date
+    for m in _AGO_PAT.finditer(lower):
+        qty_str = m.group(1).lower()
+        unit = m.group(2).lower()
+        n = _TEMPORAL_WORD_TO_N.get(qty_str) or (int(qty_str) if qty_str.isdigit() else None)
+        if n is None:
+            continue
+        if unit == "day":
+            resolved = (reference_dt - timedelta(days=n)).date()
+            notes.append(f'"{m.group(0)}" → {resolved.isoformat()} (session date: {reference_date.isoformat()})')
+        elif unit == "week":
+            resolved = (reference_dt - timedelta(weeks=n)).date()
+            notes.append(f'"{m.group(0)}" → week of {resolved.isoformat()} (session date: {reference_date.isoformat()})')
+        elif unit == "month":
+            resolved = _add_months(reference_dt, -n).date()
+            notes.append(f'"{m.group(0)}" → {resolved.strftime("%B %Y")} (session date: {reference_date.isoformat()})')
+        elif unit == "year":
+            resolved = reference_dt.replace(year=reference_dt.year - n).date()
+            notes.append(f'"{m.group(0)}" → {resolved.year} (session date: {reference_date.isoformat()})')
+
+    # Fix 4: "last/next/this <weekday>" — resolve to actual date
+    for m in _DOW_PAT.finditer(lower):
+        direction = m.group(1).lower()
+        day_name = m.group(2).lower()
+        target_dow = _DAYS.index(day_name)   # 0=Mon … 6=Sun
+        current_dow = reference_dt.weekday()
+        if direction == "last":
+            delta = (current_dow - target_dow) % 7 or 7
+            resolved = (reference_dt - timedelta(days=delta)).date()
+        elif direction == "next":
+            delta = (target_dow - current_dow) % 7 or 7
+            resolved = (reference_dt + timedelta(days=delta)).date()
+        else:  # "this"
+            delta = (target_dow - current_dow) % 7
+            resolved = (reference_dt + timedelta(days=delta)).date()
+        notes.append(f'"{m.group(0)}" → {resolved.isoformat()} (session date: {reference_date.isoformat()})')
+
+    # Fix 1: named offset phrases — resolve to actual date/period
+    _OFFSET_PHRASES: list[tuple[str, str]] = [
+        ("last week",  "week"),
+        ("next week",  "week"),
+        ("last month", "month"),
+        ("next month", "month"),
+        ("last year",  "year"),
+        ("next year",  "year"),
+        ("this week",  "anchor"),
+        ("this month", "anchor"),
+        ("this year",  "anchor"),
+        ("recently",   "anchor"),
+        ("earlier this week", "anchor"),
+        ("later this week",   "anchor"),
     ]
-    generic_found = [phrase for phrase in generic_phrases if phrase in lower]
-    if generic_found:
-        joined = ", ".join(f'"{phrase}"' for phrase in generic_found)
-        notes.append(
-            f"{joined} anchored to session date {reference_date.isoformat()}"
-        )
+    for phrase, kind in _OFFSET_PHRASES:
+        if phrase not in lower:
+            continue
+        if kind == "anchor":
+            notes.append(f'"{phrase}" anchored to session date {reference_date.isoformat()}')
+        elif kind == "year":
+            delta_y = -1 if phrase.startswith("last") else 1
+            resolved_year = reference_dt.replace(year=reference_dt.year + delta_y).year
+            notes.append(f'"{phrase}" → {resolved_year} (session date: {reference_date.isoformat()})')
+        elif kind == "month":
+            delta_m = -1 if phrase.startswith("last") else 1
+            resolved_dt = _add_months(reference_dt, delta_m)
+            notes.append(f'"{phrase}" → {resolved_dt.strftime("%B %Y")} (session date: {reference_date.isoformat()})')
+        else:  # week
+            delta_w = -1 if phrase.startswith("last") else 1
+            resolved_dt = reference_dt + timedelta(weeks=delta_w)
+            notes.append(f'"{phrase}" → week of {resolved_dt.date().isoformat()} (session date: {reference_date.isoformat()})')
 
     if not notes:
         return ""
@@ -849,6 +930,7 @@ def _format_retrieved_context(search_results: Any) -> str:
             date = _date_prefix(timestamp)
             date_prefix = f"[{date}] " if date else ""
             text = str(ep.get("text", str(ep))).strip()
+            text = f"{text}{_relative_time_note(text, timestamp)}"
             lines.append(f"{i}. {date_prefix}{text}")
 
     syntheses = search_results.get("syntheses") or []
@@ -859,6 +941,7 @@ def _format_retrieved_context(search_results: Any) -> str:
             date = _date_prefix(timestamp)
             date_prefix = f"[{date}] " if date else ""
             text = str(sy.get("text", str(sy))).strip()
+            text = f"{text}{_relative_time_note(text, timestamp)}"
             lines.append(f"{i}. {date_prefix}{text}")
 
     sentences = search_results.get("sentences") or []
