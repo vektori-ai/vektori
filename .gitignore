@@ -68,6 +68,18 @@ ISSUES.md
 # Demo script (local use only)
 examples/demo.py
 
+# Temp/debug data dirs
+.codex_pytest_tmp_run/
+.codex_pytest_tmp_run2/
+.codex_pytest_tmp_run3/
+.tmp-vektori-debug-data/
+.tmp-vektori-plugin-data/
+
+# Local generated files
+demo.html
+issues_with_latest_benchmark.md
+scripts/dashboard_data.json
+
 # Generated logo PNGs (regenerate with scripts/generate_logo_assets.py)
 assets/logo/favicon/
 assets/logo/app-icons/

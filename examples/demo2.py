@@ -12,8 +12,10 @@ USER = "priya-123"
 
 async def main():
     v = Vektori(
-        embedding_model="openai:text-embedding-3-small",
-        extraction_model="openai:gpt-4o-mini",
+        embedding_model="sentence-transformers:BAAI/bge-small-en-v1.5",
+        extraction_model="gemini:gemini-2.5-flash",
+        embedding_dimension=384,
+        async_extraction=False,  # wait for extraction before returning
     )
 
     # ── Session 1: onboarding call ────────────────────────────────────────────
@@ -41,7 +43,7 @@ async def main():
     )
     print("  stored.\n")
 
-    await asyncio.sleep(4)  # let async extraction finish
+    await asyncio.sleep(2)  # small buffer
 
     # ── Query ─────────────────────────────────────────────────────────────────
     print("Search:  'how should we contact this user?'\n")

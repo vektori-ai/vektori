@@ -131,6 +131,7 @@ class SQLiteBackend(StorageBackend):
                 agent_id TEXT,
                 session_id TEXT,
                 is_active INTEGER DEFAULT 1,
+                event_time TEXT,
                 created_at TEXT DEFAULT (datetime('now')),
                 UNIQUE (user_id, text)
             );
@@ -210,6 +211,12 @@ class SQLiteBackend(StorageBackend):
         if "event_time" not in cols:
             await self._conn.execute("ALTER TABLE facts ADD COLUMN event_time TEXT")
 
+        # episodes event_time migration — for DBs created before this column was added
+        async with self._conn.execute("PRAGMA table_info(episodes)") as cursor:
+            ep_cols = {row[1] for row in await cursor.fetchall()}
+        if "event_time" not in ep_cols:
+            await self._conn.execute("ALTER TABLE episodes ADD COLUMN event_time TEXT")
+
         # fact_edges table (PPR graph) — added post-initial schema
         async with self._conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_edges'"
@@ -254,7 +261,9 @@ class SQLiteBackend(StorageBackend):
                    (id, text, embedding, user_id, agent_id, session_id, turn_number,
                     sentence_index, role, content_hash, event_time)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT (content_hash) DO UPDATE SET mentions = mentions + 1""",
+                   ON CONFLICT (content_hash) DO UPDATE SET
+                     mentions = mentions + 1,
+                     event_time = COALESCE(excluded.event_time, sentences.event_time)""",
                 (
                     sent["id"],
                     sent["text"],
@@ -685,12 +694,14 @@ class SQLiteBackend(StorageBackend):
         user_id: str,
         agent_id: str | None = None,
         session_id: str | None = None,
+        event_time: datetime | None = None,
     ) -> str:
         episode_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{user_id}::{text}"))
+        event_time_str = event_time.isoformat() if event_time else None
         await self._conn.execute(
-            """INSERT OR IGNORE INTO episodes (id, text, embedding, user_id, agent_id, session_id)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (episode_id, text, json.dumps(embedding), user_id, agent_id, session_id),
+            """INSERT OR IGNORE INTO episodes (id, text, embedding, user_id, agent_id, session_id, event_time)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (episode_id, text, json.dumps(embedding), user_id, agent_id, session_id, event_time_str),
         )
         await self._conn.commit()
         return episode_id
@@ -707,7 +718,7 @@ class SQLiteBackend(StorageBackend):
             return []
         placeholders = ",".join("?" * len(fact_ids))
         async with self._conn.execute(
-            f"""SELECT DISTINCT e.id, e.text, e.session_id, e.created_at
+            f"""SELECT DISTINCT e.id, e.text, e.session_id, e.event_time, e.created_at
                 FROM episodes e
                 JOIN episode_facts ef2 ON e.id = ef2.episode_id
                 WHERE ef2.fact_id IN ({placeholders}) AND e.is_active = 1""",
@@ -723,7 +734,7 @@ class SQLiteBackend(StorageBackend):
         agent_id: str | None = None,
         limit: int = 5,
     ) -> list[dict[str, Any]]:
-        query = "SELECT id, text, session_id, embedding, created_at FROM episodes WHERE user_id = ? AND is_active = 1"
+        query = "SELECT id, text, session_id, embedding, event_time, created_at FROM episodes WHERE user_id = ? AND is_active = 1"
         params: list[Any] = [user_id]
         if agent_id:
             query += " AND agent_id = ?"

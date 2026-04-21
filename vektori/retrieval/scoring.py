@@ -96,14 +96,14 @@ def score_and_rank(
         timestamp = fact.get("event_time") or fact.get("created_at")
         age_days = _age_in_days(timestamp, now)
 
-        _raw_meta = fact.get("metadata") or {}
-        if isinstance(_raw_meta, str):
+        meta = fact.get("metadata") or {}
+        if isinstance(meta, str):
+            import json
             try:
-                import json as _json
-                _raw_meta = _json.loads(_raw_meta)
+                meta = json.loads(meta)
             except Exception:
-                _raw_meta = {}
-        meta: dict = _raw_meta if isinstance(_raw_meta, dict) else {}
+                meta = {}
+        
         # Facts with explicit time markers (or explicit type="event") decay normally;
         # standing preferences decay much slower.
         is_event = "temporal_expr" in meta or meta.get("type") == "event"

@@ -182,3 +182,6 @@ class VektoriConfig:
 
     # Processing
     async_extraction: bool = True  # False = block until facts extracted (slower but simpler)
+
+    # PPR retrieval — set False to revert to plain graph hop (useful for ablation)
+    use_ppr: bool = True

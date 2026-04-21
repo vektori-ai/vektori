@@ -274,28 +274,38 @@ class SearchPipeline:
         )
 
         if self.use_ppr:
-            fact_edges, episode_fact_map = await asyncio.gather(
+            fact_edges, episode_fact_map, all_user_facts = await asyncio.gather(
                 self.db.get_fact_edges_for_user(user_id, agent_id),
                 self.db.get_episode_fact_map(user_id, agent_id),
+                self.db.get_active_facts(user_id, agent_id, limit=500),
             )
 
         if self.use_ppr and (fact_edges or episode_fact_map):
+            logger.info("PPR: running on %d fact edges, %d episode nodes, %d total facts", len(fact_edges), len(episode_fact_map), len(all_user_facts))
             seed_scores = {
                 f["id"]: f.get("_score_components", {}).get("similarity", f.get("score", 0.0))
                 for f in top_k_facts
             }
             ppr_scores = run_ppr(
                 seed_scores=seed_scores,
-                all_facts=scored_facts,
+                all_facts=all_user_facts,
                 fact_edges=fact_edges,
                 episode_fact_map=episode_fact_map,
                 alpha=self.ppr_alpha,
             )
             ppr_ranked = rank_episodes_by_ppr(episode_fact_map, ppr_scores)
 
-            # Fetch the top PPR-ranked episode rows from DB
-            top_ep_ids = [ep_id for ep_id, _ in ppr_ranked if ppr_scores.get(ep_id, 0) > 0][:10]
-            graph_episodes = await self.db.get_episodes_for_facts(top_ep_ids) if top_ep_ids else []
+            # Fetch the top PPR-ranked episode rows from DB.
+            # get_episodes_for_facts() expects fact IDs (joins on episode_facts.fact_id),
+            # so unpack the top-ranked episodes → their constituent facts using the
+            # episode_fact_map already in memory — zero extra DB calls.
+            top_fact_ids_from_ppr = [
+                fid
+                for ep_id, _ in ppr_ranked[:10]
+                if ppr_scores.get(ep_id, 0) > 0
+                for fid in episode_fact_map.get(ep_id, [])
+            ]
+            graph_episodes = await self.db.get_episodes_for_facts(top_fact_ids_from_ppr) if top_fact_ids_from_ppr else []
 
             if self.debug:
                 logger.debug(
@@ -305,6 +315,7 @@ class SearchPipeline:
                     [(ep_id[:8], round(s, 5)) for ep_id, s in ppr_ranked[:3]],
                 )
         else:
+            logger.info("PPR: skipped (use_ppr=%s, fact_edges=%d, episode_nodes=%d) — using plain graph hop", self.use_ppr, len(fact_edges) if self.use_ppr else -1, len(episode_fact_map) if self.use_ppr else -1)
             graph_episodes = await self.db.get_episodes_for_facts(seed_fact_ids)
 
         seen_episode_ids: set[str] = set()

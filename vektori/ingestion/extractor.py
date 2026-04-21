@@ -333,6 +333,7 @@ General:
 - subject: 'user' when about the person speaking; a named entity when about someone/something they mention; 'assistant' for assistant facts
 - Extract at most {max_facts} facts total — prioritize high-confidence, significant ones
 - If nothing factual was stated, return {{"facts": []}}
+- Always name the person explicitly in every fact. Never write "the user" — use the actual name (e.g. "Caroline likes hiking", not "the user likes hiking").
 - Dates in `text`: if CONVERSATION DATE is provided, replace relative time references with the actual date.
   "today" → "on YYYY-MM-DD", "yesterday" → "on YYYY-MM-DD", "last week" → "on week of YYYY-MM-DD", etc.
   Do NOT use relative expressions if you know the absolute date.
@@ -518,6 +519,7 @@ class FactExtractor:
         sentence_ids: list[str] | None = None,
         session_time: datetime | None = None,
         _capture_out: list[dict[str, Any]] | None = None,
+        _capture_episodes_out: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """
         One LLM call: extract facts, run dedup in code, link to sentences.
@@ -560,6 +562,7 @@ class FactExtractor:
                     user_id,
                     agent_id,
                     session_time=session_time,
+                    _capture_out=_capture_episodes_out,
                 )
             except Exception as e:
                 logger.warning("Episode extraction failed for session %s: %s", session_id, e)
@@ -830,6 +833,9 @@ class FactExtractor:
                     for sent_id in linked:
                         await self.db.insert_fact_source(fact_id, sent_id)
 
+                # Mirror fresh-path: build PPR similarity edges for this fact
+                await self._build_fact_edges(fact_id, fact_emb, user_id, agent_id)
+
             except Exception as e:
                 logger.warning("Failed to replay fact '%s': %s", fact_data.get("text"), e)
 
@@ -928,6 +934,69 @@ class FactExtractor:
         except Exception as e:
             logger.debug("_build_fact_edges failed for %s: %s", fact_id, e)
 
+    async def replay_episodes(
+        self,
+        cached_episodes: list[dict[str, Any]],
+        inserted_facts: list[tuple[str, str]],
+        session_id: str,
+        user_id: str,
+        agent_id: str | None = None,
+        session_time: datetime | None = None,
+    ) -> int:
+        """Insert pre-extracted episodes from cache. No LLM call.
+
+        cached_episodes: raw episode dicts from cache: [{"text": ..., "fact_indices": [...]}]
+        inserted_facts:  (fact_id, text) pairs from replay_facts() for this session,
+                         used to map fact_indices → fresh DB fact IDs.
+        """
+        if not cached_episodes or not inserted_facts:
+            return 0
+
+        fact_id_list = [fid for fid, _ in inserted_facts]
+        episode_texts = [(ep.get("text") or "").strip() for ep in cached_episodes]
+        episode_texts = [t for t in episode_texts if t]
+        if not episode_texts:
+            return 0
+
+        try:
+            embeddings = await self.embedder.embed_batch(episode_texts)
+        except Exception as e:
+            logger.warning("Batch embed failed during episode replay: %s", e)
+            return 0
+
+        episodes_created = 0
+        text_iter = iter(zip(episode_texts, embeddings))
+        for ep_data in cached_episodes:
+            text = (ep_data.get("text") or "").strip()
+            if not text:
+                continue
+            indices = ep_data.get("fact_indices") or []
+            try:
+                _, embedding = next(text_iter)
+            except StopIteration:
+                break
+
+            linked_ids = [
+                fact_id_list[i]
+                for i in indices
+                if isinstance(i, int) and 0 <= i < len(fact_id_list)
+            ]
+            if not linked_ids:
+                continue
+
+            try:
+                episode_id = await self.db.insert_episode(
+                    text, embedding, user_id, agent_id, session_id,
+                    event_time=session_time,
+                )
+                for fid in linked_ids:
+                    await self.db.insert_episode_fact(episode_id, fid)
+                episodes_created += 1
+            except Exception as e:
+                logger.warning("Failed to replay episode '%s': %s", text, e)
+
+        return episodes_created
+
     async def _extract_episodes(
         self,
         inserted_facts: list[tuple[str, str]],
@@ -937,6 +1006,7 @@ class FactExtractor:
         agent_id: str | None,
         max_episodes: int = 5,
         session_time: datetime | None = None,
+        _capture_out: list[dict[str, Any]] | None = None,
     ) -> int:
         """Extract episodic memory narratives from the conversation and its facts.
 
@@ -990,6 +1060,9 @@ class FactExtractor:
         if not raw_episodes:
             return 0
 
+        if _capture_out is not None:
+            _capture_out.extend(raw_episodes)
+
         # Batch embed all episode texts in one call
         episode_texts = [(ep.get("text") or "").strip() for ep in raw_episodes]
         episode_texts = [t for t in episode_texts if t]
@@ -1026,7 +1099,8 @@ class FactExtractor:
 
             try:
                 episode_id = await self.db.insert_episode(
-                    text, embedding, user_id, agent_id, session_id
+                    text, embedding, user_id, agent_id, session_id,
+                    event_time=session_time,
                 )
                 for fid in linked_ids:
                     await self.db.insert_episode_fact(episode_id, fid)

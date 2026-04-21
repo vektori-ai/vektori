@@ -24,7 +24,7 @@ from vektori.models.factory import create_llm
 logger = logging.getLogger("locomo_judge")
 
 VALID_VERDICTS = {"CORRECT", "PARTIALLY_CORRECT", "WRONG", "ABSTAINED"}
-DEFAULT_JUDGE_MODEL = "vllm:Qwen/Qwen3-8B"
+DEFAULT_JUDGE_MODEL = "gemini:gemini-2.5-flash-lite"
 
 ABSTENTION_PHRASES = (
     "i don't have that information",
@@ -66,7 +66,9 @@ Rules:
   - "QA_FAILURE" if verdict is WRONG/ABSTAINED and context_has_answer is true
   - "RETRIEVAL_FAILURE" if verdict is WRONG/ABSTAINED and context_has_answer is false
 - For list answers, order does not matter.
-- For date answers, accept equivalent formats, e.g. "7 May 2023" and "2023-05-07".
+- For date answers, accept equivalent formats. These are always CORRECT:
+  "2023-10-21" = "21 October 2023" = "October 21, 2023"
+  "2022-11-10" = "10 November 2022" = "November 10, 2022"
 - Extra correct details do not make an answer wrong.
 
 JSON schema:
