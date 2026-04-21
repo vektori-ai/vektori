@@ -22,7 +22,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -e ".[dev]"
+          pip install -e ".[dev,all]"
           python -m nltk.downloader punkt_tab
 
       - name: Lint with ruff
