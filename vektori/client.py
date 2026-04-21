@@ -203,6 +203,58 @@ class Vektori:
         if count > 0 and count % interval == 0:
             await self.synthesize(user_id=user_id, agent_id=agent_id)
 
+    async def add_document(
+        self,
+        content: str,
+        source: str,
+        source_id: str,
+        user_id: str,
+        agent_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        document_time: datetime | None = None,
+    ) -> dict[str, Any]:
+        """
+        Store an external document (e.g., Notion page, GitHub issue) into memory.
+        Maps source:source_id -> deterministic session_id so re-ingestion upserts, not duplicates.
+        """
+        session_id = f"{source}:{source_id}"
+        
+        doc_metadata = metadata or {}
+        doc_metadata.update({
+            "source": source,
+            "source_id": source_id,
+            "type": "document",
+        })
+        
+        messages = [{"role": "user", "content": content}]
+        
+        return await self.add(
+            messages=messages,
+            session_id=session_id,
+            user_id=user_id,
+            agent_id=agent_id,
+            metadata=doc_metadata,
+            session_time=document_time,
+        )
+
+    async def connect(
+        self,
+        connector: Any,
+        user_id: str,
+        since: datetime | None = None,
+    ) -> int:
+        """
+        Ingest data from a platform connector into memory.
+
+        Args:
+            connector: An instance of `vektori.connectors.base.Connector`.
+            user_id: Whose data is being ingested.
+            since: Only ingest data modified since this time.
+
+        Returns:
+            The number of documents/records successfully ingested.
+        """
+        return await connector.ingest(user_id=user_id, vektori=self, since=since)
     async def synthesize(self, user_id: str, agent_id: str | None = None) -> int:
         """
         Run a cross-session synthesis pass for the user.

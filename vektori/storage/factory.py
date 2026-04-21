@@ -21,6 +21,16 @@ async def create_storage(config: VektoriConfig) -> StorageBackend:
 
         backend: StorageBackend = MemoryBackend()
 
+    elif backend_key == "veclite" or (database_url and database_url.startswith("veclite://")):
+        from vektori.storage.veclite_backend import VecLiteBackend
+
+        path = (
+            database_url.replace("veclite://", "")
+            if database_url and database_url.startswith("veclite://")
+            else "veclite_data"
+        )
+        backend = VecLiteBackend(path)
+
     elif backend_key == "postgres" or (database_url and "postgresql" in database_url):
         from vektori.storage.postgres import PostgresBackend
 
