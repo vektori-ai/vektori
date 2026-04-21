@@ -38,6 +38,8 @@ INSTRUCTIONS:
    - Mention older values only if the question asks for history or change over time.
 6. Copy critical names, dates, places, titles, quantities, and field names exactly from the context. Do not blur them into a generic paraphrase.
 7. Say "I don't have that information" only when no context item supports an answer.
+8. For answers expressed as "N days/weeks/months before/after DATE": use the temporal note in the context to compute the actual calendar date and give it as an absolute date (e.g. "18 May 2023"). Do not echo the anchor date as the answer.
+9. If the context contains facts about multiple people, only use facts that explicitly name the person the question is about. Do not attribute a fact to someone unless their name appears in that fact.
 
 ANSWER:
 """

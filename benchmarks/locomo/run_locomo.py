@@ -77,7 +77,7 @@ async def _main() -> None:
         help="LLM for fact/episode extraction"
     )
     parser.add_argument(
-        "--eval-model", default="vllm:Qwen/Qwen3-8B",
+        "--eval-model", default="gemini:gemini-2.5-flash-lite",
         help="LLM for QA answer generation"
     )
     parser.add_argument(
@@ -87,6 +87,10 @@ async def _main() -> None:
     parser.add_argument(
         "--max-extraction-output-tokens", type=int, default=32768,
         help="Max output tokens for extraction LLM calls"
+    )
+    parser.add_argument(
+        "--no-ppr", action="store_true",
+        help="Disable PPR retrieval — revert to plain graph hop (ablation)"
     )
     parser.add_argument(
         "--no-cache", action="store_true",
@@ -125,6 +129,7 @@ async def _main() -> None:
         max_questions=max_q,
         use_cache=not args.no_cache,
         cache_namespace=args.cache_namespace,
+        use_ppr=not args.no_ppr,
     )
 
     if max_q:

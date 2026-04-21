@@ -256,17 +256,17 @@ class LongMemEvalBenchmark:
             session_date = haystack_dates[i] if i < len(haystack_dates) else None
             session_time = _parse_date(session_date) if session_date else None
 
-            cached_facts = await self._session_cache.get(hsid)
-            if cached_facts is not None:
+            cached_entry = await self._session_cache.get(hsid)
+            if cached_entry is not None:
                 await self._replay_session(
-                    session, hsid, user_id, session_time, session_date, cached_facts
+                    session, hsid, user_id, session_time, session_date, cached_entry
                 )
             else:
-                new_facts = await self._full_ingest_session(
+                new_facts, new_episodes = await self._full_ingest_session(
                     session, hsid, user_id, session_time, session_date
                 )
                 if new_facts:  # don't cache failed/empty extractions — allow retry on next run
-                    await self._session_cache.put(hsid, new_facts)
+                    await self._session_cache.put(hsid, new_facts, episodes=new_episodes)
 
     async def _replay_session(
         self,
@@ -275,11 +275,10 @@ class LongMemEvalBenchmark:
         user_id: str,
         session_time: datetime | None,
         session_date: str | None,
-        cached_facts: list[dict[str, Any]],
+        cached_entry: dict[str, Any],
     ) -> None:
-        """Cache hit path: store sentences locally, replay pre-extracted facts,
-        then run episode extraction (cheap LLM call — only facts were cached,
-        not episodes, so we generate them fresh here)."""
+        """Cache hit path: store sentences locally, replay pre-extracted facts and episodes.
+        No LLM calls — episodes are replayed from cache via local re-embed."""
         pipeline = self.vektori_client._pipeline
         extractor = self.vektori_client._extractor
 
@@ -292,9 +291,12 @@ class LongMemEvalBenchmark:
             skip_extraction=True,
         )
 
+        cached_fact_list = cached_entry.get("facts") or []
+        cached_episode_list = cached_entry.get("episodes") or []
+
         inserted_facts: list[tuple[str, str]] = []
         await extractor.replay_facts(
-            cached_facts=cached_facts,
+            cached_facts=cached_fact_list,
             session_id=haystack_sid,
             user_id=user_id,
             session_time=session_time,
@@ -302,20 +304,38 @@ class LongMemEvalBenchmark:
         )
 
         if inserted_facts:
-            conversation = "\n".join(f"{msg['role'].upper()}: {msg['content']}" for msg in session)
-            try:
-                await extractor._extract_episodes(
-                    inserted_facts=inserted_facts,
-                    conversation=conversation,
-                    session_id=haystack_sid,
-                    user_id=user_id,
-                    agent_id=None,
-                    session_time=session_time,
+            if cached_episode_list:
+                try:
+                    await extractor.replay_episodes(
+                        cached_episodes=cached_episode_list,
+                        inserted_facts=inserted_facts,
+                        session_id=haystack_sid,
+                        user_id=user_id,
+                        agent_id=None,
+                        session_time=session_time,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Episode replay failed for cached session %s: %s", haystack_sid, e
+                    )
+            else:
+                # Fallback for old cache entries that pre-date episode caching
+                conversation = "\n".join(
+                    f"{msg['role'].upper()}: {msg['content']}" for msg in session
                 )
-            except Exception as e:
-                logger.warning(
-                    "Episode extraction failed for cached session %s: %s", haystack_sid, e
-                )
+                try:
+                    await extractor._extract_episodes(
+                        inserted_facts=inserted_facts,
+                        conversation=conversation,
+                        session_id=haystack_sid,
+                        user_id=user_id,
+                        agent_id=None,
+                        session_time=session_time,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Episode extraction failed for cached session %s: %s", haystack_sid, e
+                    )
 
     async def _full_ingest_session(
         self,
@@ -324,8 +344,8 @@ class LongMemEvalBenchmark:
         user_id: str,
         session_time: datetime | None,
         session_date: str | None,
-    ) -> list[dict[str, Any]]:
-        """Cache miss path: full LLM extraction.  Returns cacheable facts."""
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Cache miss path: full LLM extraction.  Returns (facts, episodes)."""
         pipeline = self.vektori_client._pipeline
         extractor = self.vektori_client._extractor
 
@@ -339,17 +359,19 @@ class LongMemEvalBenchmark:
             skip_extraction=True,
         )
 
-        # LLM fact extraction — capture results for the cache.
+        # LLM fact + episode extraction — capture results for the cache.
         captured_facts: list[dict[str, Any]] = []
+        captured_episodes: list[dict[str, Any]] = []
         await extractor.extract(
             messages=session,
             session_id=haystack_sid,
             user_id=user_id,
             session_time=session_time,
             _capture_out=captured_facts,
+            _capture_episodes_out=captured_episodes,
         )
 
-        return captured_facts
+        return captured_facts, captured_episodes
 
     # ── Retrieval + QA ────────────────────────────────────────────────────────
 

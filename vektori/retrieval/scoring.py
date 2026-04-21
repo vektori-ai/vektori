@@ -97,6 +97,13 @@ def score_and_rank(
         age_days = _age_in_days(timestamp, now)
 
         meta = fact.get("metadata") or {}
+        if isinstance(meta, str):
+            import json
+            try:
+                meta = json.loads(meta)
+            except Exception:
+                meta = {}
+        
         # Facts with explicit time markers (or explicit type="event") decay normally;
         # standing preferences decay much slower.
         is_event = "temporal_expr" in meta or meta.get("type") == "event"
@@ -120,7 +127,7 @@ def score_and_rank(
         # for preference/habit/life-event queries. Assistant facts capture what
         # the assistant said or recommended. De-weight assistant facts slightly
         # so they don't compete equally with user-stated preferences by default.
-        source = (fact.get("metadata") or {}).get("source", "user")
+        source = meta.get("source", "user")
         if source == "assistant":
             source_weight = assistant_source_weight
         else:

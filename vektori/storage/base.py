@@ -234,6 +234,33 @@ class StorageBackend(ABC):
         """Fetch full sentence rows for the given IDs."""
         ...
 
+    # ── Fact similarity edges (PPR graph) ──
+
+    async def insert_fact_edge(
+        self,
+        source_id: str,
+        target_id: str,
+        user_id: str,
+        weight: float = 1.0,
+    ) -> None:
+        """Insert a similarity edge between two facts. ON CONFLICT DO NOTHING."""
+
+    async def get_fact_edges_for_user(
+        self,
+        user_id: str,
+        agent_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return all fact similarity edges for a user as [{source_id, target_id, weight}]."""
+        return []
+
+    async def get_episode_fact_map(
+        self,
+        user_id: str,
+        agent_id: str | None = None,
+    ) -> dict[str, list[str]]:
+        """Return {episode_id: [fact_id, ...]} for all active episodes of a user."""
+        return {}
+
     # ── Episodes ──
 
     @abstractmethod

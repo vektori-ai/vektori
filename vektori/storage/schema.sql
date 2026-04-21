@@ -199,3 +199,20 @@ CREATE TABLE IF NOT EXISTS episode_facts (
 
 CREATE INDEX IF NOT EXISTS idx_episode_facts_episode ON episode_facts (episode_id);
 CREATE INDEX IF NOT EXISTS idx_episode_facts_fact ON episode_facts (fact_id);
+
+
+-- ============================================================
+-- FACT_EDGES: Similarity edges between facts for PPR graph traversal.
+-- Built at write time when a new fact has cosine sim > 0.75 with existing facts.
+-- Enables multi-hop retrieval: query → matched facts → related facts → episodes.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS fact_edges (
+    source_id UUID NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
+    target_id UUID NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL,
+    weight FLOAT DEFAULT 1.0,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (source_id, target_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fact_edges_user ON fact_edges (user_id);

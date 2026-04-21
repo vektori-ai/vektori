@@ -42,6 +42,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from benchmarks.locomo.locomo_judge import is_abstention_answer
 from benchmarks.longmemeval.checkpoint import BenchmarkCheckpoint
 from benchmarks.longmemeval.session_cache import SessionExtractCache
 from vektori.qa import generate_answer
@@ -81,7 +82,7 @@ class LoCoMoConfig:
     run_name: str | None = None
 
     # Evaluation
-    eval_model: str = "vllm:Qwen/Qwen3-8B"
+    eval_model: str = "gemini:gemini-2.5-flash-lite"
     qa_prompt_path: str | None = None
 
     # Pilot mode — set to a small number to test before full run
@@ -90,6 +91,9 @@ class LoCoMoConfig:
     # Extraction cache
     use_cache: bool = True
     cache_namespace: str | None = None
+
+    # Retrieval ablation
+    use_ppr: bool = True
 
 
 # ── Runner ────────────────────────────────────────────────────────────────────
@@ -147,6 +151,7 @@ class LoCoMoBenchmark:
                 enable_retrieval_gate=self.config.enable_retrieval_gate,
                 async_extraction=False,
                 max_extraction_output_tokens=self.config.max_extraction_output_tokens,
+                use_ppr=self.config.use_ppr,
             )
         )
         await self.vektori_client._ensure_initialized()
@@ -452,6 +457,7 @@ class LoCoMoBenchmark:
             "question_id": qid,
             "question": question,
             "question_type": question_type,
+            "question_date": question_date,
             "hypothesis": answer,
             "expected_answer": item["answer"],
             "retrieved_context": context,
@@ -469,7 +475,7 @@ class LoCoMoBenchmark:
             question_date=question_date,
             model=self.config.eval_model,
             prompt_template=self._qa_prompt_override,
-            max_tokens=500,
+            max_tokens=2048,
         )
 
     # ── Evaluation ────────────────────────────────────────────────────────────
@@ -503,8 +509,8 @@ class LoCoMoBenchmark:
             "by_type": {},
         }
         for r in qa_results:
-            hyp = (r.get("hypothesis") or "").lower()
-            answered = bool(hyp) and "not available" not in hyp
+            hyp = r.get("hypothesis") or ""
+            answered = bool(hyp) and not is_abstention_answer(hyp)
             if answered:
                 metrics["answered"] += 1
             else:
@@ -700,7 +706,15 @@ def _coerce_datetime(value: Any) -> datetime | None:
 
 
 def _timestamp_for_context(item: dict[str, Any]) -> Any:
+    # Prefer event_time (real session date). created_at is ingestion time — only
+    # use it as a last resort for relative-time note computation, NOT for date hints
+    # shown to the model (which would show today's date instead of the session date).
     return item.get("event_time") or item.get("created_at") or ""
+
+
+def _event_time_only(item: dict[str, Any]) -> Any:
+    """Return event_time only — never fall back to created_at (ingestion date)."""
+    return item.get("event_time") or ""
 
 
 def _date_prefix(timestamp: Any) -> str:
@@ -733,6 +747,13 @@ def _fact_relevance_score(fact: dict[str, Any]) -> float:
 def _fact_specificity_score(fact: dict[str, Any]) -> int:
     text = str(fact.get("text", ""))
     metadata = fact.get("metadata") or {}
+    if isinstance(metadata, str):
+        import json
+        try:
+            metadata = json.loads(metadata)
+        except Exception:
+            metadata = {}
+    
     score = 0
     if _timestamp_for_context(fact):
         score += 3
@@ -862,7 +883,7 @@ def _format_retrieved_context(search_results: Any) -> str:
             sents = session_sents[ssid]
             date_hint = ""
             for s in sents:
-                ts = _timestamp_for_context(s)
+                ts = _event_time_only(s)
                 if ts:
                     date = _date_prefix(ts)
                     date_hint = f" [{date}]" if date else ""

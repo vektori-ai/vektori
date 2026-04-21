@@ -118,6 +118,7 @@ class Vektori:
             embedder=self.embedder,
             temporal_decay_rate=self.config.temporal_decay_rate,
             min_score=self.config.min_retrieval_score,
+            use_ppr=self.config.use_ppr,
         )
         self._pipeline = IngestionPipeline(
             db=self.db,

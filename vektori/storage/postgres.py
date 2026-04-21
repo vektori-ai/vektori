@@ -119,6 +119,20 @@ class PostgresBackend(StorageBackend):
             ON syntheses (user_id, COALESCE(agent_id, ''), text)
             """
         )
+        # fact_edges table for PPR graph
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS fact_edges (
+                source_id UUID NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
+                target_id UUID NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
+                user_id TEXT NOT NULL,
+                weight FLOAT DEFAULT 1.0,
+                created_at TIMESTAMPTZ DEFAULT now(),
+                PRIMARY KEY (source_id, target_id)
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_fact_edges_user ON fact_edges (user_id)"
+        )
 
     async def close(self) -> None:
         if self._pool:
@@ -623,6 +637,58 @@ class PostgresBackend(StorageBackend):
                 uuid_ids,
             )
         return [str(row["sentence_id"]) for row in rows]
+
+    # ── Fact similarity edges (PPR graph) ──
+
+    async def insert_fact_edge(
+        self,
+        source_id: str,
+        target_id: str,
+        user_id: str,
+        weight: float = 1.0,
+    ) -> None:
+        a, b = (source_id, target_id) if source_id < target_id else (target_id, source_id)
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO fact_edges (source_id, target_id, user_id, weight)
+                   VALUES ($1::uuid, $2::uuid, $3, $4)
+                   ON CONFLICT DO NOTHING""",
+                a, b, user_id, weight,
+            )
+
+    async def get_fact_edges_for_user(
+        self,
+        user_id: str,
+        agent_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT source_id, target_id, weight FROM fact_edges WHERE user_id = $1",
+                user_id,
+            )
+        return [{"source_id": str(r["source_id"]), "target_id": str(r["target_id"]), "weight": r["weight"]} for r in rows]
+
+    async def get_episode_fact_map(
+        self,
+        user_id: str,
+        agent_id: str | None = None,
+    ) -> dict[str, list[str]]:
+        query = """
+            SELECT ef.episode_id::text, ef.fact_id::text
+            FROM episode_facts ef
+            JOIN facts f ON ef.fact_id = f.id
+            WHERE f.user_id = $1 AND f.is_active = true
+        """
+        params = [user_id]
+        if agent_id:
+            query += " AND f.agent_id = $2"
+            params.append(agent_id)
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(query, *params)
+        result: dict[str, list[str]] = {}
+        for row in rows:
+            result.setdefault(row["episode_id"], []).append(row["fact_id"])
+        return result
 
     # ── Syntheses ──
 

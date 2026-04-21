@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from vektori.models.base import EmbeddingProvider
+from vektori.retrieval.ppr import rank_episodes_by_ppr, run_ppr
 from vektori.retrieval.scoring import explain_score, score_and_rank
 from vektori.retrieval.temporal import TemporalQueryParser
 from vektori.storage.base import StorageBackend
@@ -53,6 +54,8 @@ class SearchPipeline:
         temporal_decay_rate: float = 0.001,
         use_mentions: bool = True,
         min_score: float = 0.3,
+        use_ppr: bool = True,
+        ppr_alpha: float = 0.5,
         debug: bool = False,
     ) -> None:
         self.db = db
@@ -64,6 +67,11 @@ class SearchPipeline:
         # penalised by temporal decay. Irrelevant facts score ~0.1-0.2, weak matches ~0.3-0.4.
         # Set to 0.0 to disable (always return something regardless of relevance).
         self.min_score = min_score
+        # PPR replaces the simple graph hop for episode retrieval with a full random
+        # walk over the fact+episode graph, surfacing episodes reachable from related
+        # facts (not just directly-matched ones). Disable to revert to the old behavior.
+        self.use_ppr = use_ppr
+        self.ppr_alpha = ppr_alpha
         # debug=True logs score breakdowns for each returned fact
         self.debug = debug
         self._temporal_parser = TemporalQueryParser()
@@ -249,16 +257,67 @@ class SearchPipeline:
                 "memory_found": len(top) > 0,
             }
 
-        # ── Step 2: Episodes (L1/L2) — graph traversal + vector search ────────
-        # Run both concurrently: graph edges from matched facts, and direct
-        # cosine search over episode embeddings. Merge by ID so the same
-        # episode doesn't appear twice.
-        graph_episodes, vec_episodes, graph_syntheses, vec_syntheses = await asyncio.gather(
-            self.db.get_episodes_for_facts(seed_fact_ids),
-            self.db.search_episodes(query_embedding, user_id, agent_id),
+        # ── Step 2: Episodes (L1/L2) ─────────────────────────────────────────
+        # Two paths: PPR (default) or plain graph hop + vector search.
+        #
+        # PPR path: build the fact+episode graph, seed from cosine-matched facts,
+        # diffuse probability mass through similarity edges, rank episodes by
+        # their aggregated PPR score. Surfaces episodes reachable from *related*
+        # facts (multi-hop) not just directly-matched ones.
+        #
+        # Fallback path (use_ppr=False or no edges yet): old behavior —
+        # graph hop from matched fact IDs + direct cosine over episodes.
+        graph_syntheses, vec_syntheses, vec_episodes = await asyncio.gather(
             self.db.get_syntheses_for_facts(seed_fact_ids),
             self.db.search_syntheses(query_embedding, user_id, agent_id),
+            self.db.search_episodes(query_embedding, user_id, agent_id),
         )
+
+        if self.use_ppr:
+            fact_edges, episode_fact_map, all_user_facts = await asyncio.gather(
+                self.db.get_fact_edges_for_user(user_id, agent_id),
+                self.db.get_episode_fact_map(user_id, agent_id),
+                self.db.get_active_facts(user_id, agent_id, limit=500),
+            )
+
+        if self.use_ppr and (fact_edges or episode_fact_map):
+            logger.info("PPR: running on %d fact edges, %d episode nodes, %d total facts", len(fact_edges), len(episode_fact_map), len(all_user_facts))
+            seed_scores = {
+                f["id"]: f.get("_score_components", {}).get("similarity", f.get("score", 0.0))
+                for f in top_k_facts
+            }
+            ppr_scores = run_ppr(
+                seed_scores=seed_scores,
+                all_facts=all_user_facts,
+                fact_edges=fact_edges,
+                episode_fact_map=episode_fact_map,
+                alpha=self.ppr_alpha,
+            )
+            ppr_ranked = rank_episodes_by_ppr(episode_fact_map, ppr_scores)
+
+            # Fetch the top PPR-ranked episode rows from DB.
+            # get_episodes_for_facts() expects fact IDs (joins on episode_facts.fact_id),
+            # so unpack the top-ranked episodes → their constituent facts using the
+            # episode_fact_map already in memory — zero extra DB calls.
+            top_fact_ids_from_ppr = [
+                fid
+                for ep_id, _ in ppr_ranked[:10]
+                if ppr_scores.get(ep_id, 0) > 0
+                for fid in episode_fact_map.get(ep_id, [])
+            ]
+            graph_episodes = await self.db.get_episodes_for_facts(top_fact_ids_from_ppr) if top_fact_ids_from_ppr else []
+
+            if self.debug:
+                logger.debug(
+                    "PPR: %d fact edges, %d episode nodes, top episode scores: %s",
+                    len(fact_edges),
+                    len(episode_fact_map),
+                    [(ep_id[:8], round(s, 5)) for ep_id, s in ppr_ranked[:3]],
+                )
+        else:
+            logger.info("PPR: skipped (use_ppr=%s, fact_edges=%d, episode_nodes=%d) — using plain graph hop", self.use_ppr, len(fact_edges) if self.use_ppr else -1, len(episode_fact_map) if self.use_ppr else -1)
+            graph_episodes = await self.db.get_episodes_for_facts(seed_fact_ids)
+
         seen_episode_ids: set[str] = set()
         episodes: list[dict[str, Any]] = []
         for ins in (*graph_episodes, *vec_episodes):

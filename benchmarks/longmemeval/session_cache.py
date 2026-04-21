@@ -53,19 +53,35 @@ class SessionExtractCache:
         ) as cur:
             return await cur.fetchone() is not None
 
-    async def get(self, session_id: str) -> list[dict[str, Any]] | None:
-        """Return cached facts list or None on miss."""
+    async def get(self, session_id: str) -> dict[str, Any] | None:
+        """Return cached entry or None on miss.
+
+        Returns a dict with keys 'facts' and 'episodes'.
+        Old entries (plain list) are transparently upgraded to the new format.
+        """
         async with self._conn.execute(
             "SELECT facts_json FROM session_cache WHERE session_id = ?", (session_id,)
         ) as cur:
             row = await cur.fetchone()
-        return json.loads(row[0]) if row else None
+        if row is None:
+            return None
+        data = json.loads(row[0])
+        # Backwards compat: old entries stored a plain list of facts
+        if isinstance(data, list):
+            return {"facts": data, "episodes": []}
+        return data
 
-    async def put(self, session_id: str, facts: list[dict[str, Any]]) -> None:
-        """Store extracted facts for a session (idempotent — replaces on conflict)."""
+    async def put(
+        self,
+        session_id: str,
+        facts: list[dict[str, Any]],
+        episodes: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """Store extracted facts (and optionally episodes) for a session."""
+        payload = {"facts": facts, "episodes": episodes or []}
         await self._conn.execute(
             "INSERT OR REPLACE INTO session_cache (session_id, facts_json) VALUES (?, ?)",
-            (session_id, json.dumps(facts)),
+            (session_id, json.dumps(payload)),
         )
         await self._conn.commit()
 
