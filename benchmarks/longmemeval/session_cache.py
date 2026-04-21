@@ -66,9 +66,11 @@ class SessionExtractCache:
         if row is None:
             return None
         data = json.loads(row[0])
-        # Backwards compat: old entries stored a plain list of facts
+        # Backwards compat: old entries stored a plain list of facts (some as strings, some as dicts)
         if isinstance(data, list):
-            return {"facts": data, "episodes": []}
+            # Normalise string facts to {"text": "..."} dicts for compatibility with replay_facts()
+            facts = [f if isinstance(f, dict) else {"text": f} for f in data]
+            return {"facts": facts, "episodes": []}
         return data
 
     async def put(
