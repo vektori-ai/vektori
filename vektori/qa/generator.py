@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Protocol
 
 logger = logging.getLogger(__name__)
@@ -23,7 +24,7 @@ QUESTION:
 {question}
 
 INSTRUCTIONS:
-1. Use only the provided context. Do not use outside knowledge or guesses.
+1. Use only the provided context. Logical inference and reasoning from context facts is expected and correct — this is NOT guessing. Do not introduce facts that have no support in any context item.
 2. First, silently find every fact, episode, synthesis, or transcript line that directly relates to the question. Do not print this evidence list.
 3. For counting, frequency, list, "all", "total", or aggregation questions:
    - Consider every relevant item across all sessions, not just the first match.
@@ -37,12 +38,21 @@ INSTRUCTIONS:
    - Prefer the most recent value when later context overrides earlier context.
    - Mention older values only if the question asks for history or change over time.
 6. Copy critical names, dates, places, titles, quantities, and field names exactly from the context. Do not blur them into a generic paraphrase.
-7. Say "I don't have that information" only when no context item supports an answer.
+7. If the context contains any relevant evidence, commit to the most supported answer — even if it requires reasoning. Reserve "I don't have that information" strictly for when the context has zero relevant facts about the subject. Committing to a reasoned answer is preferred over abstaining.
 8. For answers expressed as "N days/weeks/months before/after DATE": use the temporal note in the context to compute the actual calendar date and give it as an absolute date (e.g. "18 May 2023"). Do not echo the anchor date as the answer.
 9. If the context contains facts about multiple named people, only use facts about the person the question asks about. Facts labeled "User" or "Assistant" refer to the primary conversation participant — if other facts establish that person's name (e.g. "User's name is Caroline"), treat "User" facts as belonging to that person.
 
 ANSWER:
 """
+
+
+_TYPE3_SCAFFOLD = (
+    "\nNOTE: This is an inference question (\"Would X...?\", \"Is X likely...?\", "
+    "\"What might X...?\"). Step 1: silently list what the context reveals about "
+    "the subject's relevant preferences, habits, and situation. Step 2: use that "
+    "evidence to commit to a Yes/No answer with a one-sentence justification. "
+    "Refusing to answer is only acceptable if the context has zero facts about the subject."
+)
 
 
 def build_qa_prompt(
@@ -57,11 +67,14 @@ def build_qa_prompt(
     date_line = f"TODAY'S DATE: {question_date}\n\n" if question_date else ""
     type_line = f"QUESTION TYPE: {question_type}\n" if question_type else ""
     template = prompt_template or QA_PROMPT
-    return template.format(
+    prompt = template.format(
         date_line=f"{date_line}{type_line}",
         context=context,
         question=question,
     )
+    if str(question_type) == "3":
+        prompt = prompt.rstrip() + _TYPE3_SCAFFOLD + "\n"
+    return prompt
 
 
 async def generate_answer(
@@ -102,7 +115,10 @@ async def generate_answer(
             if isinstance(parsed, dict) and "answer" in parsed:
                 answer = str(parsed["answer"]).strip()
         except Exception:
-            pass
+            # Fallback: regex extraction handles malformed/truncated JSON
+            m = re.search(r'"answer"\s*:\s*"((?:[^"\\]|\\.)*)"', answer)
+            if m:
+                answer = m.group(1).replace('\\"', '"').replace("\\\\", "\\").strip()
         return answer
     except Exception as e:
         logger.warning("Answer generation failed: %s", e)
