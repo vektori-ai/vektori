@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vektori Memory Explorer</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1020;
+      --bg2: #151d33;
+      --card: #0f172b;
+      --text: #e9eeff;
+      --muted: #9fb0d6;
+      --fact: #5ec8ff;
+      --episode: #ff9ecf;
+      --sentence: #8ffcc2;
+      --accent: #7f8cff;
+      --border: #2a3558;
+    }
+    body { margin: 0; background: radial-gradient(circle at top, #172444, var(--bg)); color: var(--text); font-family: Inter, system-ui, sans-serif; }
+    .layout { display: grid; grid-template-columns: 280px 1fr; min-height: 100vh; }
+    aside { border-right: 1px solid var(--border); padding: 18px; background: rgba(0, 0, 0, 0.25); }
+    main { padding: 18px; display: grid; gap: 14px; grid-template-rows: auto auto 1fr; }
+    h1, h2, h3 { margin: 0 0 8px; }
+    .card { background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)); border: 1px solid var(--border); border-radius: 14px; padding: 12px; box-shadow: 0 10px 35px rgba(0,0,0,0.35); }
+    select, button { width: 100%; background: var(--bg2); color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
+    button { margin-top: 8px; cursor: pointer; }
+    .muted { color: var(--muted); font-size: 13px; }
+    .stats { display: flex; gap: 8px; flex-wrap: wrap; }
+    .pill { border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px; font-size: 12px; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .scroll { max-height: 260px; overflow: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; border-bottom: 1px solid var(--border); padding: 7px 5px; font-size: 13px; }
+    tr.fact-row { cursor: pointer; }
+    tr.fact-row:hover { background: rgba(126, 141, 255, 0.12); }
+    #graph { width: 100%; height: 340px; background: #0a1020; border-radius: 12px; position: relative; overflow: hidden; }
+    #graph svg { width: 100%; height: 100%; }
+    .legend { display: flex; gap: 10px; margin: 8px 0; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 5px; }
+    pre { margin: 0; white-space: pre-wrap; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <aside>
+      <h1>Memory Explorer</h1>
+      <p class="muted">Inspect facts, episodes, sentences and links per user.</p>
+      <div class="card">
+        <h3>User</h3>
+        <select id="userSelect"></select>
+        <button id="reloadBtn">Reload</button>
+      </div>
+      <div class="card" style="margin-top: 10px;">
+        <h3>Selection</h3>
+        <pre id="selectionInfo" class="muted">Click a fact row or graph node.</pre>
+      </div>
+    </aside>
+    <main>
+      <section class="card">
+        <h2>Profile</h2>
+        <pre id="profile"></pre>
+      </section>
+      <section class="grid2">
+        <div class="card">
+          <h2>Facts</h2>
+          <div class="scroll"><table id="factsTable"></table></div>
+        </div>
+        <div class="card">
+          <h2>Episodes</h2>
+          <div class="scroll"><table id="episodesTable"></table></div>
+        </div>
+      </section>
+      <section class="card">
+        <h2>Graph + Sentences</h2>
+        <div class="legend">
+          <span><i class="dot" style="background: var(--fact)"></i>Fact</span>
+          <span><i class="dot" style="background: var(--episode)"></i>Episode</span>
+          <span><i class="dot" style="background: var(--sentence)"></i>Sentence</span>
+        </div>
+        <div class="stats" id="stats"></div>
+        <div id="graph"></div>
+        <h3 style="margin-top:10px;">Sentences by session</h3>
+        <div id="sessions" class="scroll"></div>
+      </section>
+    </main>
+  </div>
+
+<script>
+let snapshot = null;
+
+const userSelect = document.getElementById('userSelect');
+const profileEl = document.getElementById('profile');
+const factsTable = document.getElementById('factsTable');
+const episodesTable = document.getElementById('episodesTable');
+const sessionsEl = document.getElementById('sessions');
+const statsEl = document.getElementById('stats');
+const selectionInfo = document.getElementById('selectionInfo');
+
+async function getJSON(path) {
+  const res = await fetch(path);
+  if (!res.ok) throw new Error(`Failed ${path}`);
+  return res.json();
+}
+
+function renderTable(table, headers, rows) {
+  table.innerHTML = '';
+  const thead = document.createElement('thead');
+  thead.innerHTML = `<tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr>`;
+  table.appendChild(thead);
+  const tbody = document.createElement('tbody');
+  rows.forEach(r => tbody.appendChild(r));
+  table.appendChild(tbody);
+}
+
+function renderSessions(sessions) {
+  sessionsEl.innerHTML = '';
+  sessions.forEach(group => {
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.style.marginBottom = '8px';
+    card.innerHTML = `<strong>${group.session_id}</strong>`;
+    group.sentences.forEach(s => {
+      const line = document.createElement('div');
+      line.className = 'muted';
+      line.textContent = `[${s.role}] ${s.text}`;
+      card.appendChild(line);
+    });
+    sessionsEl.appendChild(card);
+  });
+}
+
+function selectFact(factId) {
+  if (!snapshot) return;
+  const fact = snapshot.facts.find(f => f.id === factId);
+  const links = snapshot.fact_links[factId] || { episode_ids: [], sentence_ids: [] };
+  selectionInfo.textContent = `${fact?.text || factId}\n\nEpisodes: ${links.episode_ids.length}\nSource sentences: ${links.sentence_ids.length}`;
+  drawGraph(snapshot.graph, `fact:${factId}`);
+}
+
+function drawGraph(graph, focusId = null) {
+  const host = document.getElementById('graph');
+  host.innerHTML = '<svg></svg>';
+  const svg = host.querySelector('svg');
+  const width = host.clientWidth;
+  const height = host.clientHeight;
+
+  const nodes = graph.nodes.slice(0, 140).map((n, i) => ({ ...n, x: 30 + (i * 73 % (width - 60)), y: 30 + (i * 97 % (height - 60)) }));
+  const byId = Object.fromEntries(nodes.map(n => [n.id, n]));
+  const edges = graph.edges.filter(e => byId[e.source] && byId[e.target]);
+
+  const linked = new Set();
+  if (focusId) {
+    linked.add(focusId);
+    edges.forEach(e => {
+      if (e.source === focusId || e.target === focusId) {
+        linked.add(e.source); linked.add(e.target);
+      }
+    });
+  }
+
+  edges.forEach(e => {
+    const a = byId[e.source], b = byId[e.target];
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('x1', a.x); line.setAttribute('y1', a.y);
+    line.setAttribute('x2', b.x); line.setAttribute('y2', b.y);
+    const active = !focusId || (linked.has(e.source) && linked.has(e.target));
+    line.setAttribute('stroke', active ? '#5062b8' : '#29314f');
+    line.setAttribute('stroke-width', active ? '1.6' : '1');
+    svg.appendChild(line);
+  });
+
+  nodes.forEach(n => {
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    const color = n.type === 'fact' ? '#5ec8ff' : n.type === 'episode' ? '#ff9ecf' : '#8ffcc2';
+    c.setAttribute('cx', n.x); c.setAttribute('cy', n.y);
+    c.setAttribute('r', n.type === 'fact' ? '5' : '4');
+    const active = !focusId || linked.has(n.id);
+    c.setAttribute('fill', color);
+    c.setAttribute('opacity', active ? '1' : '0.28');
+    t.setAttribute('x', n.x + 7); t.setAttribute('y', n.y + 4);
+    t.setAttribute('font-size', '10');
+    t.setAttribute('fill', active ? '#dbe2ff' : '#5f6e99');
+    t.textContent = n.label.slice(0, 32);
+    g.style.cursor = 'pointer';
+    g.addEventListener('click', () => {
+      if (n.type === 'fact') selectFact(n.id.replace('fact:', ''));
+    });
+    g.appendChild(c); g.appendChild(t); svg.appendChild(g);
+  });
+}
+
+function renderSnapshot(data) {
+  snapshot = data;
+  profileEl.textContent = data.profile;
+  statsEl.innerHTML = [
+    `<span class="pill">facts: ${data.facts.length}</span>`,
+    `<span class="pill">episodes: ${data.episodes.length}</span>`,
+    `<span class="pill">sentences: ${data.sentences.length}</span>`,
+    `<span class="pill">sessions: ${data.sessions.length}</span>`
+  ].join('');
+
+  const factRows = data.facts.map(f => {
+    const tr = document.createElement('tr');
+    tr.className = 'fact-row';
+    tr.innerHTML = `<td>${f.text}</td><td>${(f.confidence ?? 0).toFixed?.(2) ?? 'n/a'}</td><td>${f.event_time || '—'}</td><td>${f.mentions ?? 1}</td><td>${f.is_active ? 'active' : 'superseded'}</td>`;
+    tr.addEventListener('click', () => selectFact(f.id));
+    return tr;
+  });
+  renderTable(factsTable, ['Text', 'Conf', 'Event Time', 'Mentions', 'Status'], factRows);
+
+  const episodeRows = data.episodes.map(e => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${e.text}</td><td>${e.session_id || '—'}</td><td>${(e.session_date || e.created_at || '').slice(0, 10) || '—'}</td>`;
+    return tr;
+  });
+  renderTable(episodesTable, ['Text', 'Session', 'Date'], episodeRows);
+
+  renderSessions(data.sessions);
+  drawGraph(data.graph);
+}
+
+async function loadUser(userId) {
+  const data = await getJSON(`/api/user/${encodeURIComponent(userId)}`);
+  renderSnapshot(data);
+}
+
+async function init() {
+  const { users } = await getJSON('/api/users');
+  userSelect.innerHTML = users.map(u => `<option value="${u}">${u}</option>`).join('');
+  if (!users.length) {
+    profileEl.textContent = 'No users found in the local memory database.';
+    return;
+  }
+  await loadUser(users[0]);
+  userSelect.addEventListener('change', () => loadUser(userSelect.value));
+  document.getElementById('reloadBtn').addEventListener('click', () => loadUser(userSelect.value));
+}
+
+init().catch((error) => {
+  profileEl.textContent = `Error loading explorer: ${error.message}`;
+});
+</script>
+</body>
+</html>
