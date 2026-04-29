@@ -72,6 +72,16 @@ class GeminiLLM(LLMProvider):
         )
         return backoff * random.uniform(0.75, 1.25)
 
+    def _thinking_config(self):
+        """Return ThinkingConfig for models that support it."""
+        from google.genai import types
+        # gemini-3+ flash models use thinking_level; gemini-2.5 uses thinking_budget
+        if "gemini-3" in self.model or "gemini-3." in self.model:
+            return types.ThinkingConfig(thinking_level="minimal")
+        if "gemini-2.5" in self.model:
+            return types.ThinkingConfig(thinking_budget=0)
+        return None
+
     async def generate(self, prompt: str, max_tokens: int | None = None) -> str:
         from google.genai import types
 
@@ -83,6 +93,9 @@ class GeminiLLM(LLMProvider):
         }
         if max_tokens is not None:
             config_kwargs["max_output_tokens"] = max_tokens
+        thinking = self._thinking_config()
+        if thinking is not None:
+            config_kwargs["thinking_config"] = thinking
 
         last_exception = None
 
