@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import sqlite3
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 from vektori.models.base import ChatModelProvider
 
@@ -50,6 +54,12 @@ class MessageWindow:
             compaction_count=self._compaction_count,
         )
 
+    def restore(self, state: WindowState) -> None:
+        """Restore window state from a persisted snapshot."""
+        self._recent_messages = list(state.recent_messages)
+        self._rolling_summary = state.rolling_summary
+        self._compaction_count = state.compaction_count
+
     def estimated_tokens(self) -> int:
         summary_tokens = len(self._rolling_summary) // 4
         return estimate_tokens(self._recent_messages) + summary_tokens
@@ -93,3 +103,94 @@ class MessageWindow:
         self._recent_messages = []
         self._rolling_summary = ""
         self._compaction_count = 0
+
+
+class SQLiteWindowStore:
+    """
+    SQLite-backed window snapshot store for resumable agent sessions (Phase 5).
+
+    Each session_id maps to one row containing the full window state as JSON.
+    The store is append-and-replace: saving overwrites the previous snapshot.
+
+    Usage:
+        store = SQLiteWindowStore("~/.vektori/windows.db")
+        await store.save("session-123", agent.window.snapshot())
+        # later...
+        state = await store.load("session-123")
+        if state:
+            agent.window.restore(state)
+    """
+
+    def __init__(self, path: str | Path = ":memory:") -> None:
+        self.path = str(path)
+        self._conn: sqlite3.Connection | None = None
+        self._initialized = False
+
+    async def save(self, session_id: str, state: WindowState) -> None:
+        await self._ensure_initialized()
+        assert self._conn is not None
+        payload = json.dumps({
+            "recent_messages": state.recent_messages,
+            "rolling_summary": state.rolling_summary,
+            "compaction_count": state.compaction_count,
+        })
+        self._conn.execute(
+            """
+            INSERT INTO window_snapshots (session_id, payload)
+            VALUES (?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET payload = excluded.payload,
+                                                   updated_at = CURRENT_TIMESTAMP
+            """,
+            (session_id, payload),
+        )
+        self._conn.commit()
+
+    async def load(self, session_id: str) -> WindowState | None:
+        await self._ensure_initialized()
+        assert self._conn is not None
+        row = self._conn.execute(
+            "SELECT payload FROM window_snapshots WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        data: dict[str, Any] = json.loads(row[0])
+        msgs = data.get("recent_messages", [])
+        return WindowState(
+            recent_messages=msgs,
+            rolling_summary=data.get("rolling_summary", ""),
+            estimated_tokens=estimate_tokens(msgs),
+            compaction_count=data.get("compaction_count", 0),
+        )
+
+    async def delete(self, session_id: str) -> None:
+        await self._ensure_initialized()
+        assert self._conn is not None
+        self._conn.execute(
+            "DELETE FROM window_snapshots WHERE session_id = ?", (session_id,)
+        )
+        self._conn.commit()
+
+    async def close(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+            self._initialized = False
+
+    async def _ensure_initialized(self) -> None:
+        if self._initialized:
+            return
+        if self.path != ":memory:":
+            Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(self.path)
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS window_snapshots (
+                session_id TEXT PRIMARY KEY,
+                payload TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        self._conn.commit()
+        self._initialized = True

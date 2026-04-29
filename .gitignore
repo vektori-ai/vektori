@@ -53,6 +53,17 @@ htmlcov/
 plans/
 .codex
 
+# GEPA / experiment artefacts (dashboard branch only)
+INTEGRATIONS_PLAN.md
+docs/MODAL_GEPA.md
+scripts/dspy_gepa_locomo.py
+scripts/eval_gepa_compare.py
+scripts/judge_gepa_compare.py
+scripts/modal_gepa_runner.py
+scripts/modal_vllm_server.py
+data/gepa_*
+data/locomo_*
+
 # OS
 .DS_Store
 Thumbs.db

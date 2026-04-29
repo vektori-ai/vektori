@@ -12,7 +12,7 @@ from uuid import uuid4
 from vektori.client import Vektori
 from vektori.context import AgentContextLoader
 from vektori.memory.profile import InMemoryProfileStore, ProfilePatch, ProfileStore, SQLiteProfileStore
-from vektori.memory.window import MessageWindow
+from vektori.memory.window import MessageWindow, SQLiteWindowStore
 from vektori.models.base import ChatModelProvider
 from vektori.prompts import build_prompt_result
 from vektori.retrieval.gate import should_retrieve
@@ -36,6 +36,7 @@ class AgentConfig:
     background_add: bool = True
     runtime_overrides: dict[str, Any] = field(default_factory=dict)
     profile_store_path: str | None = None
+    window_store_path: str | None = None  # Phase 5: path to SQLite window snapshot DB
 
 
 @dataclass
@@ -64,6 +65,7 @@ class VektoriAgent:
         config: AgentConfig | None = None,
         context_path: str | None = None,
         profile_store: ProfileStore | None = None,
+        window_store: SQLiteWindowStore | None = None,
     ) -> None:
         self.memory = memory
         self.model = model
@@ -73,6 +75,7 @@ class VektoriAgent:
         self.config = config or AgentConfig()
         self.context_loader = AgentContextLoader(context_path)
         self.profile_store = profile_store or self._build_profile_store()
+        self.window_store = window_store or self._build_window_store()
         self.window = MessageWindow(
             max_context_tokens=self.config.max_context_tokens,
             compaction_trigger_ratio=self.config.compaction_trigger_ratio,
@@ -116,11 +119,7 @@ class VektoriAgent:
         )
         messages = prompt_result.messages
 
-        completion = await self.model.complete(
-            messages,
-            max_tokens=self.config.reserve_response_tokens,
-            temperature=0.2,
-        )
+        completion, tool_calls_log = await self._run_model_with_tools(messages)
         assistant_content = completion.content or ""
         self.window.add("assistant", assistant_content)
 
@@ -166,7 +165,7 @@ class VektoriAgent:
             },
             summary_updated=summary_updated,
             profile_updates=profile_updates,
-            tool_calls=completion.tool_calls,
+            tool_calls=tool_calls_log,
             prompt_debug=prompt_result.prompt_debug,
             usage=completion.usage,
         )
@@ -190,10 +189,36 @@ class VektoriAgent:
     def reset_window(self) -> None:
         self.window.reset()
 
+    async def save_window(self) -> None:
+        """Persist current window state to the window store (Phase 5)."""
+        if self.window_store is None:
+            return
+        await self.window_store.save(self.session_id, self.window.snapshot())
+
+    async def resume_window(self, session_id: str | None = None) -> bool:
+        """
+        Restore a previously saved window snapshot.
+
+        Uses session_id if provided, otherwise self.session_id.
+        Returns True if a snapshot was found and restored.
+        """
+        if self.window_store is None:
+            return False
+        sid = session_id or self.session_id
+        state = await self.window_store.load(sid)
+        if state is None:
+            return False
+        self.window.restore(state)
+        if session_id and session_id != self.session_id:
+            self.session_id = session_id
+        return True
+
     async def close(self) -> None:
         if self._background_tasks:
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
         await self.profile_store.close()
+        if self.window_store is not None:
+            await self.window_store.close()
 
     async def _should_retrieve(self, user_message: str) -> tuple[bool, str]:
         if self.config.retrieve_on_every_turn:
@@ -214,6 +239,11 @@ class VektoriAgent:
             return SQLiteProfileStore(Path(self.config.profile_store_path))
         return InMemoryProfileStore()
 
+    def _build_window_store(self) -> SQLiteWindowStore | None:
+        if self.config.window_store_path:
+            return SQLiteWindowStore(self.config.window_store_path)
+        return None
+
     async def _learn_profile_patches(self, user_message: str) -> list[ProfilePatch]:
         if not self.config.enable_profile_learning:
             return []
@@ -224,6 +254,76 @@ class VektoriAgent:
 
         await self.profile_store.save(patch)
         return [patch]
+
+    async def _run_model_with_tools(
+        self,
+        messages: list[dict[str, Any]],
+    ) -> tuple[Any, list[dict[str, Any]]]:
+        """
+        Run the model, optionally executing tool calls for up to max_tool_round_trips.
+
+        Returns (final_completion, list_of_all_tool_call_records).
+        """
+        from vektori.models.base import ChatCompletionResult
+
+        tool_calls_log: list[dict[str, Any]] = []
+
+        if not self.config.enable_tool_calling:
+            completion = await self.model.complete(
+                messages,
+                max_tokens=self.config.reserve_response_tokens,
+                temperature=0.2,
+            )
+            return completion, tool_calls_log
+
+        from vektori.tools.memory import MEMORY_TOOLS, handle_tool_call
+
+        working_messages = list(messages)
+        completion: ChatCompletionResult | None = None
+
+        for _ in range(self.config.max_tool_round_trips + 1):
+            completion = await self.model.complete(
+                working_messages,
+                tools=MEMORY_TOOLS,
+                max_tokens=self.config.reserve_response_tokens,
+                temperature=0.2,
+            )
+
+            raw_calls = completion.tool_calls or []
+            if not raw_calls:
+                break
+
+            # Append assistant's tool-calling turn
+            working_messages.append({
+                "role": "assistant",
+                "content": completion.content or "",
+                "tool_calls": raw_calls,
+            })
+
+            # Execute each tool and append results
+            for call in raw_calls:
+                # Normalize across providers: OpenAI object vs dict
+                if hasattr(call, "function"):
+                    name = call.function.name
+                    import json as _json
+                    args = _json.loads(call.function.arguments or "{}")
+                    call_id = getattr(call, "id", name)
+                else:
+                    name = call.get("function", {}).get("name", "")
+                    import json as _json
+                    args = _json.loads(call.get("function", {}).get("arguments", "{}"))
+                    call_id = call.get("id", name)
+
+                result_text = await handle_tool_call(name, args, self)
+                tool_calls_log.append({"name": name, "args": args, "result": result_text})
+                working_messages.append({
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": result_text,
+                })
+
+        assert completion is not None
+        return completion, tool_calls_log
 
     def _extract_explicit_patch(self, user_message: str) -> ProfilePatch | None:
         observer_id = self.agent_id or "default-agent"

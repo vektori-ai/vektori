@@ -6,7 +6,7 @@ from vektori.memory.profile import (
     ProfileStore,
     SQLiteProfileStore,
 )
-from vektori.memory.window import MessageWindow, WindowState
+from vektori.memory.window import MessageWindow, SQLiteWindowStore, WindowState
 
 __all__ = [
     "InMemoryProfileStore",
@@ -14,5 +14,6 @@ __all__ = [
     "ProfilePatch",
     "ProfileStore",
     "SQLiteProfileStore",
+    "SQLiteWindowStore",
     "WindowState",
 ]
