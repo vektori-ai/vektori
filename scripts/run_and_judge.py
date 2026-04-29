@@ -69,6 +69,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--extraction-model", default="gemini:gemini-2.5-flash-lite")
     p.add_argument("--no-cache", action="store_true")
     p.add_argument("--cache-namespace", default=None)
+    p.add_argument("--qa-thinking-level", default=None,
+                   help="Thinking level for QA eval model: high/medium/low/minimal")
     # Judge args
     p.add_argument("--judge-model", default="gemini:gemini-2.5-flash-lite")
     p.add_argument("--judge-n", type=int, default=0,
@@ -97,6 +99,7 @@ async def _run_eval(args: argparse.Namespace, run_name: str, run_output_dir: str
         use_cache=not args.no_cache,
         cache_namespace=args.cache_namespace,
         use_ppr=not args.no_ppr,
+        qa_thinking_level=args.qa_thinking_level,
     )
 
     print(f"\n{'='*60}")
