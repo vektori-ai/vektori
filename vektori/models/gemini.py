@@ -43,10 +43,12 @@ class GeminiLLM(LLMProvider):
         max_retries: int = DEFAULT_MAX_RETRIES,
         initial_backoff: float = DEFAULT_INITIAL_BACKOFF,
         max_backoff: float = DEFAULT_MAX_BACKOFF,
+        json_mode: bool = True,
     ) -> None:
         self.model = model or DEFAULT_MODEL
         self._api_key = api_key
         self._thinking_level = thinking_level  # None = use model-based default
+        self._json_mode = json_mode
         self._client = None
         self.max_retries = max_retries
         self.initial_backoff = initial_backoff
@@ -94,10 +96,9 @@ class GeminiLLM(LLMProvider):
 
         client = self._get_client()
 
-        config_kwargs: dict[str, Any] = {
-            "temperature": 0.1,
-            "response_mime_type": "application/json",
-        }
+        config_kwargs: dict[str, Any] = {"temperature": 0.1}
+        if self._json_mode:
+            config_kwargs["response_mime_type"] = "application/json"
         if max_tokens is not None:
             config_kwargs["max_output_tokens"] = max_tokens
         thinking = self._thinking_config()

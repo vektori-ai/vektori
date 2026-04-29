@@ -166,6 +166,7 @@ class LoCoMoBenchmark:
         self._eval_llm = create_llm(
             self.config.eval_model,
             thinking_level=self.config.qa_thinking_level,
+            json_mode=False,
         )
         level = self.config.qa_thinking_level or "model-default"
         logger.info("Eval LLM: %s (thinking=%s)", self.config.eval_model, level)

@@ -108,12 +108,14 @@ async def generate_answer(
     )
     try:
         answer = (await llm.generate(prompt, max_tokens=max_tokens)).strip()
-        # Unwrap {"answer": "..."} JSON that some models (e.g. gemini) occasionally return
+        # Unwrap JSON-wrapped answers (safety net — should not trigger after json_mode fix)
         try:
             import json as _json
             parsed = _json.loads(answer)
             if isinstance(parsed, dict) and "answer" in parsed:
                 answer = str(parsed["answer"]).strip()
+            elif isinstance(parsed, list) and parsed and isinstance(parsed[0], dict) and "answer" in parsed[0]:
+                answer = str(parsed[0]["answer"]).strip()
         except Exception:
             # Fallback: regex extraction handles malformed/truncated JSON
             m = re.search(r'"answer"\s*:\s*"((?:[^"\\]|\\.)*)"', answer)
