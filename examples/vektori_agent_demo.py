@@ -11,11 +11,11 @@ from vektori.models.factory import create_chat_model
 async def main() -> None:
     memory = Vektori(
         embedding_model="openai:text-embedding-3-small",
-        extraction_model="openai:gpt-4o-mini",
+        extraction_model="litellm:gpt-4o-mini",
     )
     agent = VektoriAgent(
         memory=memory,
-        model=create_chat_model("openai:gpt-4o-mini"),
+        model=create_chat_model("litellm:gpt-4o-mini"),
         user_id="demo-user",
         agent_id="demo-agent",
     )

@@ -2,7 +2,7 @@
 
 import pytest
 
-from vektori.models.factory import create_embedder, create_llm
+from vektori.models.factory import CHAT_REGISTRY, create_chat_model, create_embedder, create_llm
 
 
 def test_create_openai_embedder():
@@ -65,3 +65,28 @@ def test_create_anthropic_llm():
 def test_unknown_llm_provider_raises():
     with pytest.raises(ValueError, match="Unknown LLM provider"):
         create_llm("nonexistent:model")
+
+
+def test_create_chat_model_litellm():
+    from vektori.models.litellm_provider import LiteLLMChatModel
+
+    model = create_chat_model("litellm:gpt-4o-mini")
+    assert isinstance(model, LiteLLMChatModel)
+    assert model.model == "gpt-4o-mini"
+
+
+def test_create_chat_model_openai():
+    from vektori.models.openai import OpenAIChatModel
+
+    model = create_chat_model("openai:gpt-4o-mini")
+    assert isinstance(model, OpenAIChatModel)
+    assert model.model == "gpt-4o-mini"
+
+
+def test_create_chat_model_litellm_is_in_registry():
+    assert "litellm" in CHAT_REGISTRY
+
+
+def test_create_chat_model_unknown_raises():
+    with pytest.raises(ValueError, match="Unknown chat provider"):
+        create_chat_model("nonexistent:model")

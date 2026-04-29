@@ -12,9 +12,9 @@ Run:
     OPENAI_API_KEY=sk-... python scripts/test_agent_e2e.py
 
 Optional env vars:
-    VEKTORI_MODEL          chat model string, default "openai:gpt-4o-mini"
+    VEKTORI_MODEL          chat model string, default "litellm:gpt-4o-mini"
     VEKTORI_EMBED_MODEL    embedding model string, default "openai:text-embedding-3-small"
-    VEKTORI_EXTRACT_MODEL  extraction model string, default "openai:gpt-4o-mini"
+    VEKTORI_EXTRACT_MODEL  extraction model string, default "litellm:gpt-4o-mini"
 """
 
 from __future__ import annotations
@@ -234,9 +234,9 @@ async def phase5_window_persistence(model_str: str, embed_str: str, extract_str:
 
 
 async def main() -> None:
-    model_str = os.environ.get("VEKTORI_MODEL", "openai:gpt-4o-mini")
+    model_str = os.environ.get("VEKTORI_MODEL", "litellm:gpt-4o-mini")
     embed_str = os.environ.get("VEKTORI_EMBED_MODEL", "openai:text-embedding-3-small")
-    extract_str = os.environ.get("VEKTORI_EXTRACT_MODEL", "openai:gpt-4o-mini")
+    extract_str = os.environ.get("VEKTORI_EXTRACT_MODEL", "litellm:gpt-4o-mini")
 
     if not os.environ.get("OPENAI_API_KEY"):
         print(f"{_RED}ERROR{_RESET}: OPENAI_API_KEY not set. Export it and re-run.")
