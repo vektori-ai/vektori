@@ -97,6 +97,11 @@ async def _main() -> None:
         help="Disable session extract cache for this run"
     )
     parser.add_argument(
+        "--qa-thinking-level", default=None,
+        help="Thinking level for QA eval model: high/medium/low/minimal (gemini-3 only). "
+             "None = model default (minimal). Use 'high' to test synthesis hypothesis."
+    )
+    parser.add_argument(
         "--cache-namespace", default=None,
         help="Optional cache namespace override to isolate cached extractions"
     )
@@ -130,6 +135,7 @@ async def _main() -> None:
         use_cache=not args.no_cache,
         cache_namespace=args.cache_namespace,
         use_ppr=not args.no_ppr,
+        qa_thinking_level=args.qa_thinking_level,
     )
 
     if max_q:

@@ -39,12 +39,14 @@ class GeminiLLM(LLMProvider):
         self,
         model: str | None = None,
         api_key: str | None = None,
+        thinking_level: str | None = None,
         max_retries: int = DEFAULT_MAX_RETRIES,
         initial_backoff: float = DEFAULT_INITIAL_BACKOFF,
         max_backoff: float = DEFAULT_MAX_BACKOFF,
     ) -> None:
         self.model = model or DEFAULT_MODEL
         self._api_key = api_key
+        self._thinking_level = thinking_level  # None = use model-based default
         self._client = None
         self.max_retries = max_retries
         self.initial_backoff = initial_backoff
@@ -73,10 +75,15 @@ class GeminiLLM(LLMProvider):
         return backoff * random.uniform(0.75, 1.25)
 
     def _thinking_config(self):
-        """Return ThinkingConfig for models that support it."""
         from google.genai import types
-        # gemini-3+ flash models use thinking_level; gemini-2.5 uses thinking_budget
-        if "gemini-3" in self.model or "gemini-3." in self.model:
+        # Explicit override takes priority
+        if self._thinking_level is not None:
+            if "gemini-2.5" in self.model:
+                budget = 0 if self._thinking_level in ("none", "minimal") else None
+                return types.ThinkingConfig(thinking_budget=budget)
+            return types.ThinkingConfig(thinking_level=self._thinking_level)
+        # Model-based defaults: suppress thinking for extraction to protect token budget
+        if "gemini-3" in self.model:
             return types.ThinkingConfig(thinking_level="minimal")
         if "gemini-2.5" in self.model:
             return types.ThinkingConfig(thinking_budget=0)

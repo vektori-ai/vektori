@@ -122,4 +122,4 @@ async def generate_answer(
         return answer
     except Exception as e:
         logger.warning("Answer generation failed: %s", e)
-        return "Unable to generate answer due to API error."
+        return "I don't have that information"

@@ -85,6 +85,7 @@ class LoCoMoConfig:
     # Evaluation
     eval_model: str = "gemini:gemini-2.5-flash-lite"
     qa_prompt_path: str | None = None
+    qa_thinking_level: str | None = None  # None=model default, "high"/"minimal"/etc.
 
     # Pilot mode — set to a small number to test before full run
     max_questions: int | None = None
@@ -114,6 +115,7 @@ class LoCoMoBenchmark:
         self._session_cache: SessionExtractCache | None = None
         self._checkpoint: BenchmarkCheckpoint | None = None
         self._qa_prompt_override = _load_qa_prompt_override(config.qa_prompt_path)
+        self._eval_llm = None
 
     # ── Setup ────────────────────────────────────────────────────────────────
 
@@ -123,6 +125,7 @@ class LoCoMoBenchmark:
         await self._load_dataset()
         await self._init_session_cache()
         self._init_checkpoint()
+        self._init_eval_llm()
         pilot_note = (
             f" [PILOT MODE: first {self.config.max_questions} questions only]"
             if self.config.max_questions else ""
@@ -157,6 +160,16 @@ class LoCoMoBenchmark:
         )
         await self.vektori_client._ensure_initialized()
         self.storage = self.vektori_client.db
+
+    def _init_eval_llm(self) -> None:
+        from vektori.models.factory import create_llm
+        self._eval_llm = create_llm(
+            self.config.eval_model,
+            thinking_level=self.config.qa_thinking_level,
+        )
+        level = self.config.qa_thinking_level or "model-default"
+        logger.info("Eval LLM: %s (thinking=%s)", self.config.eval_model, level)
+
 
     async def _load_dataset(self) -> None:
         filename = f"{self.config.dataset_name}.json"
@@ -452,7 +465,7 @@ class LoCoMoBenchmark:
         context = _format_retrieved_context(search_results)
 
         qa_t0 = time.perf_counter()
-        answer = await self._generate_answer(question, context, question_date)
+        answer = await self._generate_answer(question, context, question_date, question_type)
         qa_ms = (time.perf_counter() - qa_t0) * 1000
 
         return {
@@ -469,13 +482,14 @@ class LoCoMoBenchmark:
         }
 
     async def _generate_answer(
-        self, question: str, context: str, question_date: str = ""
+        self, question: str, context: str, question_date: str = "", question_type: str = ""
     ) -> str:
         return await generate_answer(
             question=question,
             context=context,
             question_date=question_date,
-            model=self.config.eval_model,
+            question_type=str(question_type),
+            llm=self._eval_llm,
             prompt_template=self._qa_prompt_override,
             max_tokens=2048,
         )
@@ -943,12 +957,6 @@ def _format_retrieved_context(search_results: Any) -> str:
             text = str(sy.get("text", str(sy))).strip()
             text = f"{text}{_relative_time_note(text, timestamp)}"
             lines.append(f"{i}. {date_prefix}{text}")
-
-    syntheses = search_results.get("syntheses") or []
-    if syntheses:
-        lines.append("\n## Syntheses")
-        for i, sy in enumerate(syntheses, 1):
-            lines.append(f"{i}. {sy.get('text', str(sy))}")
 
     sentences = search_results.get("sentences") or []
     if sentences:
