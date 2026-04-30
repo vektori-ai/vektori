@@ -29,12 +29,15 @@ DEFAULT_JUDGE_MODEL = "gemini:gemini-2.5-flash-lite"
 ABSTENTION_PHRASES = (
     "i don't have that information",
     "i do not have that information",
+    "i don't have any information",
+    "i do not have any information",
     "i don't have enough information",
     "i do not have enough information",
     "i cannot answer",
     "i can't answer",
     "cannot answer this",
     "not enough information",
+    "no information in the provided context",
     "information not available",
     "i don't know",
     "i do not know",
@@ -69,6 +72,10 @@ Rules:
 - For date answers, accept equivalent formats. These are always CORRECT:
   "2023-10-21" = "21 October 2023" = "October 21, 2023"
   "2022-11-10" = "10 November 2022" = "November 10, 2022"
+- Absolute dates that equal a relative expression are CORRECT. Verify the arithmetic before marking wrong:
+  "July 14, 2023" = "The Friday before 15 July 2023" (July 14 is a Friday)
+  "11 August 2023" = "The Friday before 14 August 2023" (August 11 is a Friday)
+  A model that gives the computed absolute date when the expected uses relative phrasing is CORRECT, not wrong.
 - Extra correct details do not make an answer wrong.
 
 JSON schema:
