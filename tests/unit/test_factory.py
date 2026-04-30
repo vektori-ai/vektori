@@ -3,7 +3,13 @@
 import pytest
 
 from vektori.models.anthropic import AnthropicLLM
-from vektori.models.factory import CHAT_REGISTRY, LLM_REGISTRY, create_chat_model, create_embedder, create_llm
+from vektori.models.factory import (
+    CHAT_REGISTRY,
+    LLM_REGISTRY,
+    create_chat_model,
+    create_embedder,
+    create_llm,
+)
 from vektori.models.nvidia import DEFAULT_EMBEDDING_MODEL, NvidiaEmbedder, NvidiaLLM
 from vektori.models.ollama import OllamaEmbedder, OllamaLLM
 from vektori.models.openai import OpenAIEmbedder, OpenAILLM

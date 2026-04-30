@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-import re
 from typing import Any
 from uuid import uuid4
 
 from vektori.client import Vektori
 from vektori.context import AgentContextLoader
-from vektori.memory.profile import InMemoryProfileStore, ProfilePatch, ProfileStore, SQLiteProfileStore
+from vektori.memory.profile import (
+    InMemoryProfileStore,
+    ProfilePatch,
+    ProfileStore,
+    SQLiteProfileStore,
+)
 from vektori.memory.window import MessageWindow, SQLiteWindowStore
 from vektori.models.base import ChatModelProvider
 from vektori.prompts import build_prompt_result

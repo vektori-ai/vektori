@@ -103,7 +103,7 @@ def score_and_rank(
                 meta = json.loads(meta)
             except Exception:
                 meta = {}
-        
+
         # Facts with explicit time markers (or explicit type="event") decay normally;
         # standing preferences decay much slower.
         is_event = "temporal_expr" in meta or meta.get("type") == "event"

@@ -11,7 +11,6 @@ from vektori.memory.profile import InMemoryProfileStore
 from vektori.models.base import ChatCompletionResult
 from vektori.tools.memory import MEMORY_TOOLS, handle_tool_call
 
-
 # — Tool schema tests —
 
 def test_memory_tools_has_three_tools():
@@ -70,8 +69,7 @@ async def test_handle_get_profile_empty():
 
 @pytest.mark.asyncio
 async def test_handle_get_profile_with_patches():
-    from datetime import datetime, timezone
-    from vektori.memory.profile import InMemoryProfileStore, ProfilePatch
+    from vektori.memory.profile import ProfilePatch
 
     store = InMemoryProfileStore()
     await store.save(ProfilePatch(

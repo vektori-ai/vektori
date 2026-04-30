@@ -7,8 +7,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Protocol
-from typing import Any
+from typing import Any, Protocol
 
 
 @dataclass

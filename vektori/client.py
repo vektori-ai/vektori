@@ -220,16 +220,16 @@ class Vektori:
         Maps source:source_id -> deterministic session_id so re-ingestion upserts, not duplicates.
         """
         session_id = f"{source}:{source_id}"
-        
+
         doc_metadata = metadata or {}
         doc_metadata.update({
             "source": source,
             "source_id": source_id,
             "type": "document",
         })
-        
+
         messages = [{"role": "user", "content": content}]
-        
+
         return await self.add(
             messages=messages,
             session_id=session_id,

@@ -3,7 +3,7 @@
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 class AuthStore:
@@ -20,13 +20,13 @@ class AuthStore:
     def _get_path(self, user_id: str, platform: str) -> Path:
         return self.base_dir / user_id / f"{platform}.json"
 
-    def get_token(self, user_id: str, platform: str) -> Optional[Dict[str, Any]]:
+    def get_token(self, user_id: str, platform: str) -> dict[str, Any] | None:
         """Retrieve the authentication details for a specific user and platform."""
         path = self._get_path(user_id, platform)
         if not path.exists():
             return None
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 return json.load(f)
         except json.JSONDecodeError:
             return None
@@ -36,9 +36,9 @@ class AuthStore:
         user_id: str,
         platform: str,
         access_token: str,
-        refresh_token: Optional[str] = None,
-        expiry: Optional[str] = None,
-        scopes: Optional[List[str]] = None,
+        refresh_token: str | None = None,
+        expiry: str | None = None,
+        scopes: list[str] | None = None,
     ) -> None:
         """Save the authentication details securely."""
         path = self._get_path(user_id, platform)

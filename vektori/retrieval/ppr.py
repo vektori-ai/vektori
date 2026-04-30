@@ -43,10 +43,10 @@ def run_ppr(
         return {}
 
     node_idx: dict[str, int] = {nid: i for i, nid in enumerate(all_nodes)}
-    N = len(all_nodes)
+    n = len(all_nodes)
 
     # Adjacency lists (undirected)
-    adj: list[list[int]] = [[] for _ in range(N)]
+    adj: list[list[int]] = [[] for _ in range(n)]
 
     for edge in fact_edges:
         src, tgt = edge["source_id"], edge["target_id"]
@@ -70,7 +70,7 @@ def run_ppr(
 
     # Personalization vector — seed weights from cosine scores
     total = sum(seed_scores.values()) or 1.0
-    e_u = [0.0] * N
+    e_u = [0.0] * n
     for fid, score in seed_scores.items():
         if fid in node_idx:
             e_u[node_idx[fid]] = score / total
@@ -78,8 +78,8 @@ def run_ppr(
     # Power iteration: p = alpha * e_u + (1-alpha) * A^T D^-1 p
     p = e_u[:]
     for _ in range(iterations):
-        p_new = [alpha * e_u[i] for i in range(N)]
-        for i in range(N):
+        p_new = [alpha * e_u[i] for i in range(n)]
+        for i in range(n):
             nbrs = adj[i]
             if nbrs and p[i] > 0:
                 contrib = (1.0 - alpha) * p[i] / len(nbrs)
@@ -87,7 +87,7 @@ def run_ppr(
                     p_new[j] += contrib
         p = p_new
 
-    return {all_nodes[i]: p[i] for i in range(N)}
+    return {all_nodes[i]: p[i] for i in range(n)}
 
 
 def rank_episodes_by_ppr(

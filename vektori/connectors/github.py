@@ -57,19 +57,19 @@ class GitHubConnector(Connector):
 
         try:
             repo = g.get_repo(self.repo_name)
-            
+
             kwargs: dict[str, Any] = {"state": "all"}
             if since:
                 kwargs["since"] = since
-                
+
             issues = repo.get_issues(**kwargs)
 
             for issue in issues:
                 # We want to skip raw pull requests if we just want issues
                 # (PyGithub returns PRs as issues too, but we can detect them)
-                
+
                 source_id = f"{self.repo_name}/issues/{issue.number}"
-                
+
                 # Combine issue body and comments into a readable chronological "document"
                 content_parts = [
                     f"Title: {issue.title}",
@@ -77,16 +77,16 @@ class GitHubConnector(Connector):
                     f"Author: {issue.user.login}",
                     f"Body:\n{issue.body or 'No description provided.'}",
                 ]
-                
+
                 comments = issue.get_comments()
                 for comment in comments:
                     content_parts.append(
                         f"\n--- Comment by {comment.user.login} at {comment.created_at} ---\n{comment.body}"
                     )
-                
+
                 document_content = "\n".join(content_parts)
                 document_time = issue.updated_at.replace(tzinfo=timezone.utc)
-                
+
                 # Insert into Vektori
                 await vektori.add_document(
                     content=document_content,
@@ -103,7 +103,7 @@ class GitHubConnector(Connector):
                         "is_pr": issue.pull_request is not None,
                     }
                 )
-                
+
                 count += 1
                 logger.debug(f"Ingested GitHub issue: {source_id}")
 

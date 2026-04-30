@@ -10,7 +10,6 @@ from vektori.agent import AgentConfig, VektoriAgent
 from vektori.memory.window import MessageWindow, SQLiteWindowStore, WindowState
 from vektori.models.base import ChatCompletionResult
 
-
 # — SQLiteWindowStore tests —
 
 @pytest.mark.asyncio

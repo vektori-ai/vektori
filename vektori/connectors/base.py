@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, Protocol
+from collections.abc import Callable
 from datetime import datetime
+from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     from vektori.client import Vektori
