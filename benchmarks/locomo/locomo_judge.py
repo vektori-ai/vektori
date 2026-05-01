@@ -72,10 +72,12 @@ Rules:
 - For date answers, accept equivalent formats. These are always CORRECT:
   "2023-10-21" = "21 October 2023" = "October 21, 2023"
   "2022-11-10" = "10 November 2022" = "November 10, 2022"
-- Absolute dates that equal a relative expression are CORRECT. Verify the arithmetic before marking wrong:
-  "July 14, 2023" = "The Friday before 15 July 2023" (July 14 is a Friday)
-  "11 August 2023" = "The Friday before 14 August 2023" (August 11 is a Friday)
+- Absolute dates that equal a relative expression are CORRECT. To check: compute the calendar date the relative expression describes, then compare. If they land on the same day (±0), it is CORRECT. Show your arithmetic before concluding.
+  "July 14, 2023" = "The Friday before 15 July 2023" (July 14 is a Friday ✓)
+  "11 August 2023" = "The Friday before 14 August 2023" (August 11 is a Friday ✓)
+  "2023-07-17" = "The weekend before 17 July 2023" (July 17 is itself a Monday — weekend is July 15/16; mark accordingly)
   A model that gives the computed absolute date when the expected uses relative phrasing is CORRECT, not wrong.
+- If the MODEL ANSWER is short (under 10 words) — a bare name, date, quantity, or phrase — do NOT invent reasons it is wrong. Only ask: does this core fact match the expected answer? If yes → CORRECT. Do not fabricate attribution errors, entity confusions, or "context doesn't mention this" claims for a bare answer you cannot verify. A bare answer that matches the expected answer is CORRECT.
 - Extra correct details do not make an answer wrong.
 
 JSON schema:
