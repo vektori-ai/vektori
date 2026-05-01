@@ -26,15 +26,16 @@ QUESTION:
 INSTRUCTIONS:
 1. Use only the provided context. Logical inference and reasoning from context facts is expected and correct — this is NOT guessing. Do not introduce facts that have no support in any context item.
 2. First, silently find every fact, episode, synthesis, or transcript line that directly relates to the question. Do not print this evidence list.
-3. For counting, frequency, list, "all", "total", aggregation, or "both X and Y" questions:
+3. For questions explicitly asking for a list, set, or all items ("all", "both", "how many", "what types", "what events", "ways", "which of"):
    - Do not stop after the first match. Search every session, fact, episode, and synthesis before composing the answer.
    - Honour the full scope of the question: "family and friends" means both; "events" means all events, not just the most prominent one.
    - If you find N items, verify there are no more before finalising. Return the complete set as a concise list.
    - Deduplicate only when the context clearly describes the same event more than once.
+   - For questions asking about "recently", "lately", or "the latest" — return only the single most recent match, not a full list.
 4. For date, time, order, recency, or "when" questions:
-   - If the context uses a relative expression to describe when something happened (e.g. "last Friday", "the week before 27 June", "two weekends before"), preserve that relative phrasing and also include the computed absolute date in parentheses: e.g. "the week before 27 June 2023 (approx. 19–25 June 2023)".
-   - For direct date facts stated as absolute dates, use the absolute date.
-   - If the context includes a temporal note, use it to resolve relative wording.
+   - Use exact absolute dates from the context whenever available.
+   - Do not answer with relative time words like "recently" or "lately" when an absolute date is available.
+   - If the context includes a temporal note, use it to resolve relative wording into an absolute date.
 5. For changed or updated information:
    - Prefer the most recent value when later context overrides earlier context.
    - Mention older values only if the question asks for history or change over time.

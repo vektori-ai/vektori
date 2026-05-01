@@ -934,7 +934,7 @@ def _format_retrieved_context(search_results: Any) -> str:
             date = _date_prefix(timestamp)
             date_prefix = f"[{date}] " if date else ""
             text = str(fact.get("text", str(fact))).strip()
-            text = f"{text}{_relative_time_note(text, timestamp)}"
+            text = f"{text}{_relative_time_note(text, _event_time_only(fact))}"
             lines.append(f"{i}. {date_prefix}{text}")
 
     episodes = search_results.get("episodes") or []
@@ -945,7 +945,7 @@ def _format_retrieved_context(search_results: Any) -> str:
             date = _date_prefix(timestamp)
             date_prefix = f"[{date}] " if date else ""
             text = str(ep.get("text", str(ep))).strip()
-            text = f"{text}{_relative_time_note(text, timestamp)}"
+            text = f"{text}{_relative_time_note(text, _event_time_only(ep))}"
             lines.append(f"{i}. {date_prefix}{text}")
 
     syntheses = search_results.get("syntheses") or []
@@ -956,7 +956,7 @@ def _format_retrieved_context(search_results: Any) -> str:
             date = _date_prefix(timestamp)
             date_prefix = f"[{date}] " if date else ""
             text = str(sy.get("text", str(sy))).strip()
-            text = f"{text}{_relative_time_note(text, timestamp)}"
+            text = f"{text}{_relative_time_note(text, _event_time_only(sy))}"
             lines.append(f"{i}. {date_prefix}{text}")
 
     sentences = search_results.get("sentences") or []
@@ -986,7 +986,7 @@ def _format_retrieved_context(search_results: Any) -> str:
                 prefix = f"[{role.upper()}] " if role else ""
                 timestamp = _timestamp_for_context(sent)
                 text = str(sent.get("text", str(sent))).strip()
-                text = f"{text}{_relative_time_note(text, timestamp)}"
+                text = f"{text}{_relative_time_note(text, _event_time_only(sent))}"
                 lines.append(f"  {prefix}{text}")
 
     return "\n".join(lines) if lines else "No relevant context retrieved."
