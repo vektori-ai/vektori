@@ -75,6 +75,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--judge-model", default="gemini:gemini-2.5-flash-lite")
     p.add_argument("--judge-n", type=int, default=0,
                    help="How many answers to judge (0 = all, default)")
+    p.add_argument("--judge-concurrency", type=int, default=5,
+                   help="Max concurrent judge requests (default 5)")
     return p.parse_args()
 
 
@@ -127,14 +129,16 @@ async def _run_judge(
     run_output_dir: str,
     judge_model: str,
     judge_n: int,
+    judge_concurrency: int = 5,
 ) -> dict:
     from benchmarks.locomo.locomo_judge import JudgeConfig, run as judge_run
 
     print(f"\n{'='*60}")
     print(f"STEP 2 — JUDGE")
-    print(f"  input  : {full_results}")
-    print(f"  model  : {judge_model}")
-    print(f"  sample : {'ALL' if judge_n <= 0 else judge_n}")
+    print(f"  input       : {full_results}")
+    print(f"  model       : {judge_model}")
+    print(f"  sample      : {'ALL' if judge_n <= 0 else judge_n}")
+    print(f"  concurrency : {judge_concurrency}")
     print(f"{'='*60}\n")
 
     config = JudgeConfig(
@@ -142,6 +146,7 @@ async def _run_judge(
         judge_model=judge_model,
         n=judge_n if judge_n > 0 else 0,
         output_dir=run_output_dir,
+        concurrency=judge_concurrency,
     )
 
     return await judge_run(config)
@@ -207,6 +212,7 @@ async def main() -> None:
         run_output_dir,
         args.judge_model,
         args.judge_n,
+        args.judge_concurrency,
     )
     _print_scorecard(judge_output, run_name, ppr_on=not args.no_ppr)
 
