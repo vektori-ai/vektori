@@ -24,7 +24,7 @@ from vektori.models.factory import create_llm
 logger = logging.getLogger("locomo_judge")
 
 VALID_VERDICTS = {"CORRECT", "PARTIALLY_CORRECT", "WRONG", "ABSTAINED"}
-DEFAULT_JUDGE_MODEL = "gemini:gemini-2.5-flash-lite"
+DEFAULT_JUDGE_MODEL = "gemini:gemini-3-flash-preview"
 
 ABSTENTION_PHRASES = (
     "i don't have that information",

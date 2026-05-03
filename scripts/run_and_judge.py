@@ -72,7 +72,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--qa-thinking-level", default=None,
                    help="Thinking level for QA eval model: high/medium/low/minimal")
     # Judge args
-    p.add_argument("--judge-model", default="gemini:gemini-2.5-flash-lite")
+    p.add_argument("--judge-model", default="gemini:gemini-3-flash-preview")
     p.add_argument("--judge-n", type=int, default=0,
                    help="How many answers to judge (0 = all, default)")
     p.add_argument("--judge-concurrency", type=int, default=5,
