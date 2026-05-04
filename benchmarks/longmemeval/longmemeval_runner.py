@@ -74,12 +74,15 @@ class BenchmarkConfig:
 
     # Retrieval
     retrieval_depth: str = "l1"  # l0 | l1 | l2
-    top_k: int = 10
+    top_k: int = 15
     context_window: int = 3
 
     # Processing
     batch_size: int = 8
     max_workers: int = 4
+
+    # Cache
+    use_cache: bool = True
 
     # Output
     output_dir: str = "benchmark_results"
@@ -107,6 +110,7 @@ class LongMemEvalBenchmark:
 
         self._session_cache: SessionExtractCache | None = None
         self._checkpoint: BenchmarkCheckpoint | None = None
+        self._eval_llm = None
 
     # ── Setup ────────────────────────────────────────────────────────────────
 
@@ -116,7 +120,13 @@ class LongMemEvalBenchmark:
         await self._load_dataset()
         await self._init_session_cache()
         self._init_checkpoint()
+        self._init_eval_llm()
         logger.info("Setup complete — %d questions in dataset", len(self.dataset))
+
+    def _init_eval_llm(self) -> None:
+        from vektori.models.factory import create_llm
+        self._eval_llm = create_llm(self.config.eval_model)
+        logger.info("Eval LLM: %s", self.config.eval_model)
 
     async def _init_vektori(self) -> None:
         from vektori import Vektori
@@ -256,7 +266,9 @@ class LongMemEvalBenchmark:
             session_date = haystack_dates[i] if i < len(haystack_dates) else None
             session_time = _parse_date(session_date) if session_date else None
 
-            cached_entry = await self._session_cache.get(hsid)
+            cached_entry = (
+                await self._session_cache.get(hsid) if self.config.use_cache else None
+            )
             if cached_entry is not None:
                 await self._replay_session(
                     session, hsid, user_id, session_time, session_date, cached_entry
@@ -265,7 +277,7 @@ class LongMemEvalBenchmark:
                 new_facts, new_episodes = await self._full_ingest_session(
                     session, hsid, user_id, session_time, session_date
                 )
-                if new_facts:  # don't cache failed/empty extractions — allow retry on next run
+                if new_facts and self.config.use_cache:
                     await self._session_cache.put(hsid, new_facts, episodes=new_episodes)
 
     async def _replay_session(
@@ -417,6 +429,12 @@ class LongMemEvalBenchmark:
 
         lines: list[str] = []
 
+        episodes = search_results.get("episodes") or []
+        if episodes:
+            lines.append("## Episodes")
+            for i, ep in enumerate(episodes, 1):
+                lines.append(f"{i}. {ep.get('text', str(ep))}")
+
         facts = search_results.get("facts") or []
         if facts:
             # Sort chronologically so the LLM can reason about temporal order
@@ -424,19 +442,13 @@ class LongMemEvalBenchmark:
                 facts,
                 key=lambda f: f.get("event_time") or f.get("created_at") or "",
             )
-            lines.append("## Facts")
+            lines.append("\n## Facts")
             for i, fact in enumerate(facts, 1):
                 date_prefix = ""
                 ts = fact.get("event_time") or fact.get("created_at") or ""
                 if ts:
                     date_prefix = f"[{str(ts)[:10]}] "
                 lines.append(f"{i}. {date_prefix}{fact.get('text', str(fact))}")
-
-        episodes = search_results.get("episodes") or []
-        if episodes:
-            lines.append("\n## Episodes")
-            for i, ep in enumerate(episodes, 1):
-                lines.append(f"{i}. {ep.get('text', str(ep))}")
 
         sentences = search_results.get("sentences") or []
         if sentences:
@@ -731,11 +743,13 @@ async def main() -> None:
     parser.add_argument("--eval-model", default="gemini:gemini-2.5-flash-lite")
     parser.add_argument("--output-dir", default="benchmark_results")
     parser.add_argument("--data-dir", default="data")
-    parser.add_argument("--top-k", type=int, default=10)
+    parser.add_argument("--top-k", type=int, default=15)
     parser.add_argument(
         "--run-name",
         help="Name for this run (also used to locate its checkpoint for resume)",
     )
+    parser.add_argument("--no-cache", action="store_true",
+                        help="Bypass session extract cache — forces fresh LLM extraction")
 
     args = parser.parse_args()
 
@@ -749,6 +763,7 @@ async def main() -> None:
         data_dir=args.data_dir,
         top_k=args.top_k,
         run_name=args.run_name,
+        use_cache=not args.no_cache,
     )
 
     logger.info("Starting LongMemEval benchmark — config: %s", config)
