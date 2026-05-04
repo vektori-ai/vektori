@@ -744,6 +744,11 @@ async def main() -> None:
     )
     parser.add_argument("--no-cache", action="store_true",
                         help="Bypass session extract cache — forces fresh LLM extraction")
+    parser.add_argument("--storage-backend", default="sqlite",
+                        choices=["sqlite", "memory"],
+                        help="Vektori storage backend (default: sqlite)")
+    parser.add_argument("--database-url", default=None,
+                        help="SQLite path or postgres URL (default: ~/.vektori/vektori.db)")
 
     args = parser.parse_args()
 
@@ -758,6 +763,8 @@ async def main() -> None:
         top_k=args.top_k,
         run_name=args.run_name,
         use_cache=not args.no_cache,
+        storage_backend=args.storage_backend,
+        database_url=args.database_url,
     )
 
     logger.info("Starting LongMemEval benchmark — config: %s", config)
