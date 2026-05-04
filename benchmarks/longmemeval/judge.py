@@ -48,7 +48,7 @@ logger = logging.getLogger("judge")
 # Defaults
 # ---------------------------------------------------------------------------
 
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash-lite"
+DEFAULT_GEMINI_MODEL = "gemini-3-flash-preview"
 DEFAULT_LMSTUDIO_MODEL = "meta-llama-3.1-8b-instruct"
 DEFAULT_LMSTUDIO_BASE_URL = "http://localhost:1234/v1"
 
@@ -68,6 +68,7 @@ class JudgeConfig:
     output_dir: str = "benchmark_results"
     seed: int = 42
     qids: list[str] = field(default_factory=list)
+    concurrency: int = 5
 
     def __post_init__(self) -> None:
         if not self.model:
@@ -220,16 +221,18 @@ def _select_entries(
 # ---------------------------------------------------------------------------
 
 
-async def _call_gemini(prompt: str, model: str) -> str:
-    """Call Gemini via existing GeminiLLM provider."""
-    # Import here so lmstudio-only users don't need google-generativeai
+async def _call_gemini(prompt: str, model: str, llm: Any = None) -> str:
+    """Call Gemini via existing GeminiLLM provider.
+
+    Pass a pre-built ``llm`` instance to avoid creating one per call.
+    """
     import os
     import sys
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from vektori.models.gemini import GeminiLLM
-
-    llm = GeminiLLM(model=model, api_key=os.environ.get("GOOGLE_API_KEY"))
+    if llm is None:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+        from vektori.models.gemini import GeminiLLM
+        llm = GeminiLLM(model=model, api_key=os.environ.get("GOOGLE_API_KEY"))
     return await llm.generate(prompt, max_tokens=300)
 
 
@@ -255,11 +258,12 @@ async def call_judge(
     provider: str,
     model: str,
     lmstudio_base_url: str = DEFAULT_LMSTUDIO_BASE_URL,
+    llm: Any = None,
 ) -> tuple[str, float]:
     """Call the judge LLM and return (raw_response, latency_ms)."""
     t0 = time.perf_counter()
     if provider == "gemini":
-        raw = await _call_gemini(prompt, model)
+        raw = await _call_gemini(prompt, model, llm=llm)
     elif provider == "lmstudio":
         raw = await _call_lmstudio(prompt, model, lmstudio_base_url)
     else:
@@ -346,9 +350,10 @@ async def evaluate_entry(
     entry: dict[str, Any],
     provider: str,
     model: str,
+    llm: Any = None,
 ) -> dict[str, Any]:
     prompt = build_prompt(entry)
-    raw, latency_ms = await call_judge(prompt, provider, model)
+    raw, latency_ms = await call_judge(prompt, provider, model, llm=llm)
     verdict = parse_verdict(raw, latency_ms)
 
     if is_abs_question_type(entry.get("question_type")) and is_abstention_answer(
@@ -483,22 +488,35 @@ async def run(config: JudgeConfig) -> list[dict[str, Any]]:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"\n{_BOLD}LLM-as-a-Judge  |  provider={config.provider}  model={config.model}{_RESET}")
+    print(f"\n{_BOLD}LLM-as-a-Judge  |  provider={config.provider}  model={config.model}  concurrency={config.concurrency}{_RESET}")
     if config.qids:
         print(f"Evaluating {len(sample)} questions from {cp_path.name} (explicit QIDs)\n")
     else:
         print(f"Evaluating {len(sample)} questions from {cp_path.name}\n")
 
-    results: list[dict[str, Any]] = []
+    # Build one LLM instance to share across all concurrent calls
+    import os
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    shared_llm: Any = None
+    if config.provider == "gemini":
+        from vektori.models.gemini import GeminiLLM
+        shared_llm = GeminiLLM(model=config.model, api_key=os.environ.get("GOOGLE_API_KEY"))
+
+    results: list[dict[str, Any] | None] = [None] * len(sample)
+    sem = asyncio.Semaphore(config.concurrency)
     t_start = time.perf_counter()
 
-    for i, entry in enumerate(sample, 1):
-        result = await evaluate_entry(entry, config.provider, config.model)
-        results.append(result)
-        print_entry_result(i, result, len(sample))
+    async def _judge_one(idx: int, entry: dict[str, Any]) -> None:
+        async with sem:
+            result = await evaluate_entry(entry, config.provider, config.model, llm=shared_llm)
+            results[idx] = result
+            print_entry_result(idx + 1, result, len(sample))
 
+    await asyncio.gather(*[_judge_one(i, e) for i, e in enumerate(sample)])
     total_s = time.perf_counter() - t_start
-    print_summary(results, config, total_s)
+    results_clean: list[dict[str, Any]] = [r for r in results if r is not None]
+    print_summary(results_clean, config, total_s)
 
     # Save output
     out_dir = Path(config.output_dir)
@@ -507,28 +525,28 @@ async def run(config: JudgeConfig) -> list[dict[str, Any]]:
     out_path = out_dir / f"judge_{config.provider}_{ts}.json"
 
     summary = {
-        "total": len(results),
-        "correct": sum(1 for r in results if r["verdict"] == "CORRECT"),
-        "partially_correct": sum(1 for r in results if r["verdict"] == "PARTIALLY_CORRECT"),
-        "wrong": sum(1 for r in results if r["verdict"] == "WRONG"),
-        "abstained": sum(1 for r in results if r["verdict"] == "ABSTAINED"),
-        "context_has_answer": sum(1 for r in results if r["context_has_answer"]),
-        "qa_failure": sum(1 for r in results if r["failure_mode"] == "QA_FAILURE"),
-        "retrieval_failure": sum(1 for r in results if r["failure_mode"] == "RETRIEVAL_FAILURE"),
-        "parse_errors": sum(1 for r in results if r.get("parse_error")),
+        "total": len(results_clean),
+        "correct": sum(1 for r in results_clean if r["verdict"] == "CORRECT"),
+        "partially_correct": sum(1 for r in results_clean if r["verdict"] == "PARTIALLY_CORRECT"),
+        "wrong": sum(1 for r in results_clean if r["verdict"] == "WRONG"),
+        "abstained": sum(1 for r in results_clean if r["verdict"] == "ABSTAINED"),
+        "context_has_answer": sum(1 for r in results_clean if r["context_has_answer"]),
+        "qa_failure": sum(1 for r in results_clean if r["failure_mode"] == "QA_FAILURE"),
+        "retrieval_failure": sum(1 for r in results_clean if r["failure_mode"] == "RETRIEVAL_FAILURE"),
+        "parse_errors": sum(1 for r in results_clean if r.get("parse_error")),
         "total_time_s": round(total_s, 2),
-        "avg_latency_ms": round(sum(r["latency_ms"] for r in results) / len(results), 1) if results else 0,
+        "avg_latency_ms": round(sum(r["latency_ms"] for r in results_clean) / len(results_clean), 1) if results_clean else 0,
     }
 
     output = {
         "config": asdict(config),
-        "results": results,
+        "results": results_clean,
         "summary": summary,
     }
     out_path.write_text(json.dumps(output, indent=2), encoding="utf-8")
     print(f"\nResults saved → {out_path}")
 
-    return results
+    return results_clean
 
 
 # ---------------------------------------------------------------------------
@@ -583,6 +601,12 @@ def main() -> None:
         default="",
         help="Path to file containing question IDs (one per line; '#' comments allowed)",
     )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=5,
+        help="Max concurrent judge requests (default: 5)",
+    )
     args = parser.parse_args()
 
     try:
@@ -598,6 +622,7 @@ def main() -> None:
         seed=args.seed,
         output_dir=args.output_dir,
         qids=qids,
+        concurrency=args.concurrency,
     )
 
     asyncio.run(run(config))
