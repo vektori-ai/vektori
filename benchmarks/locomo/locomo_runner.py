@@ -905,7 +905,15 @@ def _relative_time_note(text: str, timestamp: Any) -> str:
         if phrase not in lower:
             continue
         if kind == "anchor":
-            notes.append(f'"{phrase}" anchored to session date {reference_date.isoformat()}')
+            if phrase in ("recently", "lately", "earlier this week", "later this week"):
+                prior_start = (reference_dt - timedelta(days=7)).date().isoformat()
+                prior_end   = (reference_dt - timedelta(days=1)).date().isoformat()
+                notes.append(
+                    f'"{phrase}" → event occurred approximately {prior_start} to {prior_end} '
+                    f'(days/weeks BEFORE session date {reference_date.isoformat()}, not on it)'
+                )
+            else:
+                notes.append(f'"{phrase}" anchored to session date {reference_date.isoformat()}')
         elif kind == "year":
             delta_y = -1 if phrase.startswith("last") else 1
             resolved_year = reference_dt.replace(year=reference_dt.year + delta_y).year
