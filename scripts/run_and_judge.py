@@ -72,9 +72,11 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--qa-thinking-level", default=None,
                    help="Thinking level for QA eval model: high/medium/low/minimal")
     # Judge args
-    p.add_argument("--judge-model", default="gemini:gemini-2.5-flash-lite")
+    p.add_argument("--judge-model", default="gemini:gemini-3-flash-preview")
     p.add_argument("--judge-n", type=int, default=0,
                    help="How many answers to judge (0 = all, default)")
+    p.add_argument("--judge-concurrency", type=int, default=5,
+                   help="Max concurrent judge requests (default 5)")
     return p.parse_args()
 
 
@@ -127,14 +129,16 @@ async def _run_judge(
     run_output_dir: str,
     judge_model: str,
     judge_n: int,
+    judge_concurrency: int = 5,
 ) -> dict:
     from benchmarks.locomo.locomo_judge import JudgeConfig, run as judge_run
 
     print(f"\n{'='*60}")
     print(f"STEP 2 — JUDGE")
-    print(f"  input  : {full_results}")
-    print(f"  model  : {judge_model}")
-    print(f"  sample : {'ALL' if judge_n <= 0 else judge_n}")
+    print(f"  input       : {full_results}")
+    print(f"  model       : {judge_model}")
+    print(f"  sample      : {'ALL' if judge_n <= 0 else judge_n}")
+    print(f"  concurrency : {judge_concurrency}")
     print(f"{'='*60}\n")
 
     config = JudgeConfig(
@@ -142,6 +146,7 @@ async def _run_judge(
         judge_model=judge_model,
         n=judge_n if judge_n > 0 else 0,
         output_dir=run_output_dir,
+        concurrency=judge_concurrency,
     )
 
     return await judge_run(config)
@@ -160,9 +165,13 @@ def _print_scorecard(judge_output: dict, run_name: str, ppr_on: bool) -> None:
 
     correct_pct = 100 * s.get("correct_rate", 0)
     combined_pct = 100 * s.get("combined_rate", 0)
+    precision_pct = 100 * s.get("answer_precision", 0)
+    recall_pct = 100 * s.get("answer_recall", 0)
+    ret_recall_pct = 100 * s.get("retrieval_recall", 0)
     ctx_pct = 100 * s.get("context_has_answer_rate", 0)
     qa_fail = s.get("qa_failure", 0)
     ret_fail = s.get("retrieval_failure", 0)
+    answered = s.get("answered", total - abstained)
 
     print(f"\n{'='*60}")
     print(f"FINAL SCORECARD — {run_name}")
@@ -174,6 +183,10 @@ def _print_scorecard(judge_output: dict, run_name: str, ppr_on: bool) -> None:
     print(f"  Combined C+PC : {combined:>4}  ({combined_pct:.1f}%)")
     print(f"  Wrong         : {wrong:>4}")
     print(f"  Abstained     : {abstained:>4}")
+    print(f"  Answered      : {answered:>4}")
+    print(f"  Ans Precision : {precision_pct:.1f}%  (correct / answered)")
+    print(f"  Ans Recall    : {recall_pct:.1f}%  (correct / total)")
+    print(f"  Ret Recall    : {ret_recall_pct:.1f}%  (ctx has answer / total)")
     print(f"  Context OK    : {s.get('context_has_answer'):>4}  ({ctx_pct:.1f}%)")
     print(f"  QA failures   : {qa_fail}")
     print(f"  Retrieval fail: {ret_fail}")
@@ -207,6 +220,7 @@ async def main() -> None:
         run_output_dir,
         args.judge_model,
         args.judge_n,
+        args.judge_concurrency,
     )
     _print_scorecard(judge_output, run_name, ppr_on=not args.no_ppr)
 

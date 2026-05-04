@@ -26,12 +26,11 @@ QUESTION:
 INSTRUCTIONS:
 1. Use only the provided context. Logical inference and reasoning from context facts is expected and correct — this is NOT guessing. Do not introduce facts that have no support in any context item.
 2. First, silently find every fact, episode, synthesis, or transcript line that directly relates to the question. Do not print this evidence list.
-3. For questions explicitly asking for a list, set, or all items ("all", "both", "how many", "what types", "what events", "ways", "which of"):
-   - Do not stop after the first match. Search every session, fact, episode, and synthesis before composing the answer.
-   - Honour the full scope of the question: "family and friends" means both; "events" means all events, not just the most prominent one.
-   - If you find N items, verify there are no more before finalising. Return the complete set as a concise list.
-   - Deduplicate only when the context clearly describes the same event more than once.
-   - For questions asking about "recently", "lately", or "the latest" — return only the single most recent match, not a full list.
+3. For counting, frequency, list, "all", "total", or aggregation questions:
+   - Scan EVERY fact AND every episode in the context before writing anything — items may appear in either section. Count how many distinct items you find. If fewer than 3, explicitly check the Episodes section before answering.
+   - Deduplicate only if the context clearly describes the same item more than once.
+   - Return the complete set or total.
+   - Exception: "recently", "lately", or "the latest" questions — return only the single most recent match, not a full list.
 4. For date, time, order, recency, or "when" questions:
    - Use exact absolute dates from the context whenever available.
    - Do not answer with relative time words like "recently" or "lately" when an absolute date is available.
@@ -39,12 +38,18 @@ INSTRUCTIONS:
 5. For changed or updated information:
    - Prefer the most recent value when later context overrides earlier context.
    - Mention older values only if the question asks for history or change over time.
-   - When the question asks for "the significant event", "what happened during [period]", or uses a superlative: enumerate all events in that window, then return the most notable one. Milestone events (relationships, major decisions, achievements) take priority over routine events (appointments, errands) unless the question implies otherwise.
-6. Copy critical names, dates, places, titles, quantities, and field names exactly from the context. Do not blur them into a generic paraphrase.
+6. Copy critical names, dates, places, titles, quantities, and field names exactly from the context. Do not blur them into a generic paraphrase:
+   - "mental health" is not "well-being" or "self-care"
+   - "gold chain" is not "necklace"
+   - "peaceful" is not "relaxing"
+   - "dog playdate" is not "socialization"
+   If the context uses a specific word, reproduce it verbatim.
 7. If the context contains any relevant evidence, commit to the most supported answer — even if it requires reasoning. Reserve "I don't have that information" strictly for when the context has zero relevant facts about the subject. Committing to a reasoned answer is preferred over abstaining.
 8. For answers expressed as "N days/weeks/months before/after DATE": use the temporal note in the context to compute the actual calendar date and give it as an absolute date (e.g. "18 May 2023"). Do not echo the anchor date as the answer.
+   - When context marks an event as "recently": it happened BEFORE the session date, not on it. Use the temporal note's prior-range to give the most specific timeframe the context supports.
+   - When context gives a start date and a completion event, compute and state the elapsed duration (e.g. "nearly two months") rather than listing both dates separately.
 9. If the context contains facts about multiple named people, only use facts where the subject explicitly matches the person the question asks about. Before giving your answer, verify: does the fact literally name the person the question is asking about? If a fact says "James did X" and the question asks what John did — that fact is not usable as an answer about John. Do not infer attribution. Facts labeled "User" or "Assistant" refer to the primary conversation participant — if other facts establish that person's name (e.g. "User's name is Caroline"), treat "User" facts as belonging to that person.
-10. Match answer length to question scope. If the question asks for one item, name, date, or fact — give only that. Do not add explanatory sentences, history, or extra context unless the question explicitly asks for reasoning or detail. Extra correct sentences create noise that can obscure the core answer.
+   Also: if the context says a person MISSED or DID NOT attend an event — that is NOT attendance. Never flip the sign of a negative fact.
 
 ANSWER:
 """

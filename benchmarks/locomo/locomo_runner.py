@@ -74,7 +74,7 @@ class LoCoMoConfig:
 
     # Retrieval
     retrieval_depth: str = "l1"
-    top_k: int = 10
+    top_k: int = 15
     context_window: int = 3
     enable_retrieval_gate: bool = False
 
@@ -549,10 +549,18 @@ class LoCoMoBenchmark:
         qa_vals = _collect("qa_ms")
         total_vals = _collect("total_question_ms")
 
+        def _p95(vals: list[float]) -> float | None:
+            if not vals:
+                return None
+            return round(sorted(vals)[int(len(vals) * 0.95)], 1)
+
         metrics["latency_ms"] = {
             "retrieval_avg": _avg(retrieval_vals),
+            "retrieval_p95": _p95(retrieval_vals),
             "qa_avg": _avg(qa_vals),
+            "qa_p95": _p95(qa_vals),
             "total_question_avg": _avg(total_vals),
+            "total_question_p95": _p95(total_vals),
         }
 
         return metrics
@@ -897,7 +905,15 @@ def _relative_time_note(text: str, timestamp: Any) -> str:
         if phrase not in lower:
             continue
         if kind == "anchor":
-            notes.append(f'"{phrase}" anchored to session date {reference_date.isoformat()}')
+            if phrase in ("recently", "lately", "earlier this week", "later this week"):
+                prior_start = (reference_dt - timedelta(days=7)).date().isoformat()
+                prior_end   = (reference_dt - timedelta(days=1)).date().isoformat()
+                notes.append(
+                    f'"{phrase}" → event occurred approximately {prior_start} to {prior_end} '
+                    f'(days/weeks BEFORE session date {reference_date.isoformat()}, not on it)'
+                )
+            else:
+                notes.append(f'"{phrase}" anchored to session date {reference_date.isoformat()}')
         elif kind == "year":
             delta_y = -1 if phrase.startswith("last") else 1
             resolved_year = reference_dt.replace(year=reference_dt.year + delta_y).year
@@ -922,30 +938,30 @@ def _format_retrieved_context(search_results: Any) -> str:
 
     lines: list[str] = []
 
-    facts = search_results.get("facts") or []
-    if facts:
-        facts = sorted(
-            facts,
-            key=_fact_context_sort_key,
-        )
-        lines.append("## Facts (ranked by relevance and specificity)")
-        for i, fact in enumerate(facts, 1):
-            timestamp = _timestamp_for_context(fact)
-            date = _date_prefix(timestamp)
-            date_prefix = f"[{date}] " if date else ""
-            text = str(fact.get("text", str(fact))).strip()
-            text = f"{text}{_relative_time_note(text, _event_time_only(fact))}"
-            lines.append(f"{i}. {date_prefix}{text}")
-
     episodes = search_results.get("episodes") or []
     if episodes:
-        lines.append("\n## Episodes")
+        lines.append("## Episodes")
         for i, ep in enumerate(episodes, 1):
             timestamp = _timestamp_for_context(ep)
             date = _date_prefix(timestamp)
             date_prefix = f"[{date}] " if date else ""
             text = str(ep.get("text", str(ep))).strip()
             text = f"{text}{_relative_time_note(text, _event_time_only(ep))}"
+            lines.append(f"{i}. {date_prefix}{text}")
+
+    facts = search_results.get("facts") or []
+    if facts:
+        facts = sorted(
+            facts,
+            key=_fact_context_sort_key,
+        )
+        lines.append("\n## Facts (ranked by relevance and specificity)")
+        for i, fact in enumerate(facts, 1):
+            timestamp = _timestamp_for_context(fact)
+            date = _date_prefix(timestamp)
+            date_prefix = f"[{date}] " if date else ""
+            text = str(fact.get("text", str(fact))).strip()
+            text = f"{text}{_relative_time_note(text, _event_time_only(fact))}"
             lines.append(f"{i}. {date_prefix}{text}")
 
     syntheses = search_results.get("syntheses") or []

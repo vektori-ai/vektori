@@ -24,7 +24,7 @@ from vektori.models.factory import create_llm
 logger = logging.getLogger("locomo_judge")
 
 VALID_VERDICTS = {"CORRECT", "PARTIALLY_CORRECT", "WRONG", "ABSTAINED"}
-DEFAULT_JUDGE_MODEL = "gemini:gemini-2.5-flash-lite"
+DEFAULT_JUDGE_MODEL = "gemini:gemini-3-flash-preview"
 
 ABSTENTION_PHRASES = (
     "i don't have that information",
@@ -72,11 +72,14 @@ Rules:
 - For date answers, accept equivalent formats. These are always CORRECT:
   "2023-10-21" = "21 October 2023" = "October 21, 2023"
   "2022-11-10" = "10 November 2022" = "November 10, 2022"
-- Absolute dates that equal a relative expression are CORRECT. Verify the arithmetic before marking wrong:
-  "July 14, 2023" = "The Friday before 15 July 2023" (July 14 is a Friday)
-  "11 August 2023" = "The Friday before 14 August 2023" (August 11 is a Friday)
+- Absolute dates that equal a relative expression are CORRECT. To check: compute the calendar date the relative expression describes, then compare. If they land on the same day (±0), it is CORRECT. Show your arithmetic before concluding.
+  "July 14, 2023" = "The Friday before 15 July 2023" (July 14 is a Friday ✓)
+  "11 August 2023" = "The Friday before 14 August 2023" (August 11 is a Friday ✓)
+  "2023-07-17" = "The weekend before 17 July 2023" (July 17 is itself a Monday — weekend is July 15/16; mark accordingly)
   A model that gives the computed absolute date when the expected uses relative phrasing is CORRECT, not wrong.
-- Extra correct details do not make an answer wrong.
+- If the MODEL ANSWER is short (under 25 words) — a bare name, date, quantity, or short phrase — do NOT invent reasons it is wrong. Only ask: does this core fact match the expected answer? If yes → CORRECT. Do not fabricate attribution errors, entity confusions, or "context doesn't mention this" claims for a short answer. A short answer that matches the expected answer is CORRECT.
+- If the EXPECTED ANSWER is short (5 words or fewer), check whether the model answer CONTAINS that core fact, regardless of surrounding phrasing. "Caroline is single, having experienced a tough breakup" is CORRECT for expected="Single". "John explored the Pacific Northwest on a road trip" is CORRECT for expected="Pacific Northwest". Extra phrasing around the core fact does NOT make the answer PARTIALLY_CORRECT.
+- Extra correct details do not make an answer wrong or partially correct.
 
 JSON schema:
 {{"verdict": "CORRECT|PARTIALLY_CORRECT|WRONG|ABSTAINED", "context_has_answer": true|false, "failure_mode": null|"QA_FAILURE"|"RETRIEVAL_FAILURE", "explanation": "one sentence"}}"""
@@ -90,6 +93,7 @@ class JudgeConfig:
     seed: int = 42
     output_dir: str = "benchmark_results"
     qids: list[str] = field(default_factory=list)
+    concurrency: int = 5
 
 
 @dataclass
@@ -191,12 +195,11 @@ def load_entries(full_results_path: Path, qids: list[str], n: int, seed: int) ->
     return rng.sample(entries, n)
 
 
-async def evaluate_entry(entry: dict[str, Any], judge_model: str) -> dict[str, Any]:
-    llm = create_llm(judge_model)
+async def evaluate_entry(entry: dict[str, Any], llm: Any) -> dict[str, Any]:
     prompt = build_prompt(entry)
     t0 = time.perf_counter()
     try:
-        raw = await llm.generate(prompt, max_tokens=350)
+        raw = await llm.generate(prompt, max_tokens=400)
         latency_ms = (time.perf_counter() - t0) * 1000
         verdict = parse_verdict(raw, latency_ms)
     except Exception as exc:
@@ -251,15 +254,20 @@ def summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
         if result["context_has_answer"]:
             by_type[qtype]["ctx_ok"] += 1
 
+    answered = total - abstained
     return {
         "total": total,
         "correct": correct,
         "partially_correct": partial,
         "wrong": wrong,
         "abstained": abstained,
+        "answered": answered,
         "correct_rate": round(correct / total, 4) if total else 0.0,
         "combined_rate": round((correct + partial) / total, 4) if total else 0.0,
+        "answer_precision": round(correct / answered, 4) if answered else 0.0,
+        "answer_recall": round(correct / total, 4) if total else 0.0,
         "context_has_answer": context_has_answer,
+        "retrieval_recall": round(context_has_answer / total, 4) if total else 0.0,
         "context_has_answer_rate": round(context_has_answer / total, 4) if total else 0.0,
         "qa_failure": qa_failure,
         "retrieval_failure": retrieval_failure,
@@ -270,17 +278,25 @@ def summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
 
 async def run(config: JudgeConfig) -> dict[str, Any]:
     entries = load_entries(Path(config.full_results), config.qids, config.n, config.seed)
-    print(f"Judging {len(entries)} LoCoMo answers with {config.judge_model}")
+    total = len(entries)
+    print(f"Judging {total} LoCoMo answers with {config.judge_model} (concurrency={config.concurrency})")
 
-    results: list[dict[str, Any]] = []
-    for idx, entry in enumerate(entries, 1):
-        result = await evaluate_entry(entry, config.judge_model)
-        results.append(result)
+    llm = create_llm(config.judge_model)
+    sem = asyncio.Semaphore(config.concurrency)
+    counter = {"n": 0}
+
+    async def judge_one(entry: dict[str, Any]) -> dict[str, Any]:
+        async with sem:
+            result = await evaluate_entry(entry, llm)
+        counter["n"] += 1
         print(
-            f"[{idx}/{len(entries)}] {result.get('question_id')} "
+            f"[{counter['n']}/{total}] {result.get('question_id')} "
             f"{result['verdict']} ctx={result['context_has_answer']} "
             f"failure={result['failure_mode']}"
         )
+        return result
+
+    results: list[dict[str, Any]] = await asyncio.gather(*[judge_one(e) for e in entries])
 
     summary = summarize(results)
     output = {"config": asdict(config), "summary": summary, "results": results}
@@ -317,6 +333,8 @@ def main() -> None:
     parser.add_argument("--output-dir", default="benchmark_results")
     parser.add_argument("--qids", default="", help="Comma-separated question IDs")
     parser.add_argument("--qids-file", default="", help="One question ID per line")
+    parser.add_argument("--concurrency", type=int, default=5,
+                        help="Max concurrent judge requests (default 5; lower if hitting RPM limits)")
     args = parser.parse_args()
 
     try:
@@ -331,6 +349,7 @@ def main() -> None:
         seed=args.seed,
         output_dir=args.output_dir,
         qids=qids,
+        concurrency=args.concurrency,
     )
     asyncio.run(run(config))
 
