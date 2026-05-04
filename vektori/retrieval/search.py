@@ -739,7 +739,7 @@ def _clean(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _diverse_top_k(
     scored_facts: list[dict[str, Any]],
     top_k: int,
-    per_session: int = 2,
+    per_session: int = 3,
 ) -> list[dict[str, Any]]:
     """Session-diverse top-k selection.
 
@@ -751,7 +751,7 @@ def _diverse_top_k(
       2. Fill any remaining slots with the global best facts not yet selected.
 
     Facts within each phase remain in score-descending order.
-    `per_session=2` balances diversity against quality — enough to capture the
+    `per_session=3` balances diversity against quality — enough to capture the
     main signals from each session without over-diluting with low-score facts.
     """
     selected: list[dict[str, Any]] = []

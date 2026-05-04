@@ -329,6 +329,11 @@ ASSISTANT facts (source: "assistant"):
 - source_quotes: verbatim text from the ASSISTANT turn
 
 General:
+- Proper nouns, brand names, place names, and specific quantities MUST appear verbatim in the fact text. Never substitute a category or synonym for a specific name:
+  BAD: "Calvin purchased a luxury car."      GOOD: "Calvin purchased a Ferrari 488 GTB."
+  BAD: "John's old area was flooded."        GOOD: "John's area West County was flooded."
+  BAD: "Tim visited a Harry Potter shop."    GOOD: "Tim visited House of MinaLima."
+  The 20-word guide does NOT override this — preserve the specific name even at 22–25 words.
 - One fact per statement. Short and crisp.
 - subject: 'user' when about the person speaking; a named entity when about someone/something they mention; 'assistant' for assistant facts
 - Extract at most {max_facts} facts total — prioritize high-confidence, significant ones
