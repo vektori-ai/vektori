@@ -74,7 +74,7 @@ class LoCoMoConfig:
 
     # Retrieval
     retrieval_depth: str = "l1"
-    top_k: int = 10
+    top_k: int = 15
     context_window: int = 3
     enable_retrieval_gate: bool = False
 
