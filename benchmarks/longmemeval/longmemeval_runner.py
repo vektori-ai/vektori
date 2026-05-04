@@ -262,10 +262,9 @@ class LongMemEvalBenchmark:
         haystack_sids = instance["haystack_session_ids"]
         haystack_dates = instance.get("haystack_dates") or []
 
-        for i, (session, hsid) in enumerate(zip(haystack_sessions, haystack_sids)):
+        async def _ingest_one(i: int, session: list, hsid: str) -> None:
             session_date = haystack_dates[i] if i < len(haystack_dates) else None
             session_time = _parse_date(session_date) if session_date else None
-
             cached_entry = (
                 await self._session_cache.get(hsid) if self.config.use_cache else None
             )
@@ -279,6 +278,11 @@ class LongMemEvalBenchmark:
                 )
                 if new_facts and self.config.use_cache:
                     await self._session_cache.put(hsid, new_facts, episodes=new_episodes)
+
+        await asyncio.gather(*[
+            _ingest_one(i, s, h)
+            for i, (s, h) in enumerate(zip(haystack_sessions, haystack_sids))
+        ])
 
     async def _replay_session(
         self,
@@ -483,16 +487,13 @@ class LongMemEvalBenchmark:
     async def _generate_answer(
         self, question: str, context: str, question_type: str, question_date: str = ""
     ) -> str:
-        from vektori.models.factory import create_llm
-
         if "No relevant context" in context:
             return "I don't have relevant information to answer this question."
 
-        llm = create_llm(self.config.eval_model)
         prompt = self._build_qa_prompt(question, context, question_type, question_date)
         max_tokens = 800 if _base_question_type(question_type) == "temporal-reasoning" else 500
         try:
-            return (await llm.generate(prompt, max_tokens=max_tokens)).strip()
+            return (await self._eval_llm.generate(prompt, max_tokens=max_tokens)).strip()
         except Exception as e:
             logger.warning("Answer generation failed: %s", e)
             return "Unable to generate answer due to API error."
