@@ -53,18 +53,22 @@ Search hits Facts, graph discovers Episodes, traces back to source Sentences. SQ
 
 ## Benchmarks
 
+> **What is F1?** F1 is the harmonic mean of precision (what fraction of the model's answer was correct) and recall (what fraction of the correct answer the model actually covered). A high F1 means the answer is both accurate and complete. Most memory system vendors report LLM-judge accuracy instead — a separate LLM scores each answer as correct or not, which is easier to run but less granular.
+
 Tested on long-horizon memory benchmarks — hundreds of turns, real user details buried deep in history.
 
-| Benchmark | Vektori | Mem0 | Zep | Supermemory | Letta |
-|-----------|---------|------|-----|-------------|-------|
-| LoCoMo | **66%** | 66% | 58%† | ~70% | ~83% |
-| LongMemEval-S | **73%** | — | 64% | 85% | — |
+| System | LoCoMo | LongMemEval-S | DMR | F1 avg (LoCoMo)† | Search p95 | Total p95 |
+|--------|--------|---------------|-----|-----------------|-----------|----------|
+| Vektori | 66% | 73% | — | — | — | — |
+| Mem0 | 66.88% | — | — | 41.0 | 0.200s | 1.440s |
+| Zep | 75.14%‡ | 71.2% | 94.8% | — | 0.778s | 2.926s |
+| Supermemory | — | 81.6% | — | — | — | — |
+| Letta | 74.0% | — | — | — | — | — |
 
-†Zep's self-reported score is 75%; independently re-evaluated at 58%. Scores across systems are not always directly comparable — model choice (GPT-4o vs GPT-4.1-mini vs local) significantly affects results. 
+†F1 = harmonic mean of precision (how much of the answer was correct) and recall (how much of the correct answer was covered). Only Mem0 publishes token-level F1; 41.0 is the average across single-hop 38.72, multi-hop 28.64, open-domain 47.65, temporal 48.93.  
+‡Zep self-reported; Mem0's paper measured Zep at 65.99% on the same run. Latency from Mem0's paper. Model choice significantly shifts all scores — we used gemini-2.5-flash-lite for cost.
 
-We used gemini-2.5-flash-lite because of token cost, better models imporve accuracy a lot. Benchmarks at L1 level
-
-On LoCoMo and longmemEval, **the retrieved context contains the answer in 95% of questions** — the gap to 66% is a synthesis problem, not a retrieval one. Actively working on closing it, exploring RL.
+On LoCoMo and LongMemEval, **the retrieved context contains the answer in 95% of questions** — the gap to 66% is a synthesis problem, not a retrieval one. Actively working on closing it, exploring RL.
 
 Still improving — PRs and evals welcome. Run your own: [`/benchmarks`](benchmarks/)
 
