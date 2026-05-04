@@ -501,8 +501,10 @@ class LongMemEvalBenchmark:
     def _build_qa_prompt(
         self, question: str, context: str, question_type: str, question_date: str = ""
     ) -> str:
-        date_line = f"TODAY'S DATE: {question_date}\n\n" if question_date else ""
+        from vektori.qa.generator import build_qa_prompt
+
         base_question_type = _base_question_type(question_type)
+        date_line = f"TODAY'S DATE: {question_date}\n\n" if question_date else ""
 
         abs_hint = ""
         if question_type.endswith("_abs"):
@@ -513,8 +515,8 @@ class LongMemEvalBenchmark:
 
         if base_question_type == "temporal-reasoning":
             return (
-                "You are an AI assistant answering questions based on provided context "
-                "from chat history.\n\n"
+                "You are a memory QA assistant. Your job is to answer the question by "
+                "extracting the answer from the provided long-term memory context.\n\n"
                 f"{date_line}"
                 f"CONTEXT:\n{context}\n\n"
                 f"QUESTION:\n{question}\n\n"
@@ -522,27 +524,18 @@ class LongMemEvalBenchmark:
                 "- Answer based ONLY on the provided context\n"
                 "- First, list the relevant dated events from the context\n"
                 "- Then compute the answer (count days/weeks/months between dates)\n"
+                "- Use exact absolute dates whenever available — never echo a relative word "
+                '("recently", "lately") when a date is in context\n'
                 "- If the context does not contain enough information to answer, say "
                 '"I don\'t have that information"'
                 f"{abs_hint}\n\n"
                 "REASONING:\n"
             )
 
-        return (
-            "You are an AI assistant answering questions based on provided context "
-            "from chat history.\n\n"
-            f"{date_line}"
-            f"CONTEXT:\n{context}\n\n"
-            f"QUESTION:\n{question}\n\n"
-            "INSTRUCTIONS:\n"
-            "- Answer the question based ONLY on the provided context\n"
-            "- Be concise and direct — a short phrase or sentence is preferred over a long explanation\n"
-            "- For questions about time elapsed, use TODAY'S DATE above as your reference point\n"
-            "- If the context does not contain enough information to answer, say "
-            '"I don\'t have that information" — do not guess or infer beyond what is stated'
-            f"{abs_hint}\n\n"
-            "ANSWER:"
-        )
+        prompt = build_qa_prompt(question, context, question_date=question_date)
+        if abs_hint:
+            prompt = prompt.rstrip().rstrip("ANSWER:").rstrip() + abs_hint + "\n\nANSWER:"
+        return prompt
 
     # ── Evaluation ────────────────────────────────────────────────────────────
 
