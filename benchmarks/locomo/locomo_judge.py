@@ -254,15 +254,20 @@ def summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
         if result["context_has_answer"]:
             by_type[qtype]["ctx_ok"] += 1
 
+    answered = total - abstained
     return {
         "total": total,
         "correct": correct,
         "partially_correct": partial,
         "wrong": wrong,
         "abstained": abstained,
+        "answered": answered,
         "correct_rate": round(correct / total, 4) if total else 0.0,
         "combined_rate": round((correct + partial) / total, 4) if total else 0.0,
+        "answer_precision": round(correct / answered, 4) if answered else 0.0,
+        "answer_recall": round(correct / total, 4) if total else 0.0,
         "context_has_answer": context_has_answer,
+        "retrieval_recall": round(context_has_answer / total, 4) if total else 0.0,
         "context_has_answer_rate": round(context_has_answer / total, 4) if total else 0.0,
         "qa_failure": qa_failure,
         "retrieval_failure": retrieval_failure,

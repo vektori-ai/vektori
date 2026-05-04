@@ -549,10 +549,18 @@ class LoCoMoBenchmark:
         qa_vals = _collect("qa_ms")
         total_vals = _collect("total_question_ms")
 
+        def _p95(vals: list[float]) -> float | None:
+            if not vals:
+                return None
+            return round(sorted(vals)[int(len(vals) * 0.95)], 1)
+
         metrics["latency_ms"] = {
             "retrieval_avg": _avg(retrieval_vals),
+            "retrieval_p95": _p95(retrieval_vals),
             "qa_avg": _avg(qa_vals),
+            "qa_p95": _p95(qa_vals),
             "total_question_avg": _avg(total_vals),
+            "total_question_p95": _p95(total_vals),
         }
 
         return metrics
