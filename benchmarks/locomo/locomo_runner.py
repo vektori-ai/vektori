@@ -930,30 +930,30 @@ def _format_retrieved_context(search_results: Any) -> str:
 
     lines: list[str] = []
 
-    facts = search_results.get("facts") or []
-    if facts:
-        facts = sorted(
-            facts,
-            key=_fact_context_sort_key,
-        )
-        lines.append("## Facts (ranked by relevance and specificity)")
-        for i, fact in enumerate(facts, 1):
-            timestamp = _timestamp_for_context(fact)
-            date = _date_prefix(timestamp)
-            date_prefix = f"[{date}] " if date else ""
-            text = str(fact.get("text", str(fact))).strip()
-            text = f"{text}{_relative_time_note(text, _event_time_only(fact))}"
-            lines.append(f"{i}. {date_prefix}{text}")
-
     episodes = search_results.get("episodes") or []
     if episodes:
-        lines.append("\n## Episodes")
+        lines.append("## Episodes")
         for i, ep in enumerate(episodes, 1):
             timestamp = _timestamp_for_context(ep)
             date = _date_prefix(timestamp)
             date_prefix = f"[{date}] " if date else ""
             text = str(ep.get("text", str(ep))).strip()
             text = f"{text}{_relative_time_note(text, _event_time_only(ep))}"
+            lines.append(f"{i}. {date_prefix}{text}")
+
+    facts = search_results.get("facts") or []
+    if facts:
+        facts = sorted(
+            facts,
+            key=_fact_context_sort_key,
+        )
+        lines.append("\n## Facts (ranked by relevance and specificity)")
+        for i, fact in enumerate(facts, 1):
+            timestamp = _timestamp_for_context(fact)
+            date = _date_prefix(timestamp)
+            date_prefix = f"[{date}] " if date else ""
+            text = str(fact.get("text", str(fact))).strip()
+            text = f"{text}{_relative_time_note(text, _event_time_only(fact))}"
             lines.append(f"{i}. {date_prefix}{text}")
 
     syntheses = search_results.get("syntheses") or []
