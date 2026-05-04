@@ -53,14 +53,12 @@ Search hits Facts, graph discovers Episodes, traces back to source Sentences. SQ
 
 ## Benchmarks
 
-> **What is F1?** F1 is the harmonic mean of precision (what fraction of the model's answer was correct) and recall (what fraction of the correct answer the model actually covered). A high F1 means the answer is both accurate and complete. Most memory system vendors report LLM-judge accuracy instead — a separate LLM scores each answer as correct or not, which is easier to run but less granular.
-
 Tested on long-horizon memory benchmarks — hundreds of turns, real user details buried deep in history.
 
 | System | LoCoMo | LongMemEval-S | DMR | F1 avg (LoCoMo)† | Search p95 | Total p95 |
 |--------|--------|---------------|-----|-----------------|-----------|----------|
-| Vektori | 66% | 73% | — | — | — | — |
-| Mem0 | 66.88% | — | — | 41.0 | 0.200s | 1.440s |
+| Vektori | 66% | 73% | — | — | — | 1.48s | 
+| Mem0 | 66.88% | — | — | 41.0 | 0.48s | 2.59s |
 | Zep | 75.14%‡ | 71.2% | 94.8% | — | 0.778s | 2.926s |
 | Supermemory | — | 81.6% | — | — | — | — |
 | Letta | 74.0% | — | — | — | — | — |
