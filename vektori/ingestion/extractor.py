@@ -295,6 +295,9 @@ FACTS_PROMPT = """Extract facts from this conversation — both facts about the 
 {session_date_line}CONVERSATION:
 {conversation}
 
+SOURCE SENTENCE CATALOG:
+{sentence_catalog}
+
 Return JSON:
 {{
   "facts": [
@@ -305,7 +308,8 @@ Return JSON:
       "reasoning": "optional — the reasoning, motivation, or 'why' behind the fact",
       "source": "'user' for facts about the user, 'assistant' for notable things the assistant said",
       "subject": "'user' or a named person/entity (for user facts); 'assistant' for assistant facts",
-      "source_quotes": ["verbatim text copied from the turn this fact came from"],
+      "source_sentence_indices": [0, 2],
+      "source_quotes": ["optional verbatim text copied from the source sentence; keep only for debugging/audit"],
       "temporal_expr": "optional — only if the fact has an explicit time anchor, e.g. '3 years ago', 'since 2021', 'last month'. Omit if no temporal info."
     }}
   ]
@@ -313,7 +317,7 @@ Return JSON:
 
 USER facts (source: "user"):
 - Extract facts about the USER or entities they explicitly mention, including preferences ("I love X", "I prefer Y", "I always use Z", "I hate X"), habits, and opinions
-- When the user gives a short response ("yes", "yeah", "nope", "exactly"), use the preceding ASSISTANT turn to understand what they confirmed or denied, but source_quotes must still be the USER's words. If the assistant made multiple claims and the user confirmed all of them, extract one fact per confirmed claim, not one fact per user turn.
+- When the user gives a short response ("yes", "yeah", "nope", "exactly"), use the preceding ASSISTANT turn to understand what they confirmed or denied. In these cases, cite both the assistant sentence being confirmed and the user's confirmation sentence in `source_sentence_indices` when both are relevant.
 - Negations: rephrase as positive facts that preserve the negation context.
   BAD: "User does not use React"
   GOOD: "User's frontend stack is Vue, not React"
@@ -327,7 +331,7 @@ ASSISTANT facts (source: "assistant"):
   BAD: "Assistant provided a list of language learning apps."
   GOOD: "Assistant recommended Memrise (uses mnemonics), Duolingo (gamified), and Babbel for language learning."
 - Do NOT extract generic filler ("Sure, I can help", "Great question", "Let me know if you need anything")
-- source_quotes: verbatim text from the ASSISTANT turn
+- Cite the sentence indices from the catalog that support the fact
 
 General:
 - Proper nouns, brand names, place names, and specific quantities MUST appear verbatim in the fact text. Never substitute a category or synonym for a specific name:
@@ -342,6 +346,7 @@ General:
 - Dates in `text`: if CONVERSATION DATE is provided, replace relative time references with the actual date.
   "today" → "on YYYY-MM-DD", "yesterday" → "on YYYY-MM-DD", "last week" → "on week of YYYY-MM-DD", etc.
   Do NOT use relative expressions if you know the absolute date.
+- `source_sentence_indices` must refer only to rows from SOURCE SENTENCE CATALOG. Prefer the smallest set of indices that fully supports the fact.
 {domain_guidance}
 Return ONLY the JSON."""
 
@@ -477,18 +482,20 @@ class FactExtractor:
 
         return ("\n\n" + "\n".join(parts)) if parts else ""
 
-    def _facts_prompt(self, conversation: str, session_date_line: str) -> str:
+    def _facts_prompt(self, conversation: str, sentence_catalog: str, session_date_line: str) -> str:
         """Return the complete facts extraction prompt, respecting ExtractionConfig."""
         cfg = self._extraction_config
         if cfg is not None and cfg.custom_facts_prompt:
             return cfg.custom_facts_prompt.format(
                 conversation=conversation,
+                sentence_catalog=sentence_catalog,
                 max_facts=self.max_facts,
                 session_date_line=session_date_line,
                 domain_guidance=self._build_domain_guidance_facts(),
             )
         return FACTS_PROMPT.format(
             conversation=conversation,
+            sentence_catalog=sentence_catalog,
             max_facts=self.max_facts,
             session_date_line=session_date_line,
             domain_guidance=self._build_domain_guidance_facts(),
@@ -521,7 +528,7 @@ class FactExtractor:
         session_id: str,
         user_id: str,
         agent_id: str | None = None,
-        sentence_ids: list[str] | None = None,
+        sentence_catalog: list[dict[str, Any]] | None = None,
         session_time: datetime | None = None,
         _capture_out: list[dict[str, Any]] | None = None,
         _capture_episodes_out: list[dict[str, Any]] | None = None,
@@ -533,14 +540,31 @@ class FactExtractor:
         session_time: when the conversation happened (session started_at).
         Stored as event_time on each fact for temporal filtering at retrieval.
         """
-        conversation = "\n".join(f"{msg['role'].upper()}: {msg['content']}" for msg in messages)
+        annotated_messages = [
+            {**msg, "_turn_number": idx}
+            for idx, msg in enumerate(messages)
+        ]
+        conversation = "\n".join(
+            f"{msg['role'].upper()}: {msg['content']}" for msg in annotated_messages
+        )
+        source_sentences = self._normalize_sentence_catalog(
+            session_id,
+            annotated_messages,
+            sentence_catalog,
+            session_time,
+        )
 
         # ── Extract facts — chunk long conversations so early facts aren't lost ──
         try:
             if len(conversation) <= self._max_chunk_chars:
-                new_facts = await self._extract_facts(conversation, session_time)
+                new_facts = await self._extract_facts(conversation, source_sentences, session_time)
             else:
-                new_facts = await self._extract_facts_chunked(messages, conversation, session_time)
+                new_facts = await self._extract_facts_chunked(
+                    annotated_messages,
+                    conversation,
+                    source_sentences,
+                    session_time,
+                )
         except Exception as e:
             logger.error("Fact extraction failed for session %s: %s", session_id, e)
             return {"facts_inserted": 0, "error": str(e)}
@@ -552,6 +576,7 @@ class FactExtractor:
             user_id,
             agent_id,
             conversation,
+            source_sentences,
             session_time,
             _capture_out=_capture_out,
             _inserted_facts_out=inserted_facts,
@@ -583,19 +608,27 @@ class FactExtractor:
     # ── LLM Call ──────────────────────────────────────────────────────────────
 
     async def _extract_facts(
-        self, conversation: str, session_time: datetime | None = None
+        self,
+        conversation: str,
+        source_sentences: list[dict[str, Any]],
+        session_time: datetime | None = None,
     ) -> list[dict[str, Any]]:
         session_date_line = (
             f"CONVERSATION DATE: {session_time.strftime('%Y-%m-%d')}\n\n" if session_time else ""
         )
-        prompt = self._facts_prompt(conversation, session_date_line)
+        prompt = self._facts_prompt(
+            conversation,
+            self._render_sentence_catalog(source_sentences),
+            session_date_line,
+        )
         response = await self.llm.generate(prompt, max_tokens=self._max_output_tokens)
         return _parse_json_response(response).get("facts", [])
 
     async def _extract_facts_chunked(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         full_conversation: str,
+        source_sentences: list[dict[str, Any]],
         session_time: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """Chunk a long conversation and extract facts from each chunk.
@@ -617,14 +650,28 @@ class FactExtractor:
         all_facts: list[dict[str, Any]] = []
         for chunk in chunks:
             chunk_conv = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in chunk)
+            chunk_turns = {int(m["_turn_number"]) for m in chunk if "_turn_number" in m}
+            chunk_sentences = [
+                sent for sent in source_sentences if int(sent["turn_number"]) in chunk_turns
+            ]
+            full_index_by_id = {sent["id"]: idx for idx, sent in enumerate(source_sentences)}
             try:
-                chunk_facts = await self._extract_facts(chunk_conv, session_time)
+                chunk_facts = await self._extract_facts(chunk_conv, chunk_sentences, session_time)
+                for fact in chunk_facts:
+                    local_indices = fact.get("source_sentence_indices") or []
+                    fact["source_sentence_indices"] = [
+                        full_index_by_id[chunk_sentences[idx]["id"]]
+                        for idx in local_indices
+                        if isinstance(idx, int)
+                        and 0 <= idx < len(chunk_sentences)
+                        and chunk_sentences[idx]["id"] in full_index_by_id
+                    ]
                 all_facts.extend(chunk_facts)
             except Exception as e:
                 logger.warning("Chunk extraction failed (%d messages): %s", len(chunk), e)
         return all_facts
 
-    def _chunk_messages(self, messages: list[dict[str, str]]) -> list[list[dict[str, str]]]:
+    def _chunk_messages(self, messages: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
         """Split messages into chunks where each chunk's text fits in one LLM call.
 
         Carries the last message of each chunk into the next as overlap so the
@@ -634,7 +681,7 @@ class FactExtractor:
         current: list[dict[str, str]] = []
         current_chars = 0
 
-        def _msg_chars(m: dict[str, str]) -> int:
+        def _msg_chars(m: dict[str, Any]) -> int:
             return len(m.get("role", "")) + len(m.get("content", "")) + 10
 
         for msg in messages:
@@ -655,6 +702,78 @@ class FactExtractor:
             chunks.append(current)
         return chunks
 
+    def _normalize_sentence_catalog(
+        self,
+        session_id: str,
+        messages: list[dict[str, Any]],
+        sentence_catalog: list[dict[str, Any]] | None,
+        session_time: datetime | None,
+    ) -> list[dict[str, Any]]:
+        if sentence_catalog:
+            return sorted(
+                [
+                    {
+                        "id": sent["id"],
+                        "text": sent["text"],
+                        "role": sent.get("role", "user"),
+                        "turn_number": int(sent["turn_number"]),
+                        "sentence_index": int(sent["sentence_index"]),
+                        "is_searchable": bool(sent.get("is_searchable", True)),
+                        "event_time": sent.get("event_time"),
+                    }
+                    for sent in sentence_catalog
+                    if sent.get("id") and sent.get("text")
+                ],
+                key=lambda s: (s["turn_number"], s["sentence_index"]),
+            )
+
+        from vektori.ingestion.hasher import generate_sentence_id
+        from vektori.ingestion.splitter import split_sentences
+
+        fallback: list[dict[str, Any]] = []
+        for turn_num, msg in enumerate(messages):
+            if msg.get("role") not in ("user", "assistant"):
+                continue
+            for sentence_index, text in enumerate(split_sentences(msg.get("content", ""))):
+                fallback.append(
+                    {
+                        "id": generate_sentence_id(session_id, f"{turn_num}_{sentence_index}", text),
+                        "text": text,
+                        "role": msg.get("role", "user"),
+                        "turn_number": turn_num,
+                        "sentence_index": sentence_index,
+                        "is_searchable": True,
+                        "event_time": session_time.isoformat() if session_time else None,
+                    }
+                )
+        return fallback
+
+    def _render_sentence_catalog(self, source_sentences: list[dict[str, Any]]) -> str:
+        if not source_sentences:
+            return "(no source sentences available)"
+        lines = []
+        for idx, sent in enumerate(source_sentences):
+            lines.append(
+                f"{idx} | {sent.get('role', 'user')} | turn {sent['turn_number']} sent {sent['sentence_index']} | {sent['text']}"
+            )
+        return "\n".join(lines)
+
+    def _map_source_sentence_indices(
+        self,
+        source_sentence_indices: list[Any],
+        source_sentences: list[dict[str, Any]],
+    ) -> list[str]:
+        linked_ids: list[str] = []
+        seen: set[str] = set()
+        for idx in source_sentence_indices:
+            if not isinstance(idx, int) or idx < 0 or idx >= len(source_sentences):
+                continue
+            sent_id = source_sentences[idx]["id"]
+            if sent_id not in seen:
+                linked_ids.append(sent_id)
+                seen.add(sent_id)
+        return linked_ids
+
     # ── Processing ────────────────────────────────────────────────────────────
 
     async def _process_facts(
@@ -664,6 +783,7 @@ class FactExtractor:
         user_id: str,
         agent_id: str | None,
         conversation: str,
+        source_sentences: list[dict[str, Any]],
         session_time: datetime | None = None,
         _capture_out: list[dict[str, Any]] | None = None,
         _inserted_facts_out: list[tuple[str, str]] | None = None,
@@ -743,16 +863,21 @@ class FactExtractor:
                             "text": fact_data["text"],
                             "subject": subject,
                             "metadata": meta or {},
+                            "source_sentence_indices": fact_data.get("source_sentence_indices") or [],
                             "source_quotes": fact_data.get("source_quotes") or [],
                         }
                     )
 
-                if fact_data.get("source_quotes"):
+                linked = self._map_source_sentence_indices(
+                    fact_data.get("source_sentence_indices") or [],
+                    source_sentences,
+                )
+                if not linked and fact_data.get("source_quotes"):
                     linked = await self._link_to_source_sentences(
                         fact_data["source_quotes"], session_id, conversation
                     )
-                    for sent_id in linked:
-                        await self.db.insert_fact_source(fact_id, sent_id)
+                for sent_id in linked:
+                    await self.db.insert_fact_source(fact_id, sent_id)
 
                 # Build similarity edges for PPR graph
                 await self._build_fact_edges(fact_id, fact_embedding, user_id, agent_id)
@@ -771,6 +896,7 @@ class FactExtractor:
         user_id: str,
         agent_id: str | None = None,
         session_time: datetime | None = None,
+        sentence_catalog: list[dict[str, Any]] | None = None,
         _inserted_facts_out: list[tuple[str, str]] | None = None,
     ) -> int:
         """
@@ -829,13 +955,24 @@ class FactExtractor:
                 if _inserted_facts_out is not None:
                     _inserted_facts_out.append((fact_id, fact_data["text"]))
 
-                source_quotes = fact_data.get("source_quotes") or []
-                if source_quotes:
-                    linked = await self._link_to_source_sentences(
-                        source_quotes, session_id, conversation=None
-                    )
-                    for sent_id in linked:
-                        await self.db.insert_fact_source(fact_id, sent_id)
+                source_sentences = self._normalize_sentence_catalog(
+                    session_id,
+                    [],
+                    sentence_catalog,
+                    session_time,
+                )
+                linked = self._map_source_sentence_indices(
+                    fact_data.get("source_sentence_indices") or [],
+                    source_sentences,
+                )
+                if not linked:
+                    source_quotes = fact_data.get("source_quotes") or []
+                    if source_quotes:
+                        linked = await self._link_to_source_sentences(
+                            source_quotes, session_id, conversation=None
+                        )
+                for sent_id in linked:
+                    await self.db.insert_fact_source(fact_id, sent_id)
 
                 # Mirror fresh-path: build PPR similarity edges for this fact
                 await self._build_fact_edges(fact_id, fact_emb, user_id, agent_id)
@@ -1026,6 +1163,8 @@ class FactExtractor:
 
         facts_list = "\n".join(f"{i}. {text}" for i, (_, text) in enumerate(inserted_facts))
         fact_id_list = [fid for fid, _ in inserted_facts]
+        if len(fact_id_list) != facts_list.count("\n") + 1:
+            raise ValueError("Episode prompt numbering diverged from inserted_facts ordering")
 
         # Use the tail of the conversation — the end is where the substance is;
         # the beginning is often small talk and preamble.

@@ -62,6 +62,12 @@ class MemoryBackend(StorageBackend):
             sid = sent["id"]
             if sid in self._sentences:
                 self._sentences[sid]["mentions"] += 1
+                self._sentences[sid]["event_time"] = sent.get(
+                    "event_time", self._sentences[sid].get("event_time")
+                )
+                self._sentences[sid]["is_searchable"] = sent.get(
+                    "is_searchable", self._sentences[sid].get("is_searchable", True)
+                )
             else:
                 self._sentences[sid] = {
                     **sent,
@@ -87,6 +93,8 @@ class MemoryBackend(StorageBackend):
             if s["user_id"] != user_id:
                 continue
             if agent_id and s.get("agent_id") != agent_id:
+                continue
+            if not s.get("is_searchable", True):
                 continue
             if s.get("embedding") is None:
                 continue
@@ -257,7 +265,15 @@ class MemoryBackend(StorageBackend):
     # ── Edges ──
 
     async def insert_edges(self, edges: list[dict[str, Any]]) -> int:
-        self._edges.extend(edges)
+        seen = {
+            (edge["source_id"], edge["target_id"], edge["edge_type"])
+            for edge in self._edges
+        }
+        for edge in edges:
+            key = (edge["source_id"], edge["target_id"], edge["edge_type"])
+            if key not in seen:
+                self._edges.append(edge)
+                seen.add(key)
         return len(edges)
 
     async def expand_session_context(

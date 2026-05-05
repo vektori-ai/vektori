@@ -64,8 +64,9 @@ class IngestionPipeline:
         Returns:
             {"status": "ok", "sentences_stored": N, "extraction": "queued"|"done"|"skipped"}
         """
-        # 1. Split user AND assistant messages into quality-filtered sentences.
-        #    Assistant sentences are needed for source-linking of assistant facts (L1/L2).
+        # 1. Split user AND assistant messages into stored sentence records.
+        #    Low-quality sentences are still stored for provenance, but marked
+        #    non-searchable so sentence retrieval can continue to skip junk.
         all_sentences: list[dict[str, Any]] = []
         for turn_num, msg in enumerate(messages):
             role = msg.get("role", "")
@@ -73,18 +74,18 @@ class IngestionPipeline:
                 continue
             raw_sents = split_sentences(msg["content"])
             for idx, text in enumerate(raw_sents):
-                if is_quality_sentence(text, self.quality_config):
-                    all_sentences.append(
-                        {
-                            "text": text,
-                            "session_id": session_id,
-                            "turn_number": turn_num,
-                            "sentence_index": idx,
-                            "role": role,
-                            "id": generate_sentence_id(session_id, f"{turn_num}_{idx}", text),
-                            "event_time": session_time.isoformat() if session_time else None,
-                        }
-                    )
+                all_sentences.append(
+                    {
+                        "text": text,
+                        "session_id": session_id,
+                        "turn_number": turn_num,
+                        "sentence_index": idx,
+                        "role": role,
+                        "id": generate_sentence_id(session_id, f"{turn_num}_{idx}", text),
+                        "event_time": session_time.isoformat() if session_time else None,
+                        "is_searchable": is_quality_sentence(text, self.quality_config),
+                    }
+                )
 
         # 2. Batch embed and upsert sentences (ON CONFLICT → increment mentions)
         if all_sentences:
@@ -111,23 +112,42 @@ class IngestionPipeline:
         )
 
         # 5. Trigger extraction — always runs as long as messages is non-empty.
-        #    Extraction reads from messages directly, not from stored sentences.
+        #    Extraction still sees raw messages, but now also gets the exact
+        #    stored sentence catalog used for deterministic source-linking.
+        sentence_catalog = [
+            {
+                "id": sent["id"],
+                "text": sent["text"],
+                "role": sent.get("role", "user"),
+                "turn_number": sent["turn_number"],
+                "sentence_index": sent["sentence_index"],
+                "is_searchable": sent.get("is_searchable", True),
+                "event_time": sent.get("event_time"),
+            }
+            for sent in all_sentences
+        ]
         if skip_extraction or not messages:
             extraction_status = "skipped"
         elif self.worker is not None:
-            self.worker.schedule(
+            schedule_result = self.worker.schedule(
                 ExtractionRequest(
                     messages=messages,
                     session_id=session_id,
                     user_id=user_id,
                     agent_id=agent_id,
+                    sentence_catalog=sentence_catalog,
                     session_time=session_time,
                 )
             )
-            extraction_status = "queued"
+            extraction_status = schedule_result.status
         else:
             await self.extractor.extract(
-                messages, session_id, user_id, agent_id, session_time=session_time
+                messages,
+                session_id,
+                user_id,
+                agent_id,
+                sentence_catalog=sentence_catalog,
+                session_time=session_time,
             )
             extraction_status = "done"
 
