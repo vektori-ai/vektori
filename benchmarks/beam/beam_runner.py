@@ -17,6 +17,8 @@ from typing import Any
 from datasets import load_dataset
 from vektori import Vektori
 from vektori.config import VektoriConfig
+from vektori.models.factory import create_llm
+from vektori.qa import generate_answer
 from benchmarks.longmemeval.checkpoint import BenchmarkCheckpoint
 from benchmarks.beam.beam_judge import BeamJudge
 
@@ -52,6 +54,7 @@ class BeamBenchmark:
         self.vektori_client = None
         self.dataset = []
         self._checkpoint = None
+        self._eval_llm = None
         self.judge = BeamJudge(config.eval_model)
 
     async def setup(self) -> None:
@@ -62,11 +65,15 @@ class BeamBenchmark:
                 embedding_model=self.config.embedding_model,
                 extraction_model=self.config.extraction_model,
                 default_top_k=self.config.top_k,
-                context_window=self.config.context_window
-                # In full logic, hook up reranker model explicitly if Supported VektoriConfig has it 
+                context_window=self.config.context_window,
+                async_extraction=False,
+                use_reranker=True,
+                reranker_model=self.config.reranker_model,
+                reranker_top_n=max(20, self.config.top_k),
             )
         )
         await self.vektori_client._ensure_initialized()
+        self._eval_llm = create_llm(self.config.eval_model, json_mode=False)
         
         logger.info(f"Downloading BEAM dataset {self.config.dataset_split}...")
         hf_ds = load_dataset("Mohammadta/BEAM", split=self.config.dataset_split)
@@ -88,10 +95,75 @@ class BeamBenchmark:
         finally:
             logger.info("Run finished.")
 
+    def _parse_chat_messages(self, raw_chat: Any) -> list[dict[str, str]]:
+        if isinstance(raw_chat, str):
+            try:
+                raw_chat = ast.literal_eval(raw_chat)
+            except Exception:
+                return []
+
+        if not isinstance(raw_chat, list):
+            return []
+
+        messages: list[dict[str, str]] = []
+
+        for item in raw_chat:
+            if isinstance(item, dict):
+                if "role" in item and "content" in item:
+                    messages.append({"role": str(item["role"]), "content": str(item["content"])})
+                    continue
+                if "messages" in item and isinstance(item["messages"], list):
+                    for msg in item["messages"]:
+                        if isinstance(msg, dict) and "role" in msg and "content" in msg:
+                            messages.append({"role": str(msg["role"]), "content": str(msg["content"])})
+                        elif isinstance(msg, (list, tuple)) and len(msg) == 2:
+                            messages.append({"role": "user", "content": str(msg[0])})
+                            messages.append({"role": "assistant", "content": str(msg[1])})
+                    continue
+                if "text" in item:
+                    role = str(item.get("role", "user"))
+                    messages.append({"role": role, "content": str(item.get("text", ""))})
+                    continue
+
+            if isinstance(item, (list, tuple)) and len(item) == 2:
+                messages.append({"role": "user", "content": str(item[0])})
+                messages.append({"role": "assistant", "content": str(item[1])})
+
+        return messages
+
+    def _has_pending_questions(self, sample_id: str, probing_questions: dict[str, Any]) -> bool:
+        for ability_type, questions in probing_questions.items():
+            if isinstance(questions, dict):
+                questions = [questions]
+            elif not isinstance(questions, list):
+                continue
+            for sub_idx, _ in enumerate(questions):
+                qid = f"{sample_id}_{ability_type}_{sub_idx}"
+                if not self._checkpoint.is_done(qid):
+                    return True
+        return False
+
+    def _format_retrieved_context(self, search_results: dict[str, Any]) -> str:
+        if not search_results:
+            return "No relevant context retrieved."
+
+        lines: list[str] = []
+        for section in ("facts", "episodes", "syntheses", "sentences"):
+            items = search_results.get(section) or []
+            if not items:
+                continue
+            lines.append(f"## {section.title()}")
+            for i, item in enumerate(items, 1):
+                text = str(item.get("text", item)).strip()
+                lines.append(f"{i}. {text}")
+
+        return "\n".join(lines) if lines else "No relevant context retrieved."
+
     async def _run_instances(self):
         for idx, row in enumerate(self.dataset):
             # Parse chat turns
-            chat_turns = ast.literal_eval(row.get("chat_turns", "[]"))
+            raw_chat = row.get("chat") or row.get("chat_turns") or []
+            chat_turns = self._parse_chat_messages(raw_chat)
             # Parse probing questions (dict of ability_type -> question data)
             probing_questions_str = row.get("probing_questions", "{}")
             if probing_questions_str.startswith("{"):
@@ -101,26 +173,19 @@ class BeamBenchmark:
 
             sample_id = f"beam_sample_{idx}"
             
-            # Check if all abilities for this instance are done
-            # For simplicity in this runner, if any question is pending, re-run
-            all_done = all(self._checkpoint.is_done(f"{sample_id}_{q_idx}") 
-                           for q_idx in range(len(probing_questions)))
-            
-            if all_done:
+            if not self._has_pending_questions(sample_id, probing_questions):
                 continue
 
             try:
                 # 1. Ingestion Phase
                 logger.info(f"Ingesting {len(chat_turns)} turns for {sample_id}...")
                 
-                # Convert raw chat to session format 
-                session_messages = [{"role": t.get("role", "user"), "content": t.get("text", "")} for t in chat_turns]
-                
-                await self.vektori_client._pipeline.ingest(
-                    messages=session_messages,
-                    session_id=sample_id,
-                    user_id=sample_id
-                )
+                if chat_turns:
+                    await self.vektori_client.add(
+                        messages=chat_turns,
+                        session_id=sample_id,
+                        user_id=sample_id,
+                    )
 
                 # 2. Query Phase for each probing question
                 for ability_type, questions in probing_questions.items():
@@ -141,15 +206,27 @@ class BeamBenchmark:
                         
                         try:
                             # Retrieval + Generation
-                            # Emulate standard pipeline flow, including hypothetical reranking step logic
-                            reply = await self.vektori_client.process_message(
-                                message=question_text,
+                            search_results = await self.vektori_client.search(
+                                query=question_text,
                                 user_id=sample_id,
-                                session_id=f"eval_{qid}"
+                                depth="l1",
                             )
-                            
-                            actual_ans = reply.content
-                            score = await self.judge.evaluate_answer(ability_type, question_text, expected_ans, actual_ans)
+                            context = self._format_retrieved_context(search_results)
+                            actual_ans = await generate_answer(
+                                question=question_text,
+                                context=context,
+                                question_date="",
+                                question_type=str(ability_type),
+                                llm=self._eval_llm,
+                                prompt_template=None,
+                                max_tokens=2048,
+                            )
+                            score = await self.judge.evaluate_answer(
+                                ability_type,
+                                question_text,
+                                expected_ans,
+                                actual_ans,
+                            )
                             
                             result = {
                                 "question_id": qid,
@@ -176,7 +253,8 @@ class BeamBenchmark:
                 await self.vektori_client.delete_user(sample_id)
 
     async def _evaluate_and_summarize(self):
-        results = list(self._checkpoint.results.values())
+        completed = self._checkpoint.get_completed()
+        results = list(completed.values())
         summary = self.judge.compute_summary(results)
         
         sm_path = self.output_dir / f"{self.config.run_name}_summary.json"
