@@ -92,36 +92,36 @@ PRONOUNS = {
 }
 
 JUNK_PATTERNS = [
-    r"^(ok|okay|sure|yes|no|yeah|yep|nope|hmm|hm|ah|oh|uh|um|lol|haha|thanks|thank you|got it|right|cool|nice|great|fine|alright)\s*[.!?]*$",
-    r"^(hey|hi|hello|bye|goodbye|cheers|ciao)\s*[.!?]*$",
+    re.compile(r"^(ok|okay|sure|yes|no|yeah|yep|nope|hmm|hm|ah|oh|uh|um|lol|haha|thanks|thank you|got it|right|cool|nice|great|fine|alright)\s*[.!?]*$", re.IGNORECASE),
+    re.compile(r"^(hey|hi|hello|bye|goodbye|cheers|ciao)\s*[.!?]*$", re.IGNORECASE),
     # web/social media cruft
-    r"©\s*\d{4}",
-    r"(terms of service|privacy policy|cookie policy|accessibility|all rights reserved)",
-    r"^\s*(trending|trending now|what'?s happening)\s*$",
-    r"^\d[\d,\.]+\s*(views|likes|retweets|replies|reposts|followers|following)\s*$",
-    r"^(show more|load more|see more|view more|read more)\s*[.!?]*$",
-    r"(sports\s*·\s*trending|entertainment\s*·\s*trending|news\s*·\s*trending)",
-    r"^relevant\s+(people|chats|posts)\s*$",
+    re.compile(r"©\s*\d{4}", re.IGNORECASE),
+    re.compile(r"(terms of service|privacy policy|cookie policy|accessibility|all rights reserved)", re.IGNORECASE),
+    re.compile(r"^\s*(trending|trending now|what'?s happening)\s*$", re.IGNORECASE),
+    re.compile(r"^\d[\d,\.]+\s*(views|likes|retweets|replies|reposts|followers|following)\s*$", re.IGNORECASE),
+    re.compile(r"^(show more|load more|see more|view more|read more)\s*[.!?]*$", re.IGNORECASE),
+    re.compile(r"(sports\s*·\s*trending|entertainment\s*·\s*trending|news\s*·\s*trending)", re.IGNORECASE),
+    re.compile(r"^relevant\s+(people|chats|posts)\s*$", re.IGNORECASE),
     # pipe-separated nav lists (e.g. "Terms | Privacy | Cookie")
-    r"^[^|]{1,40}\|[^|]{1,40}\|",
+    re.compile(r"^[^|]{1,40}\|[^|]{1,40}\|", re.IGNORECASE),
 ]
 
 CODE_PATTERNS = [
-    r"[{}\[\]<>].*[{}\[\]<>]",
-    r"^(import |from |def |class |const |let |var |function )",
-    r"[a-zA-Z0-9+/]{40,}",
-    r"^(/|\\|[A-Z]:\\)",
-    r"https?://\S{50,}",
+    re.compile(r"[{}\[\]<>].*[{}\[\]<>]"),
+    re.compile(r"^(import |from |def |class |const |let |var |function )"),
+    re.compile(r"[a-zA-Z0-9+/]{40,}"),
+    re.compile(r"^(/|\\|[A-Z]:\\)"),
+    re.compile(r"https?://\S{50,}"),
 ]
 
 META_PATTERNS = [
-    r"^(just for context|for reference|fyi|note:|update:)",
-    r":$",
-    r"^(explain|tell me about|describe|show me|help me with)\s",
+    re.compile(r"^(just for context|for reference|fyi|note:|update:)", re.IGNORECASE),
+    re.compile(r":$"),
+    re.compile(r"^(explain|tell me about|describe|show me|help me with)\s", re.IGNORECASE),
 ]
 
 
-def is_quality_sentence(text: str, config: QualityConfig = QualityConfig()) -> bool:
+def is_quality_sentence(text: str, config: QualityConfig | None = None) -> bool:
     """
     10-layer quality gauntlet. Returns True if sentence should be stored.
 
@@ -130,6 +130,9 @@ def is_quality_sentence(text: str, config: QualityConfig = QualityConfig()) -> b
 
     Pass config.enabled=False to store everything (some use cases want this).
     """
+    if config is None:
+        config = QualityConfig()
+
     if not config.enabled:
         return True
 
@@ -143,17 +146,17 @@ def is_quality_sentence(text: str, config: QualityConfig = QualityConfig()) -> b
     # 2. Junk / filler / acknowledgments
     text_lower = text_clean.lower().strip(".,!? ")
     for pattern in JUNK_PATTERNS:
-        if re.match(pattern, text_lower, re.IGNORECASE):
+        if pattern.match(text_lower):
             return False
 
     # 3. Code / credentials / file paths
     for pattern in CODE_PATTERNS:
-        if re.search(pattern, text_clean):
+        if pattern.search(text_clean):
             return False
 
     # 4. Meta-text / vague commands
     for pattern in META_PATTERNS:
-        if re.match(pattern, text_lower, re.IGNORECASE):
+        if pattern.match(text_lower):
             return False
 
     # 5. Pronoun-heavy fragments (likely context-free without surrounding text)

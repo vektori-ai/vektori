@@ -73,9 +73,7 @@ class IngestionPipeline:
                 continue
             raw_sents = split_sentences(msg["content"])
             for idx, text in enumerate(raw_sents):
-                if not self.quality_config.enabled or is_quality_sentence(
-                    text, self.quality_config
-                ):
+                if is_quality_sentence(text, self.quality_config):
                     all_sentences.append(
                         {
                             "text": text,
