@@ -123,47 +123,53 @@ class BeamBenchmark:
                 )
 
                 # 2. Query Phase for each probing question
-                for q_idx, (ability_type, q_data) in enumerate(probing_questions.items()):
-                    qid = f"{sample_id}_{q_idx}"
-                    if self._checkpoint.is_done(qid):
+                for ability_type, questions in probing_questions.items():
+                    if isinstance(questions, dict):
+                        questions = [questions]
+                    elif not isinstance(questions, list):
                         continue
-
-                    question_text = q_data.get("question", "")
-                    expected_ans = q_data.get("answer", "")
-                    
-                    q_t0 = time.perf_counter()
-                    
-                    try:
-                        # Retrieval + Generation
-                        # Emulate standard pipeline flow, including hypothetical reranking step logic
-                        reply = await self.vektori_client.process_message(
-                            message=question_text,
-                            user_id=sample_id,
-                            session_id=f"eval_{qid}"
-                        )
                         
-                        actual_ans = reply.content
-                        score = await self.judge.evaluate_answer(ability_type, question_text, expected_ans, actual_ans)
-                        
-                        result = {
-                            "question_id": qid,
-                            "ability_type": ability_type,
-                            "question": question_text,
-                            "expected": expected_ans,
-                            "generated": actual_ans,
-                            "score": score,
-                            "latency_ms": (time.perf_counter() - q_t0) * 1000
-                        }
-                        self._checkpoint.mark_done(qid, result)
-                        self._checkpoint.save()
-                        logger.info(f"✅ {qid} ({ability_type}) answered. Score: {score}")
+                    for sub_idx, q_dict in enumerate(questions):
+                        qid = f"{sample_id}_{ability_type}_{sub_idx}"
+                        if self._checkpoint.is_done(qid):
+                            continue
 
-                    except Exception as e:
-                        logger.error(f"❌ Question {qid} failed: {e}")
-                        # Sleep momentarily in case of API rate limits
-                        await asyncio.sleep(5)
-                        self._checkpoint.mark_failed(qid, str(e))
-                        self._checkpoint.save()
+                        question_text = q_dict.get("question", "")
+                        expected_ans = q_dict.get("answer", "")
+                        
+                        q_t0 = time.perf_counter()
+                        
+                        try:
+                            # Retrieval + Generation
+                            # Emulate standard pipeline flow, including hypothetical reranking step logic
+                            reply = await self.vektori_client.process_message(
+                                message=question_text,
+                                user_id=sample_id,
+                                session_id=f"eval_{qid}"
+                            )
+                            
+                            actual_ans = reply.content
+                            score = await self.judge.evaluate_answer(ability_type, question_text, expected_ans, actual_ans)
+                            
+                            result = {
+                                "question_id": qid,
+                                "ability_type": ability_type,
+                                "question": question_text,
+                                "expected": expected_ans,
+                                "generated": actual_ans,
+                                "score": score,
+                                "latency_ms": (time.perf_counter() - q_t0) * 1000
+                            }
+                            self._checkpoint.mark_done(qid, result)
+                            self._checkpoint.save()
+                            logger.info(f"✅ {qid} ({ability_type}) answered. Score: {score}")
+
+                        except Exception as e:
+                            logger.error(f"❌ Question {qid} failed: {e}")
+                            # Sleep momentarily in case of API rate limits
+                            await asyncio.sleep(5)
+                            self._checkpoint.mark_failed(qid, str(e))
+                            self._checkpoint.save()
                     
             finally:
                 # Clean up isolated state
