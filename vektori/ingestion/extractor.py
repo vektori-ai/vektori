@@ -879,8 +879,8 @@ class FactExtractor:
                 for sent_id in linked:
                     await self.db.insert_fact_source(fact_id, sent_id)
 
-                # Build similarity edges for PPR graph
-                await self._build_fact_edges(fact_id, fact_embedding, user_id, agent_id)
+                # Build similarity + entity edges for PPR graph
+                await self._build_fact_edges(fact_id, fact_embedding, user_id, agent_id, subject=subject)
 
             except Exception as e:
                 logger.warning("Failed to insert fact '%s': %s", fact_data.get("text"), e)
@@ -974,8 +974,8 @@ class FactExtractor:
                 for sent_id in linked:
                     await self.db.insert_fact_source(fact_id, sent_id)
 
-                # Mirror fresh-path: build PPR similarity edges for this fact
-                await self._build_fact_edges(fact_id, fact_emb, user_id, agent_id)
+                # Mirror fresh-path: build PPR similarity + entity edges for this fact
+                await self._build_fact_edges(fact_id, fact_emb, user_id, agent_id, subject=subject)
 
             except Exception as e:
                 logger.warning("Failed to replay fact '%s': %s", fact_data.get("text"), e)
@@ -1049,16 +1049,22 @@ class FactExtractor:
         fact_embedding: list[float],
         user_id: str,
         agent_id: str | None,
+        subject: str | None = None,
         sim_threshold: float = 0.75,
         limit: int = 10,
     ) -> None:
-        """Find similar existing facts and insert PPR graph edges.
+        """Build PPR graph edges: semantic (similarity-based) + entity (subject-based).
 
-        Lower threshold than dedup (0.75 vs 0.85) so we capture "related but
-        not duplicate" facts — the edges that let PPR multi-hop from matched
-        facts to relevant-but-unmatched ones.
+        Semantic edges (edge_type='semantic'): link facts whose embeddings are
+        similar (sim >= 0.75). Let PPR multi-hop from matched facts to related ones.
+
+        Entity edges (edge_type='entity'): link all facts about the same named
+        entity (same non-generic subject). Makes the PPR graph entity-aware so
+        "Alice's job" and "Alice's hobbies" are connected even if dissimilar.
+        Entity edges only inserted when no semantic edge already exists (ON CONFLICT DO NOTHING).
         """
         try:
+            # ── Semantic edges ──────────────────────────────────────────────────
             candidates = await self.db.search_facts(
                 embedding=fact_embedding,
                 user_id=user_id,
@@ -1066,12 +1072,35 @@ class FactExtractor:
                 limit=limit,
                 active_only=True,
             )
+            semantic_linked: set[str] = set()
             for c in candidates:
                 if c["id"] == fact_id:
                     continue
                 sim = 1.0 - c.get("distance", 1.0)
                 if sim >= sim_threshold:
-                    await self.db.insert_fact_edge(fact_id, c["id"], user_id, weight=round(sim, 4))
+                    await self.db.insert_fact_edge(
+                        fact_id, c["id"], user_id, weight=round(sim, 4), edge_type="semantic"
+                    )
+                    semantic_linked.add(c["id"])
+
+            # ── Entity edges ────────────────────────────────────────────────────
+            # Skip generic subjects ('user', 'assistant') — only named entities.
+            if subject and subject not in ("user", "assistant"):
+                entity_candidates = await self.db.search_facts(
+                    embedding=fact_embedding,
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    subject=subject,
+                    limit=20,
+                    active_only=True,
+                )
+                for c in entity_candidates:
+                    if c["id"] == fact_id or c["id"] in semantic_linked:
+                        continue
+                    # weight=0.6: meaningful but won't dominate over strong semantic edges
+                    await self.db.insert_fact_edge(
+                        fact_id, c["id"], user_id, weight=0.6, edge_type="entity"
+                    )
         except Exception as e:
             logger.debug("_build_fact_edges failed for %s: %s", fact_id, e)
 

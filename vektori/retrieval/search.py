@@ -20,32 +20,30 @@ VALID_DEPTHS = {"l0", "l1", "l2"}
 
 
 class SearchPipeline:
-    """Three-layer retrieval pipeline.
+    """Three-layer retrieval pipeline with 4-strategy fusion.
 
     L0 — Facts only (~50-200 tokens):
         Vector search over facts. Entry point for all retrieval.
-        Facts are short and crisp → best cosine match for direct queries.
 
     L1 — Facts + Episodes + Source Sentences (~300-800 tokens):
         Facts + cross-session episodes linked to those facts (via episode_facts graph
         traversal) + the exact sentences each fact was extracted from (via fact_sources).
-        Episodes are always returned at every depth; sentences require l1 or l2.
-        This is the default depth.
 
     L2 — Full story (~1000-3000 tokens):
         Everything in L1, plus full session context window (±N sentences around
-        each source sentence via NEXT edges). Reconstructs the conversational
-        flow surrounding each matched moment.
+        each source sentence via NEXT edges).
 
-    Sentence fallback:
-        When no facts exist yet (extraction still in-flight), falls through to
-        sentence-level vector search so retrieval degrades gracefully rather
-        than returning empty.
+    Retrieval strategies (run in parallel, fused via RRF):
+        1. Semantic vector search (cosine similarity)
+        2. Keyword / BM25 search
+        3. Temporal search (when date range parsed from query)
+        4. Graph traversal (PPR-surfaced facts not in initial L0 results)
 
-    Fast path:
-        When the storage backend supports it (postgres.supports_single_query),
-        L2 executes as a single CTE round trip instead of 4 separate queries.
-        L0/L1 always use the step-by-step path (they're already 1-2 queries).
+    Post-fusion:
+        - Composite scoring (similarity × recency × mentions × source_weight)
+        - Cross-encoder reranking (if sentence-transformers installed)
+        - Session-diverse top-k selection
+        - Optional token budget truncation
     """
 
     def __init__(
@@ -57,23 +55,21 @@ class SearchPipeline:
         min_score: float = 0.3,
         use_ppr: bool = True,
         ppr_alpha: float = 0.5,
+        reranker: Any = None,
+        reranker_top_n: int = 20,
         debug: bool = False,
     ) -> None:
         self.db = db
         self.embedder = embedder
         self.temporal_decay_rate = temporal_decay_rate
         self.use_mentions = use_mentions
-        # Facts whose cosine similarity falls below this floor are dropped — applied to
-        # similarity (or the composite score if components are missing) so old-but-relevant
-        # facts aren't penalised by temporal decay. Irrelevant facts score ~0.1-0.2, weak matches ~0.3-0.4.
-        # Set to 0.0 to disable (always return something regardless of relevance).
         self.min_score = min_score
-        # PPR replaces the simple graph hop for episode retrieval with a full random
-        # walk over the fact+episode graph, surfacing episodes reachable from related
-        # facts (not just directly-matched ones). Disable to revert to the old behavior.
         self.use_ppr = use_ppr
         self.ppr_alpha = ppr_alpha
-        # debug=True logs score breakdowns for each returned fact
+        # CrossEncoderReranker instance — None disables reranking
+        self._reranker = reranker
+        # How many candidates to pass to the reranker (rerank top-N before top-k selection)
+        self._reranker_top_n = reranker_top_n
         self.debug = debug
         self._temporal_parser = TemporalQueryParser()
 
@@ -92,30 +88,28 @@ class SearchPipeline:
         after_date: datetime | None = None,
         parse_temporal: bool = True,
         reference_date: datetime | None = None,
+        max_tokens: int | None = None,
     ) -> dict[str, Any]:
         """Retrieve relevant memories for a query.
 
         Args:
             query: Natural language query string.
             user_id: Whose memories to search.
-            agent_id: Optional agent scoping. None means search all agents.
+            agent_id: Optional agent scoping.
             depth: "l0" | "l1" | "l2". Invalid values raise ValueError.
-            top_k: Max facts to return. Episodes and sentences are not capped
-                   here — they're derived from the returned facts and bounded
-                   by how many links exist in the graph.
+            top_k: Max facts to return.
             context_window: ±N sentences around each source sentence (L2 only).
-            include_superseded: If True, also return overridden/old facts.
-                                 Useful for historical queries.
+            include_superseded: Also return overridden/old facts.
             before_date/after_date: Explicit temporal filters on fact event_time.
-            parse_temporal: If True and no explicit dates provided, auto-parse
-                            temporal expressions from the query (e.g. "last week").
+            parse_temporal: Auto-parse temporal expressions from the query.
+            max_tokens: Token budget for result content. Truncates to fit when set.
 
         Returns:
             {
-              "facts":        list[dict],  # always present
-              "episodes":     list[dict],  # always present — cross-session patterns linked to matched facts
+              "facts":        list[dict],
+              "episodes":     list[dict],
               "sentences":    list[dict],  # l1, l2 only
-              "memory_found": bool,        # False when no facts passed min_score (abstention signal)
+              "memory_found": bool,
             }
 
         Raises:
@@ -124,29 +118,26 @@ class SearchPipeline:
         if depth not in VALID_DEPTHS:
             raise ValueError(f"Invalid depth '{depth}'. Must be one of: {sorted(VALID_DEPTHS)}")
 
-        # Auto-parse temporal window from query when no explicit dates given
         if parse_temporal and before_date is None and after_date is None:
             window = self._temporal_parser.parse(query, reference_date=reference_date)
             if window:
                 before_date = window.before_date
                 after_date = window.after_date
                 logger.debug(
-                    "Temporal window parsed from query: after=%s before=%s",
-                    after_date,
-                    before_date,
+                    "Temporal window parsed: after=%s before=%s", after_date, before_date
                 )
 
         query_embedding = await self.embedder.embed(query)
 
-        # L2 on Postgres: single CTE round trip — faster than 4 separate calls.
-        # Only use the fast path for active-only queries; include_superseded
-        # requires the stepped path since the CTE always filters is_active=true.
+        # L2 Postgres fast path — disable when temporal dates active (stepped path handles that)
         if (
             depth == "l2"
             and not include_superseded
+            and not before_date
+            and not after_date
             and getattr(self.db, "supports_single_query", False)
         ):
-            return await self._search_l2_fast(
+            result = await self._search_l2_fast(
                 query,
                 query_embedding,
                 user_id,
@@ -155,26 +146,29 @@ class SearchPipeline:
                 session_id,
                 top_k,
                 context_window,
+            )
+        else:
+            result = await self._search_stepped(
+                query,
+                query_embedding,
+                user_id,
+                agent_id,
+                subject,
+                session_id,
+                depth,
+                top_k,
+                context_window,
+                include_superseded,
                 before_date=before_date,
                 after_date=after_date,
             )
 
-        return await self._search_stepped(
-            query,
-            query_embedding,
-            user_id,
-            agent_id,
-            subject,
-            session_id,
-            depth,
-            top_k,
-            context_window,
-            include_superseded,
-            before_date=before_date,
-            after_date=after_date,
-        )
+        if max_tokens:
+            result = _truncate_to_token_budget(result, max_tokens)
 
-    # ── Step-by-step path (all backends, L0/L1, and L2 fallback) ──────────────
+        return result
+
+    # ── Step-by-step path (all backends, L0/L1, and L2 temporal fallback) ────
 
     async def _search_stepped(
         self,
@@ -191,10 +185,22 @@ class SearchPipeline:
         before_date: datetime | None = None,
         after_date: datetime | None = None,
     ) -> dict[str, Any]:
-        # ── Step 1: Parallel — facts AND sentences ────────────────────────────
-        # Run vector search, keyword search, and sentence search concurrently.
-        # Vector and keyword searches are fused via RRF to enable Hybrid Search.
-        seed_facts_vec, seed_facts_kw, direct_sentences = await asyncio.gather(
+        # ── Step 1: Parallel — vector + keyword + temporal + sentence fallback ─
+        temporal_coro = (
+            self.db.search_facts_temporal(
+                user_id=user_id,
+                agent_id=agent_id,
+                before_date=before_date,
+                after_date=after_date,
+                subject=subject,
+                limit=top_k * 2,
+                active_only=not include_superseded,
+            )
+            if (before_date or after_date)
+            else asyncio.sleep(0, result=[])
+        )
+
+        seed_facts_vec, seed_facts_kw, temporal_facts, direct_sentences = await asyncio.gather(
             self.db.search_facts(
                 embedding=query_embedding,
                 user_id=user_id,
@@ -217,6 +223,7 @@ class SearchPipeline:
                 before_date=before_date,
                 after_date=after_date,
             ) if hasattr(self.db, "search_facts_keyword") else asyncio.sleep(0, result=[]),
+            temporal_coro,
             self.db.search_sentences(
                 embedding=query_embedding,
                 user_id=user_id,
@@ -225,9 +232,9 @@ class SearchPipeline:
             ),
         )
 
-        seed_facts = _reciprocal_rank_fusion(seed_facts_vec, seed_facts_kw)
+        # 3-way RRF: vector + keyword + temporal
+        seed_facts = _reciprocal_rank_fusion(seed_facts_vec, seed_facts_kw, temporal_facts)
 
-        # Sentence fallback: no facts yet (extraction still in-flight)
         if not seed_facts:
             logger.debug("search: no facts for user=%s, falling back to sentence search", user_id)
             if depth == "l0":
@@ -246,36 +253,24 @@ class SearchPipeline:
             use_mentions=self.use_mentions,
         )
 
-        # Apply dynamic Z-score thresholding + min score floor
-        if scored_facts:
-            # Compute dynamic cutoff for contextual relevance (TEMPR)
-            raw_scores = [f.get("_score_components", {}).get("similarity", f["score"]) for f in scored_facts]
-            mean_score = sum(raw_scores) / len(raw_scores)
-            if len(raw_scores) > 1:
-                std_score = statistics.stdev(raw_scores)
-            else:
-                std_score = 0.0
-                
-            # Truncate the long tail: keep items within roughly 1 standard deviation of the mean,
-            # but never drop below the hard floor (self.min_score).
-            dynamic_threshold = mean_score - std_score
-            effective_min = max(self.min_score, dynamic_threshold)
-            
-            scored_facts = [
-                f
-                for f in scored_facts
-                if f.get("_score_components", {}).get("similarity", f["score"]) >= effective_min
-            ]
+        scored_facts = _apply_threshold(scored_facts, self.min_score)
 
         if self.debug:
             for f in scored_facts[:top_k]:
                 logger.debug(explain_score(f))
 
+        # ── Rerank top-N candidates with cross-encoder ────────────────────────
+        if self._reranker is not None and scored_facts:
+            candidates = scored_facts[:self._reranker_top_n]
+            candidates = self._reranker.rerank(query_text, candidates)
+            # Re-merge: reranked candidates + remainder (already below threshold)
+            reranked_ids = {f["id"] for f in candidates}
+            scored_facts = candidates + [f for f in scored_facts[self._reranker_top_n:] if f["id"] not in reranked_ids]
+
         top_k_facts = _diverse_top_k(scored_facts, top_k)
         seed_fact_ids = [f["id"] for f in top_k_facts]
 
         if depth == "l0":
-            # L0: graph traversal only — keep it light
             episodes = await self.db.get_episodes_for_facts(seed_fact_ids)
             syntheses = await self.db.get_syntheses_for_facts(seed_fact_ids)
             top = _clean(top_k_facts)
@@ -286,16 +281,7 @@ class SearchPipeline:
                 "memory_found": len(top) > 0,
             }
 
-        # ── Step 2: Episodes (L1/L2) ─────────────────────────────────────────
-        # Two paths: PPR (default) or plain graph hop + vector search.
-        #
-        # PPR path: build the fact+episode graph, seed from cosine-matched facts,
-        # diffuse probability mass through similarity edges, rank episodes by
-        # their aggregated PPR score. Surfaces episodes reachable from *related*
-        # facts (multi-hop) not just directly-matched ones.
-        #
-        # Fallback path (use_ppr=False or no edges yet): old behavior —
-        # graph hop from matched fact IDs + direct cosine over episodes.
+        # ── Step 2: Episodes — PPR or plain graph hop ─────────────────────────
         graph_syntheses, vec_syntheses, vec_episodes = await asyncio.gather(
             self.db.get_syntheses_for_facts(seed_fact_ids),
             self.db.search_syntheses(query_embedding, user_id, agent_id),
@@ -310,7 +296,6 @@ class SearchPipeline:
             )
 
         if self.use_ppr and (fact_edges or episode_fact_map):
-            logger.debug("PPR: running on %d fact edges, %d episode nodes, %d total facts", len(fact_edges), len(episode_fact_map), len(all_user_facts))
             seed_scores = {
                 f["id"]: f.get("_score_components", {}).get("similarity", f.get("score", 0.0))
                 for f in top_k_facts
@@ -324,10 +309,6 @@ class SearchPipeline:
             )
             ppr_ranked = rank_episodes_by_ppr(episode_fact_map, ppr_scores)
 
-            # Fetch the top PPR-ranked episode rows from DB.
-            # get_episodes_for_facts() expects fact IDs (joins on episode_facts.fact_id),
-            # so unpack the top-ranked episodes → their constituent facts using the
-            # episode_fact_map already in memory — zero extra DB calls.
             top_fact_ids_from_ppr = [
                 fid
                 for ep_id, _ in ppr_ranked[:10]
@@ -336,9 +317,38 @@ class SearchPipeline:
             ]
             graph_episodes = await self.db.get_episodes_for_facts(top_fact_ids_from_ppr) if top_fact_ids_from_ppr else []
 
+            # ── Graph stream: surface PPR-traversed facts not in initial results ──
+            episode_ids = set(episode_fact_map.keys())
+            seed_ids = set(seed_fact_ids)
+            max_ppr = max(ppr_scores.values()) if ppr_scores else 1.0
+            extra_ppr_ids = [
+                fid for fid, score in sorted(ppr_scores.items(), key=lambda x: x[1], reverse=True)
+                if fid not in episode_ids and fid not in seed_ids and score > 0.001
+            ][:top_k]
+
+            if extra_ppr_ids:
+                extra_facts = await self.db.get_facts_by_ids(extra_ppr_ids, user_id)
+                for f in extra_facts:
+                    raw_ppr = ppr_scores.get(f["id"], 0.0)
+                    # Normalize PPR score → competitive distance (0.2–0.5 range)
+                    norm = raw_ppr / max_ppr if max_ppr > 0 else 0.0
+                    f["distance"] = max(0.05, 0.5 - norm * 0.3)
+
+                if extra_facts:
+                    # Re-RRF: merge graph-traversed facts into the scored pool
+                    combined = _reciprocal_rank_fusion(top_k_facts, extra_facts)
+                    combined_scored = score_and_rank(
+                        combined,
+                        temporal_decay_rate=self.temporal_decay_rate,
+                        use_mentions=self.use_mentions,
+                    )
+                    combined_scored = _apply_threshold(combined_scored, self.min_score)
+                    top_k_facts = _diverse_top_k(combined_scored, top_k)
+                    seed_fact_ids = [f["id"] for f in top_k_facts]
+
             if self.debug:
                 logger.debug(
-                    "PPR: %d fact edges, %d episode nodes, top episode scores: %s",
+                    "PPR: %d edges, %d episodes, top: %s",
                     len(fact_edges),
                     len(episode_fact_map),
                     [(ep_id[:8], round(s, 5)) for ep_id, s in ppr_ranked[:3]],
@@ -354,9 +364,8 @@ class SearchPipeline:
         source_sentence_ids = await self.db.get_source_sentences(seed_fact_ids)
 
         top_facts = _clean(top_k_facts)
-        memory_found = len(top_facts) > 0
 
-        # ── Step 4: Session scoring — merge direct search + fact-linked ───────
+        # ── Step 4: Session scoring ────────────────────────────────────────────
         result_sentences = await _filter_top_sessions(
             self.db,
             direct_sentences,
@@ -371,10 +380,10 @@ class SearchPipeline:
             "episodes": episodes,
             "syntheses": syntheses,
             "sentences": _dedup(result_sentences),
-            "memory_found": memory_found,
+            "memory_found": len(top_facts) > 0,
         }
 
-    # ── Single-query fast path (Postgres L2 only) ─────────────────────────────
+    # ── Single-query fast path (Postgres L2, non-temporal queries only) ───────
 
     async def _search_l2_fast(
         self,
@@ -386,8 +395,6 @@ class SearchPipeline:
         session_id: str | None,
         top_k: int,
         context_window: int,
-        before_date: datetime | None = None,
-        after_date: datetime | None = None,
     ) -> dict[str, Any]:
         """Execute full L2 retrieval in one CTE round trip on Postgres."""
         raw = await self.db.search_l2_single_query(
@@ -398,8 +405,6 @@ class SearchPipeline:
             session_id=session_id,
             limit=top_k,
             window=context_window,
-            before_date=before_date,
-            after_date=after_date,
         )
 
         scored_facts = score_and_rank(
@@ -407,23 +412,13 @@ class SearchPipeline:
             temporal_decay_rate=self.temporal_decay_rate,
             use_mentions=self.use_mentions,
         )
+        scored_facts = _apply_threshold(scored_facts, self.min_score)
 
-        if scored_facts:
-            raw_scores = [f.get("_score_components", {}).get("similarity", f["score"]) for f in scored_facts]
-            mean_score = sum(raw_scores) / len(raw_scores)
-            if len(raw_scores) > 1:
-                std_score = statistics.stdev(raw_scores)
-            else:
-                std_score = 0.0
-                
-            dynamic_threshold = mean_score - std_score
-            effective_min = max(self.min_score, dynamic_threshold)
-            
-            scored_facts = [
-                f
-                for f in scored_facts
-                if f.get("_score_components", {}).get("similarity", f["score"]) >= effective_min
-            ]
+        if self._reranker is not None and scored_facts:
+            candidates = scored_facts[:self._reranker_top_n]
+            candidates = self._reranker.rerank(query_text, candidates)
+            reranked_ids = {f["id"] for f in candidates}
+            scored_facts = candidates + [f for f in scored_facts[self._reranker_top_n:] if f["id"] not in reranked_ids]
 
         if self.debug:
             for f in scored_facts[:top_k]:
@@ -438,7 +433,7 @@ class SearchPipeline:
             self.db.get_syntheses_for_facts(top_fact_ids),
             self.db.search_syntheses(query_embedding, user_id, agent_id),
         )
-        
+
         episodes = _merge_unique(graph_episodes, vec_episodes)
         syntheses = _merge_unique(graph_syntheses, vec_syntheses)
 
@@ -460,29 +455,12 @@ class SearchPipeline:
         subject: str | None = None,
         top_k: int = 10,
     ) -> dict[str, Any]:
-        """
-        Expanded retrieval: concurrent L0 fact searches across multiple query
-        variants, merged into a single L1 result.
-
-        Flow:
-          embed_batch(queries)
-            → concurrent search_facts() per embedding          (L0 × N)
-            → merge by fact ID, keep min distance per fact
-            → score_and_rank(merged_facts)
-            → get_source_sentences(top_fact_ids)               (L1 graph)
-            → return {facts, sentences}
-
-        Always returns L1 depth. L2 context expansion is intentionally excluded
-        — expansion already widens fact recall; adding window expansion on top
-        would be redundant and expensive.
-        """
+        """Expanded retrieval: concurrent L0 fact searches across multiple query variants."""
         if not queries:
             return {"facts": [], "sentences": [], "memory_found": False}
 
-        # Single embed_batch call for all query variants
         embeddings = await self.embedder.embed_batch(queries)
 
-        # Concurrent: L0 fact searches per variant + sentence search on primary query
         async def _search_one(embedding: list[float]) -> list[dict[str, Any]]:
             return await self.db.search_facts(
                 embedding=embedding,
@@ -503,14 +481,11 @@ class SearchPipeline:
         *all_results_list, direct_sentences = await asyncio.gather(*fact_tasks, sent_task)
         all_results: list[list[dict[str, Any]]] = list(all_results_list)
 
-        # Merge: per fact ID keep minimum distance (closest match across all variants)
         best_by_id: dict[str, dict[str, Any]] = {}
         for result_set in all_results:
             for fact in result_set:
                 fid = fact["id"]
-                if fid not in best_by_id or fact.get("distance", 1.0) < best_by_id[fid].get(
-                    "distance", 1.0
-                ):
+                if fid not in best_by_id or fact.get("distance", 1.0) < best_by_id[fid].get("distance", 1.0):
                     best_by_id[fid] = fact
 
         merged_facts = list(best_by_id.values())
@@ -525,19 +500,18 @@ class SearchPipeline:
                 "memory_found": False,
             }
 
-        # Score the merged set
         scored_facts = score_and_rank(
             merged_facts,
             temporal_decay_rate=self.temporal_decay_rate,
             use_mentions=self.use_mentions,
         )
+        scored_facts = _apply_threshold(scored_facts, self.min_score)
 
-        if self.min_score > 0:
-            scored_facts = [
-                f
-                for f in scored_facts
-                if f.get("_score_components", {}).get("similarity", f["score"]) >= self.min_score
-            ]
+        if self._reranker is not None and scored_facts:
+            candidates = scored_facts[:self._reranker_top_n]
+            candidates = self._reranker.rerank(queries[0], candidates)
+            reranked_ids = {f["id"] for f in candidates}
+            scored_facts = candidates + [f for f in scored_facts[self._reranker_top_n:] if f["id"] not in reranked_ids]
 
         if self.debug:
             for f in scored_facts[:top_k]:
@@ -559,11 +533,10 @@ class SearchPipeline:
             self.db.search_syntheses(embeddings[0], user_id, agent_id),
             self.db.get_source_sentences(fact_ids),
         )
-        
+
         episodes = _merge_unique(graph_episodes, vec_episodes)
         syntheses = _merge_unique(graph_syntheses, vec_syntheses)
 
-        # Session scoring: merge direct search + fact-linked sentences
         result_sentences = await _filter_top_sessions(
             self.db,
             direct_sentences,
@@ -581,11 +554,29 @@ class SearchPipeline:
             "memory_found": len(top_facts) > 0,
         }
 
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _clean(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Strip internal scoring debug fields before returning to the caller."""
-    return [{k: v for k, v in f.items() if k != "_score_components"} for f in facts]
+    """Strip internal scoring fields before returning to the caller."""
+    return [{k: v for k, v in f.items() if k not in ("_score_components", "_rerank_score")} for f in facts]
+
+
+def _apply_threshold(
+    scored_facts: list[dict[str, Any]],
+    min_score: float,
+) -> list[dict[str, Any]]:
+    """Dynamic Z-score threshold + hard min_score floor."""
+    if not scored_facts:
+        return scored_facts
+    raw_scores = [f.get("_score_components", {}).get("similarity", f["score"]) for f in scored_facts]
+    mean_score = sum(raw_scores) / len(raw_scores)
+    std_score = statistics.stdev(raw_scores) if len(raw_scores) > 1 else 0.0
+    effective_min = max(min_score, mean_score - std_score)
+    return [
+        f for f in scored_facts
+        if f.get("_score_components", {}).get("similarity", f["score"]) >= effective_min
+    ]
 
 
 def _diverse_top_k(
@@ -593,24 +584,11 @@ def _diverse_top_k(
     top_k: int,
     per_session: int = 3,
 ) -> list[dict[str, Any]]:
-    """Session-diverse top-k selection.
-
-    For multi-session queries a plain top-k often returns all facts from 1-2
-    hot sessions, leaving other relevant sessions unrepresented.
-
-    Strategy:
-      1. Take up to `per_session` highest-scoring facts per unique session.
-      2. Fill any remaining slots with the global best facts not yet selected.
-
-    Facts within each phase remain in score-descending order.
-    `per_session=3` balances diversity against quality — enough to capture the
-    main signals from each session without over-diluting with low-score facts.
-    """
+    """Session-diverse top-k: up to per_session facts per session, then global fill."""
     selected: list[dict[str, Any]] = []
     session_counts: dict[str, int] = {}
     remainder: list[dict[str, Any]] = []
 
-    # Phase 1: up to per_session facts per session
     for f in scored_facts:
         sid = f.get("session_id") or ""
         if session_counts.get(sid, 0) < per_session:
@@ -621,7 +599,6 @@ def _diverse_top_k(
         if len(selected) >= top_k:
             break
 
-    # Phase 2: fill remaining slots from global best (already score-sorted)
     for f in remainder:
         if len(selected) >= top_k:
             break
@@ -631,12 +608,6 @@ def _diverse_top_k(
 
 
 def _dedup(sentences: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Deduplicate sentences by ID, preserving order.
-
-    Needed because multiple facts can share the same source sentence —
-    expand_session_context returns it once per fact without dedup at the
-    SQL level (DISTINCT only helps within a single fact's expansion).
-    """
     seen: set[str] = set()
     result = []
     for s in sentences:
@@ -648,7 +619,6 @@ def _dedup(sentences: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _merge_unique(*iterables: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Merge multiple lists of dicts by 'id', preserving order."""
     seen: set[str] = set()
     result = []
     for it in iterables:
@@ -661,39 +631,81 @@ def _merge_unique(*iterables: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _reciprocal_rank_fusion(
-    vector_results: list[dict[str, Any]],
-    keyword_results: list[dict[str, Any]],
-    k: int = 60
+    *result_lists: list[dict[str, Any]],
+    k: int = 60,
 ) -> list[dict[str, Any]]:
-    """
-    Reciprocal Rank Fusion (RRF) algorithm to combine vector and BM25 results.
-    RRF score = sum(1 / (k + rank)) across different retrieval systems.
+    """N-way Reciprocal Rank Fusion.
+
+    Accepts 2–N result lists. Facts appearing in more strategies rank higher.
+    Distance is normalized so the top consensus result gets distance ≈ 0.05
+    and single-stream rank-0 results get ≈ 0.50.
     """
     scores: dict[str, float] = {}
     items_map: dict[str, dict[str, Any]] = {}
-    
-    for rank, item in enumerate(vector_results):
-        scores[item["id"]] = scores.get(item["id"], 0.0) + (1.0 / (k + rank))
-        items_map[item["id"]] = item
-        
-    for rank, item in enumerate(keyword_results):
-        scores[item["id"]] = scores.get(item["id"], 0.0) + (1.0 / (k + rank))
-        if item["id"] not in items_map:
-            # We map rank roughly to distance for backwards compatibility
-            item["distance"] = 1.0 - (1.0 / (k + rank))
-            items_map[item["id"]] = item
-            
-    # Sort descending by RRF score
-    sorted_ids = sorted(scores.keys(), key=lambda i: scores[i], reverse=True)
-    
-    fused_results = []
+
+    for result_list in result_lists:
+        for rank, item in enumerate(result_list):
+            item_id = item["id"]
+            scores[item_id] = scores.get(item_id, 0.0) + (1.0 / (k + rank))
+            if item_id not in items_map:
+                items_map[item_id] = item
+
+    if not scores:
+        return []
+
+    sorted_ids = sorted(scores, key=lambda i: scores[i], reverse=True)
+    max_score = scores[sorted_ids[0]]
+
+    fused: list[dict[str, Any]] = []
     for item_id in sorted_ids:
-        # Convert higher RRF score back into a lower 'distance' so scoring processes it efficiently
-        item = items_map[item_id]
-        item["distance"] = max(0.0, 1.0 - (scores[item_id] * 20))  # arbitrary scaling
-        fused_results.append(item)
-        
-    return fused_results
+        item = dict(items_map[item_id])
+        # Normalize: top result → distance 0.05, weakest → distance 0.95
+        norm = scores[item_id] / max_score if max_score > 0 else 0.0
+        item["distance"] = round(max(0.0, 1.0 - norm * 0.95), 4)
+        fused.append(item)
+
+    return fused
+
+
+def _truncate_to_token_budget(
+    result: dict[str, Any],
+    max_tokens: int,
+    chars_per_token: float = 4.0,
+) -> dict[str, Any]:
+    """Truncate result to fit within a token budget (approximate, char-based)."""
+    budget_chars = int(max_tokens * chars_per_token)
+    used = 0
+
+    facts: list[dict[str, Any]] = []
+    for f in result.get("facts", []):
+        cost = len(f.get("text", "")) + 50
+        if used + cost > budget_chars:
+            break
+        facts.append(f)
+        used += cost
+
+    episodes: list[dict[str, Any]] = []
+    for e in result.get("episodes", []):
+        cost = len(e.get("text", "")) + 30
+        if used + cost > budget_chars:
+            break
+        episodes.append(e)
+        used += cost
+
+    sentences: list[dict[str, Any]] = []
+    for s in result.get("sentences", []):
+        cost = len(s.get("text", "")) + 20
+        if used + cost > budget_chars:
+            break
+        sentences.append(s)
+        used += cost
+
+    return {
+        **result,
+        "facts": facts,
+        "episodes": episodes,
+        "sentences": sentences,
+    }
 
 
 async def _filter_top_sessions(
@@ -704,7 +716,7 @@ async def _filter_top_sessions(
     top_k: int,
     depth: str,
 ) -> list[dict[str, Any]]:
-    """Merge direct search and fact-linked sentences, and pick top sessions."""
+    """Merge direct search and fact-linked sentences, pick top sessions."""
     direct_sent_by_id: dict[str, dict[str, Any]] = {s["id"]: s for s in direct_sentences}
 
     missing_ids = [sid for sid in source_sentence_ids if sid not in direct_sent_by_id]
@@ -714,12 +726,10 @@ async def _filter_top_sessions(
             direct_sent_by_id[s["id"]] = s
 
     all_candidate_ids: list[str] = list(
-        dict.fromkeys(
-            [
-                *[s["id"] for s in direct_sentences],
-                *source_sentence_ids,
-            ]
-        )
+        dict.fromkeys([
+            *[s["id"] for s in direct_sentences],
+            *source_sentence_ids,
+        ])
     )
 
     if not all_candidate_ids:
@@ -752,9 +762,7 @@ async def _filter_top_sessions(
             session_best_dist[ssid] = sent_dist
 
     max_sessions = 5 if depth == "l2" else 3
-    top_session_ids = sorted(session_best_dist, key=lambda s: session_best_dist[s])[
-        :max_sessions
-    ]
+    top_session_ids = sorted(session_best_dist, key=lambda s: session_best_dist[s])[:max_sessions]
 
     result_sentences: list[dict[str, Any]] = []
     for ssid in top_session_ids:

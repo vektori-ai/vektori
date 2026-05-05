@@ -185,3 +185,13 @@ class VektoriConfig:
 
     # PPR retrieval — set False to revert to plain graph hop (useful for ablation)
     use_ppr: bool = True
+
+    # Cross-encoder reranker — requires: pip install sentence-transformers
+    # Set use_reranker=False to disable (e.g. low-latency environments)
+    use_reranker: bool = True
+    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    # How many candidates to pass to the reranker before final top-k selection
+    reranker_top_n: int = 20
+
+    # Token budget for retrieval output (None = no limit)
+    max_retrieval_tokens: int | None = None

@@ -113,12 +113,19 @@ class Vektori:
             embedder=self.embedder,
             llm=self.llm,
         )
+        reranker = None
+        if self.config.use_reranker:
+            from vektori.retrieval.reranker import CrossEncoderReranker
+            reranker = CrossEncoderReranker(self.config.reranker_model)
+
         self._search = SearchPipeline(
             db=self.db,
             embedder=self.embedder,
             temporal_decay_rate=self.config.temporal_decay_rate,
             min_score=self.config.min_retrieval_score,
             use_ppr=self.config.use_ppr,
+            reranker=reranker,
+            reranker_top_n=self.config.reranker_top_n,
         )
         self._pipeline = IngestionPipeline(
             db=self.db,
@@ -282,6 +289,7 @@ class Vektori:
         include_superseded: bool = False,
         expand: bool = False,
         reference_date: datetime | None = None,
+        max_tokens: int | None = None,
     ) -> dict[str, Any]:
         """
         Retrieve relevant memories for a query.
@@ -337,6 +345,7 @@ class Vektori:
             context_window=context_window or self.config.context_window,
             include_superseded=include_superseded,
             reference_date=reference_date,
+            max_tokens=max_tokens or self.config.max_retrieval_tokens,
         )
 
     async def get_facts(
