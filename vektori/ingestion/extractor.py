@@ -631,16 +631,19 @@ class FactExtractor:
         current: list[dict[str, str]] = []
         current_chars = 0
 
+        def _msg_chars(m: dict[str, str]) -> int:
+            return len(m.get("role", "")) + len(m.get("content", "")) + 10
+
         for msg in messages:
-            # +10 for "ROLE: \n" overhead
-            msg_chars = len(msg.get("role", "")) + len(msg.get("content", "")) + 10
+            msg_chars = _msg_chars(msg)
             if current and current_chars + msg_chars > self._max_chunk_chars:
                 chunks.append(current)
-                overlap = current[-1]
-                current = [overlap, msg]
-                current_chars = (
-                    len(overlap.get("role", "")) + len(overlap.get("content", "")) + 10 + msg_chars
-                )
+                # Carry the last user-assistant exchange pair (≥2 messages) so the
+                # next chunk has enough context to resolve short confirmations like
+                # "yeah" or "exactly" against the question that prompted them.
+                overlap = current[-2:] if len(current) >= 2 else current[-1:]
+                current = overlap + [msg]
+                current_chars = sum(_msg_chars(m) for m in current)
             else:
                 current.append(msg)
                 current_chars += msg_chars
@@ -1126,9 +1129,13 @@ class FactExtractor:
         unmatched: list[str] = []
 
         for quote in source_quotes:
-            # Step 1: guard against hallucinated quotes (skip for trusted cached quotes)
-            if conversation is not None and quote.lower() not in conversation.lower():
-                continue
+            # Step 1: guard against hallucinated quotes (skip for trusted cached quotes).
+            # Use word-overlap rather than exact substring to accept minor paraphrases
+            # ("I use Postgres" vs "we use Postgres") while still rejecting fabrications.
+            if conversation is not None:
+                quote_words = {w for w in quote.lower().split() if len(w) > 3}
+                if quote_words and not any(w in conversation.lower() for w in quote_words):
+                    continue
 
             # Step 2: exact substring match
             exact = await self.db.find_sentence_containing(session_id, quote)
