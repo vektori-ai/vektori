@@ -451,8 +451,9 @@ class SQLiteBackend(StorageBackend):
 
     async def search_facts_keyword(
         self,
-        query: str,
         user_id: str,
+        query: str | None = None,
+        query_text: str | None = None,
         agent_id: str | None = None,
         session_id: str | None = None,
         subject: str | None = None,
@@ -461,6 +462,10 @@ class SQLiteBackend(StorageBackend):
         before_date: datetime | None = None,
         after_date: datetime | None = None,
     ) -> list[dict[str, Any]]:
+        query_value = query or query_text
+        if not query_value:
+            return []
+
         sql = "SELECT * FROM facts WHERE user_id = ?"
         params: list[Any] = [user_id]
         if active_only:
@@ -482,7 +487,7 @@ class SQLiteBackend(StorageBackend):
             params.append(after_date.isoformat())
             
         sql += " AND content LIKE ?"
-        params.append(f"%{query}%")
+        params.append(f"%{query_value}%")
             
         async with self._conn.execute(sql, params) as cursor:
             rows = await cursor.fetchall()

@@ -55,6 +55,8 @@ class BeamBenchmark:
         self.dataset = []
         self._checkpoint = None
         self._eval_llm = None
+        self._run_name = None
+        self._empty_chat_logged = False
         self.judge = BeamJudge(config.eval_model)
 
     async def setup(self) -> None:
@@ -82,8 +84,8 @@ class BeamBenchmark:
         limit = self.config.max_questions if self.config.max_questions else len(hf_ds)
         self.dataset = [hf_ds[i] for i in range(limit)]
         
-        run_name = self.config.run_name or f"beam_{self.config.dataset_split}"
-        chk_path = self.output_dir / f"{run_name}_checkpoint.json"
+        self._run_name = self.config.run_name or f"beam_{self.config.dataset_split}"
+        chk_path = self.output_dir / f"{self._run_name}_checkpoint.json"
         self._checkpoint = BenchmarkCheckpoint(chk_path)
         logger.info(f"Loaded {len(self.dataset)} BEAM instances.")
 
@@ -102,33 +104,32 @@ class BeamBenchmark:
             except Exception:
                 return []
 
-        if not isinstance(raw_chat, list):
-            return []
-
         messages: list[dict[str, str]] = []
 
-        for item in raw_chat:
-            if isinstance(item, dict):
-                if "role" in item and "content" in item:
-                    messages.append({"role": str(item["role"]), "content": str(item["content"])})
-                    continue
-                if "messages" in item and isinstance(item["messages"], list):
-                    for msg in item["messages"]:
-                        if isinstance(msg, dict) and "role" in msg and "content" in msg:
-                            messages.append({"role": str(msg["role"]), "content": str(msg["content"])})
-                        elif isinstance(msg, (list, tuple)) and len(msg) == 2:
-                            messages.append({"role": "user", "content": str(msg[0])})
-                            messages.append({"role": "assistant", "content": str(msg[1])})
-                    continue
-                if "text" in item:
-                    role = str(item.get("role", "user"))
-                    messages.append({"role": role, "content": str(item.get("text", ""))})
-                    continue
+        def _collect(node: Any) -> None:
+            if node is None:
+                return
+            if isinstance(node, dict):
+                if "role" in node and "content" in node:
+                    messages.append({"role": str(node["role"]), "content": str(node["content"])})
+                    return
+                if "messages" in node:
+                    _collect(node.get("messages"))
+                    return
+                if "text" in node:
+                    role = str(node.get("role", "user"))
+                    messages.append({"role": role, "content": str(node.get("text", ""))})
+                    return
 
-            if isinstance(item, (list, tuple)) and len(item) == 2:
-                messages.append({"role": "user", "content": str(item[0])})
-                messages.append({"role": "assistant", "content": str(item[1])})
+            if isinstance(node, (list, tuple)):
+                if len(node) == 2 and not isinstance(node[0], (list, tuple, dict)):
+                    messages.append({"role": "user", "content": str(node[0])})
+                    messages.append({"role": "assistant", "content": str(node[1])})
+                    return
+                for item in node:
+                    _collect(item)
 
+        _collect(raw_chat)
         return messages
 
     def _has_pending_questions(self, sample_id: str, probing_questions: dict[str, Any]) -> bool:
@@ -162,8 +163,17 @@ class BeamBenchmark:
     async def _run_instances(self):
         for idx, row in enumerate(self.dataset):
             # Parse chat turns
-            raw_chat = row.get("chat") or row.get("chat_turns") or []
+            raw_chat = row.get("chat") or row.get("chat_data") or row.get("chat_turns") or row.get("conversation") or []
             chat_turns = self._parse_chat_messages(raw_chat)
+            if not chat_turns and not self._empty_chat_logged:
+                self._empty_chat_logged = True
+                keys = list(row.keys())
+                logger.warning(
+                    "No chat turns parsed for sample %s. Keys=%s raw_chat_type=%s",
+                    sample_id,
+                    keys,
+                    type(raw_chat).__name__,
+                )
             # Parse probing questions (dict of ability_type -> question data)
             probing_questions_str = row.get("probing_questions", "{}")
             if probing_questions_str.startswith("{"):
@@ -257,7 +267,7 @@ class BeamBenchmark:
         results = list(completed.values())
         summary = self.judge.compute_summary(results)
         
-        sm_path = self.output_dir / f"{self.config.run_name}_summary.json"
+        sm_path = self.output_dir / f"{self._run_name}_summary.json"
         with open(sm_path, "w") as f:
             json.dump(summary, f, indent=2)
             
