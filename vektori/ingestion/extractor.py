@@ -373,7 +373,7 @@ Rules:
   BAD:  "User seems to be dealing with a sports injury" ← that is a theme, not an episode
   BAD:  "User said X, assistant said Y" ← that is a transcript summary, not an episode
 - One episode per distinct topic in the batch; {max_episodes} maximum
-- Return {{"episodes": []}} if nothing notable
+- Return {{"episodes": []}} only if the conversation contained no actual content (e.g. purely greetings with no facts)
 {domain_guidance}
 Return ONLY the JSON."""
 
@@ -1021,8 +1021,9 @@ class FactExtractor:
         facts_list = "\n".join(f"{i}. {text}" for i, (_, text) in enumerate(inserted_facts))
         fact_id_list = [fid for fid, _ in inserted_facts]
 
-        # Truncate conversation to keep prompt manageable (~3000 chars ≈ 750 tokens)
-        conv_snippet = conversation[:3000]
+        # Use the tail of the conversation — the end is where the substance is;
+        # the beginning is often small talk and preamble.
+        conv_snippet = conversation[-3000:]
 
         session_date_line = (
             f"SESSION DATE: {session_time.strftime('%Y-%m-%d')}\n\n" if session_time else ""
