@@ -696,8 +696,8 @@ class FactExtractor:
                 if dedup is not None:
                     existing_id, same_session = dedup
                     if same_session:
-                        # Pure dedup: same conversation, skip insert entirely
-                        await self.db.increment_fact_mentions(existing_id)
+                        # Pure dedup: same conversation, skip insert — do NOT
+                        # increment mentions (within-session repetition ≠ importance)
                         continue
                     # Cross-session near-dup: the newer fact supersedes the older one.
                     # Insert the new fact (below), then deactivate the old one with a
@@ -798,7 +798,6 @@ class FactExtractor:
                 )
                 if dedup is not None:
                     existing_id, same_session = dedup
-                    await self.db.increment_fact_mentions(existing_id)
                     if same_session:
                         continue
 
@@ -858,7 +857,7 @@ class FactExtractor:
 
         Thresholds:
           - same session + sim > 0.92 → strong dedup signal (same conversation re-stating same fact)
-          - diff session + sim > 0.85 → cross-session near-dup (fact seen before)
+          - diff session + sim > 0.90 → cross-session near-dup (fact seen before)
         Subject-scoped when available to avoid cross-entity false positives.
         """
         try:
@@ -867,7 +866,7 @@ class FactExtractor:
                 user_id=user_id,
                 agent_id=agent_id,
                 subject=subject,
-                limit=3,
+                limit=10,
                 active_only=True,
             )
             if not candidates:
@@ -878,13 +877,13 @@ class FactExtractor:
 
             if same_session and sim > 0.92:
                 return (best["id"], True)
-            if not same_session and sim > 0.85:
+            if not same_session and sim > 0.90:
                 return (best["id"], False)
 
-            # Contradiction LLM check for near-misses
-            # If the fact wasn't deduped by bare similarity, check if it contradicts.
-            # Only consider same-subject facts that are reasonably close (sim > 0.65).
-            plausible_conflicts = [c for c in candidates if (1.0 - c.get("distance", 1.0)) > 0.65]
+            # Contradiction LLM check — use low threshold (0.30) so antonym-space
+            # contradictions ("dark mode" vs "light mode") reach the LLM even when
+            # embedding similarity is low.
+            plausible_conflicts = [c for c in candidates if (1.0 - c.get("distance", 1.0)) > 0.30]
             if plausible_conflicts:
                 facts_text = "\n".join(f"- [{c['id']}] {c['text']}" for c in plausible_conflicts)
                 prompt = CONTRADICTION_PROMPT.format(fact_text=fact_text, existing_facts=facts_text)
