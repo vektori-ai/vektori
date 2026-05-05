@@ -37,9 +37,8 @@ CREATE TABLE IF NOT EXISTS sentences (
 -- Deterministic: same content in same position = same ID = no duplicates
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sentences_content_hash ON sentences (content_hash);
 
--- Vector index for sentence search (IVFFlat for <1M rows, switch to HNSW later)
 CREATE INDEX IF NOT EXISTS idx_sentences_embedding ON sentences
-    USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+    USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
 
 CREATE INDEX IF NOT EXISTS idx_sentences_user ON sentences (user_id);
 CREATE INDEX IF NOT EXISTS idx_sentences_session ON sentences (session_id);
@@ -84,7 +83,7 @@ CREATE TABLE IF NOT EXISTS facts (
 CREATE INDEX IF NOT EXISTS idx_facts_event_time ON facts (user_id, event_time) WHERE event_time IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_facts_text_search ON facts USING GIN (text_search);
 CREATE INDEX IF NOT EXISTS idx_facts_embedding ON facts
-    USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+    USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
 CREATE INDEX IF NOT EXISTS idx_facts_user ON facts (user_id);
 CREATE INDEX IF NOT EXISTS idx_facts_user_agent ON facts (user_id, agent_id);
 CREATE INDEX IF NOT EXISTS idx_facts_active ON facts (user_id, is_active) WHERE is_active = true;
@@ -157,7 +156,7 @@ CREATE TABLE IF NOT EXISTS syntheses (
 
 CREATE INDEX IF NOT EXISTS idx_syntheses_user ON syntheses (user_id);
 CREATE INDEX IF NOT EXISTS idx_syntheses_embedding ON syntheses
-    USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+    USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
 -- Dedup: same synthesis text for same user and agent scope is idempotent
 CREATE UNIQUE INDEX IF NOT EXISTS idx_syntheses_user_agent_text
     ON syntheses (user_id, COALESCE(agent_id, ''), text);
@@ -192,7 +191,7 @@ CREATE TABLE IF NOT EXISTS episodes (
 
 CREATE INDEX IF NOT EXISTS idx_episodes_user ON episodes (user_id);
 CREATE INDEX IF NOT EXISTS idx_episodes_embedding ON episodes
-    USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+    USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
 -- Dedup: same episode text for same user is idempotent
 CREATE UNIQUE INDEX IF NOT EXISTS idx_episodes_user_text ON episodes (user_id, text);
 
@@ -220,9 +219,11 @@ CREATE TABLE IF NOT EXISTS fact_edges (
     source_id UUID NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
     target_id UUID NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
     user_id TEXT NOT NULL,
+    edge_type TEXT NOT NULL DEFAULT 'semantic',  -- 'semantic' | 'entity'
     weight FLOAT DEFAULT 1.0,
     created_at TIMESTAMPTZ DEFAULT now(),
-    PRIMARY KEY (source_id, target_id)
+    PRIMARY KEY (source_id, target_id, edge_type)
 );
 
 CREATE INDEX IF NOT EXISTS idx_fact_edges_user ON fact_edges (user_id);
+CREATE INDEX IF NOT EXISTS idx_fact_edges_type ON fact_edges (user_id, edge_type);

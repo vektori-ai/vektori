@@ -135,14 +135,39 @@ class PostgresBackend(StorageBackend):
                 source_id UUID NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
                 target_id UUID NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
                 user_id TEXT NOT NULL,
+                edge_type TEXT NOT NULL DEFAULT 'semantic',
                 weight FLOAT DEFAULT 1.0,
                 created_at TIMESTAMPTZ DEFAULT now(),
-                PRIMARY KEY (source_id, target_id)
+                PRIMARY KEY (source_id, target_id, edge_type)
             )
         """)
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_fact_edges_user ON fact_edges (user_id)"
         )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_fact_edges_type ON fact_edges (user_id, edge_type)"
+        )
+        # Migrate old fact_edges PK (source_id, target_id) → (source_id, target_id, edge_type)
+        # Drop old table and recreate if edge_type column is missing
+        fact_edges_cols = {
+            row["column_name"]
+            for row in await conn.fetch(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'fact_edges'"
+            )
+        }
+        if "edge_type" not in fact_edges_cols:
+            await conn.execute("DROP TABLE IF EXISTS fact_edges CASCADE")
+            await conn.execute("""
+                CREATE TABLE fact_edges (
+                    source_id UUID NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
+                    target_id UUID NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
+                    user_id TEXT NOT NULL,
+                    edge_type TEXT NOT NULL DEFAULT 'semantic',
+                    weight FLOAT DEFAULT 1.0,
+                    created_at TIMESTAMPTZ DEFAULT now(),
+                    PRIMARY KEY (source_id, target_id, edge_type)
+                )
+            """)
 
     async def close(self) -> None:
         if self._pool:
@@ -723,14 +748,15 @@ class PostgresBackend(StorageBackend):
         target_id: str,
         user_id: str,
         weight: float = 1.0,
+        edge_type: str = "semantic",
     ) -> None:
         a, b = (source_id, target_id) if source_id < target_id else (target_id, source_id)
         async with self._pool.acquire() as conn:
             await conn.execute(
-                """INSERT INTO fact_edges (source_id, target_id, user_id, weight)
-                   VALUES ($1::uuid, $2::uuid, $3, $4)
+                """INSERT INTO fact_edges (source_id, target_id, user_id, edge_type, weight)
+                   VALUES ($1::uuid, $2::uuid, $3, $4, $5)
                    ON CONFLICT DO NOTHING""",
-                a, b, user_id, weight,
+                a, b, user_id, edge_type, weight,
             )
 
     async def get_fact_edges_for_user(
@@ -744,6 +770,69 @@ class PostgresBackend(StorageBackend):
                 user_id,
             )
         return [{"source_id": str(r["source_id"]), "target_id": str(r["target_id"]), "weight": r["weight"]} for r in rows]
+
+    async def search_facts_temporal(
+        self,
+        user_id: str,
+        agent_id: str | None = None,
+        before_date: datetime | None = None,
+        after_date: datetime | None = None,
+        subject: str | None = None,
+        limit: int = 10,
+        active_only: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Temporal-priority retrieval: facts in date range ordered by recency.
+
+        Used as a 4th RRF stream so pure time queries ("what happened last March?")
+        find facts even without semantic overlap with the query text.
+        """
+        if not before_date and not after_date:
+            return []
+        query = """
+            SELECT id, text, confidence, mentions, session_id, subject,
+                   created_at, event_time, metadata, fact_type, emotion, reasoning,
+                   0.0::float AS distance
+            FROM facts
+            WHERE user_id = $1
+              AND ($2::text IS NULL OR agent_id = $2)
+              AND ($3::text IS NULL OR subject = $3)
+              AND ($4::boolean = false OR is_active = true)
+              AND ($5::timestamptz IS NULL OR event_time <= $5)
+              AND ($6::timestamptz IS NULL OR event_time >= $6)
+              AND event_time IS NOT NULL
+            ORDER BY event_time DESC
+            LIMIT $7
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                query, user_id, agent_id, subject, active_only,
+                before_date, after_date, limit,
+            )
+        return [_row(r) for r in rows]
+
+    async def get_facts_by_ids(
+        self,
+        fact_ids: list[str],
+        user_id: str,
+    ) -> list[dict[str, Any]]:
+        """Fetch full fact records by IDs. Used by PPR to surface graph-traversed facts."""
+        if not fact_ids:
+            return []
+        uuid_ids = [uuid.UUID(fid) for fid in fact_ids]
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, text, confidence, mentions, session_id, subject,
+                       created_at, event_time, metadata, fact_type, emotion, reasoning
+                FROM facts
+                WHERE id = ANY($1::uuid[])
+                  AND user_id = $2
+                  AND is_active = true
+                """,
+                uuid_ids,
+                user_id,
+            )
+        return [_row(r) for r in rows]
 
     async def get_episode_fact_map(
         self,
@@ -776,6 +865,7 @@ class PostgresBackend(StorageBackend):
         user_id: str,
         agent_id: str | None = None,
         session_id: str | None = None,
+        event_time: datetime | None = None,
     ) -> str:
         episode_id = uuid.uuid5(uuid.NAMESPACE_OID, f"{user_id}::{text}")
         async with self._pool.acquire() as conn:

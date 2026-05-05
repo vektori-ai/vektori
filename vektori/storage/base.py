@@ -262,15 +262,16 @@ class StorageBackend(ABC):
         target_id: str,
         user_id: str,
         weight: float = 1.0,
+        edge_type: str = "semantic",
     ) -> None:
-        """Insert a similarity edge between two facts. ON CONFLICT DO NOTHING."""
+        """Insert an edge between two facts. ON CONFLICT DO NOTHING."""
 
     async def get_fact_edges_for_user(
         self,
         user_id: str,
         agent_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Return all fact similarity edges for a user as [{source_id, target_id, weight}]."""
+        """Return all fact edges for a user as [{source_id, target_id, weight}]."""
         return []
 
     async def get_episode_fact_map(
@@ -280,6 +281,27 @@ class StorageBackend(ABC):
     ) -> dict[str, list[str]]:
         """Return {episode_id: [fact_id, ...]} for all active episodes of a user."""
         return {}
+
+    async def search_facts_temporal(
+        self,
+        user_id: str,
+        agent_id: str | None = None,
+        before_date: Any = None,
+        after_date: Any = None,
+        subject: str | None = None,
+        limit: int = 10,
+        active_only: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Temporal-priority fact retrieval for 4th RRF stream. Default: empty (opt-in)."""
+        return []
+
+    async def get_facts_by_ids(
+        self,
+        fact_ids: list[str],
+        user_id: str,
+    ) -> list[dict[str, Any]]:
+        """Fetch full fact records by IDs. Used to surface PPR graph-traversed facts."""
+        return []
 
     # ── Episodes ──
 
