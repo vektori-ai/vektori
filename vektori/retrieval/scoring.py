@@ -17,16 +17,12 @@ def score_and_rank(
 ) -> list[dict[str, Any]]:
     """Score facts and sort by relevance descending.
 
-    Final score = similarity × confidence × recency × mentions_boost × source_weight
+    Final score = similarity × recency × mentions_boost × source_weight
 
     Components:
         similarity     — cosine similarity from pgvector (1 - distance).
                          This is the primary signal. Short, crisp facts score
                          well here because they embed cleanly against direct queries.
-
-        confidence     — LLM extraction confidence [0, 1]. Facts the model was
-                         uncertain about score lower. Multiplicative so a 0.5
-                         confidence halves the score regardless of other signals.
 
         recency        — Exponential decay: exp(-rate * age_days). Default rate of
                          0.001 gives ~36% decay over a year — slow enough that old
@@ -49,7 +45,6 @@ def score_and_rank(
     Args:
         facts: List of fact dicts from the storage backend. Expected fields:
                "distance" (float, pgvector cosine distance — lower is closer),
-               "confidence" (float, 0-1),
                "created_at" (datetime or str),
                "mentions" (int, optional — defaults to 1),
                "metadata" (dict, optional — may contain "source": "user"|"assistant").
@@ -85,10 +80,6 @@ def score_and_rank(
         # embeddings, but be defensive.
         distance = float(fact.get("distance") or 0.0)
         similarity = max(0.0, min(1.0, 1.0 - distance))
-
-        # ── Confidence ──────────────────────────────────────────────────────
-        confidence = float(fact.get("confidence") or 1.0)
-        confidence = max(0.0, min(1.0, confidence))
 
         # ── Recency ─────────────────────────────────────────────────────────
         # Prefer event_time (when the conversation happened) over created_at
@@ -133,16 +124,14 @@ def score_and_rank(
         else:
             source_weight = user_source_weight
 
-        score = similarity * confidence * recency * mentions_boost * source_weight
+        score = similarity * recency * mentions_boost * source_weight
 
         scored.append(
             {
                 **fact,
                 "score": round(score, 6),
-                # Expose components for debugging / explanation
                 "_score_components": {
                     "similarity": round(similarity, 4),
-                    "confidence": round(confidence, 4),
                     "recency": round(recency, 4),
                     "mentions_boost": round(mentions_boost, 4),
                     "source_weight": round(source_weight, 4),
@@ -189,7 +178,6 @@ def explain_score(fact: dict[str, Any]) -> str:
     return (
         f"score={fact['score']:.4f}  "
         f"[sim={components.get('similarity', '?'):.4f} × "
-        f"conf={components.get('confidence', '?'):.4f} × "
         f"recency={components.get('recency', '?'):.4f} × "
         f"mentions={components.get('mentions_boost', '?'):.4f}"
         f"{src_part}]  "

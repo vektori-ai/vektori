@@ -299,10 +299,9 @@ Return JSON:
 {{
   "facts": [
     {{
-      "text": "short factual statement under 20 words",
+      "text": "one factual statement; no padding, no conjunctions joining two separate claims — split into two facts instead",
       "source": "'user' for facts about the user, 'assistant' for notable things the assistant said",
       "subject": "'user' or a named person/entity (for user facts); 'assistant' for assistant facts",
-      "confidence": 0.95,
       "source_quotes": ["verbatim text copied from the turn this fact came from"],
       "temporal_expr": "optional — only if the fact has an explicit time anchor, e.g. '3 years ago', 'since 2021', 'last month'. Omit if no temporal info."
     }}
@@ -311,11 +310,11 @@ Return JSON:
 
 USER facts (source: "user"):
 - Extract facts about the USER or entities they explicitly mention, including preferences ("I love X", "I prefer Y", "I always use Z", "I hate X"), habits, and opinions
-- When the user gives a short response ("yes", "yeah", "nope", "exactly"), use the preceding ASSISTANT turn to understand what they confirmed or denied, but source_quotes must still be the USER's words
-- confidence:
-    0.9–1.0  → user volunteers information unprompted ("I work at Google")
-    0.7–0.89 → user confirms or agrees with assistant's suggestion ("yeah exactly", "yes that's right")
-    0.5–0.69 → inferred from indirect user statement
+- When the user gives a short response ("yes", "yeah", "nope", "exactly"), use the preceding ASSISTANT turn to understand what they confirmed or denied, but source_quotes must still be the USER's words. If the assistant made multiple claims and the user confirmed all of them, extract one fact per confirmed claim, not one fact per user turn.
+- Negations: rephrase as positive facts that preserve the negation context.
+  BAD: "User does not use React"
+  GOOD: "User's frontend stack is Vue, not React"
+  This prevents negated facts from poisoning similarity search.
 
 ASSISTANT facts (source: "assistant"):
 - Extract only notable things the assistant said that are worth remembering: recommendations made, advice given, specific information provided, named resources or options presented
@@ -325,7 +324,6 @@ ASSISTANT facts (source: "assistant"):
   BAD: "Assistant provided a list of language learning apps."
   GOOD: "Assistant recommended Memrise (uses mnemonics), Duolingo (gamified), and Babbel for language learning."
 - Do NOT extract generic filler ("Sure, I can help", "Great question", "Let me know if you need anything")
-- confidence: always 1.0
 - source_quotes: verbatim text from the ASSISTANT turn
 
 General:
@@ -333,10 +331,9 @@ General:
   BAD: "Calvin purchased a luxury car."      GOOD: "Calvin purchased a Ferrari 488 GTB."
   BAD: "John's old area was flooded."        GOOD: "John's area West County was flooded."
   BAD: "Tim visited a Harry Potter shop."    GOOD: "Tim visited House of MinaLima."
-  The 20-word guide does NOT override this — preserve the specific name even at 22–25 words.
-- One fact per statement. Short and crisp.
+- One fact per statement. No word limit — preserve all specifics (who, what, where, why).
 - subject: 'user' when about the person speaking; a named entity when about someone/something they mention; 'assistant' for assistant facts
-- Extract at most {max_facts} facts total — prioritize high-confidence, significant ones
+- Extract at most {max_facts} facts total
 - If nothing factual was stated, return {{"facts": []}}
 - Always name the person explicitly in every fact. Never write "the user" — use the actual name (e.g. "Caroline likes hiking", not "the user likes hiking").
 - Dates in `text`: if CONVERSATION DATE is provided, replace relative time references with the actual date.
@@ -720,7 +717,6 @@ class FactExtractor:
                     agent_id=agent_id,
                     session_id=session_id,
                     subject=subject,
-                    confidence=fact_data.get("confidence", 1.0),
                     metadata=meta or None,
                     event_time=session_time,
                 )
@@ -740,7 +736,6 @@ class FactExtractor:
                         {
                             "text": fact_data["text"],
                             "subject": subject,
-                            "confidence": fact_data.get("confidence", 1.0),
                             "metadata": meta or {},
                             "source_quotes": fact_data.get("source_quotes") or [],
                         }
@@ -815,7 +810,6 @@ class FactExtractor:
                     agent_id=agent_id,
                     session_id=session_id,
                     subject=subject,
-                    confidence=fact_data.get("confidence", 1.0),
                     metadata=meta or None,
                     event_time=session_time,
                 )
