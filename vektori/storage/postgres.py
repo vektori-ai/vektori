@@ -260,6 +260,9 @@ class PostgresBackend(StorageBackend):
         agent_id: str | None = None,
         session_id: str | None = None,
         subject: str | None = None,
+        fact_type: str | None = None,
+        emotion: str | None = None,
+        reasoning: str | None = None,
         confidence: float = 1.0,
         superseded_by_target: str | None = None,
         metadata: dict[str, Any] | None = None,
@@ -272,9 +275,10 @@ class PostgresBackend(StorageBackend):
                 """
                 INSERT INTO facts
                     (id, text, embedding, user_id, agent_id, session_id, subject,
+                     fact_type, emotion, reasoning,
                      confidence, superseded_by, metadata, event_time)
                 VALUES
-                    ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10, $11)
+                    ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                 """,
                 fact_id,
                 text,
@@ -283,6 +287,9 @@ class PostgresBackend(StorageBackend):
                 agent_id,
                 session_id,
                 subject,
+                fact_type,
+                emotion,
+                reasoning,
                 confidence,
                 uuid.UUID(superseded_by_target) if superseded_by_target else None,
                 json.dumps(metadata or {}),
@@ -314,6 +321,7 @@ class PostgresBackend(StorageBackend):
         query = """
             SELECT id, text, confidence, mentions, session_id, subject,
                    created_at, event_time, metadata,
+                   fact_type, emotion, reasoning,
                    embedding <=> $1::vector AS distance
             FROM facts
             WHERE user_id = $2
@@ -330,6 +338,56 @@ class PostgresBackend(StorageBackend):
             rows = await conn.fetch(
                 query,
                 _vec(embedding),
+                user_id,
+                agent_id,
+                session_id,
+                subject,
+                active_only,
+                before_date,
+                after_date,
+                limit,
+            )
+        return [_row(r) for r in rows]
+
+    async def search_facts_keyword(
+        self,
+        query_text: str,
+        user_id: str,
+        agent_id: str | None = None,
+        session_id: str | None = None,
+        subject: str | None = None,
+        limit: int = 10,
+        active_only: bool = True,
+        before_date: datetime | None = None,
+        after_date: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """BM25/Keyword search over facts using Postgres full-text search.
+        
+        Uses plainto_tsquery and ts_rank_cd for textual relevance.
+        Returns a faux 'distance' (1.0 - normalized rank) to roughly interface 
+        with down-stream ranking models, though RRF will overwrite it anyway.
+        """
+        query = """
+            SELECT id, text, confidence, mentions, session_id, subject,
+                   created_at, event_time, metadata,
+                   fact_type, emotion, reasoning,
+                   GREATEST(0, 1.0 - ts_rank_cd(text_search, plainto_tsquery('english', $1))) AS distance
+            FROM facts
+            WHERE user_id = $2
+              AND ($3::text IS NULL OR agent_id = $3)
+              AND ($4::text IS NULL OR session_id = $4)
+              AND ($5::text IS NULL OR subject = $5)
+              AND ($6::boolean = false OR is_active = true)
+              AND ($7::timestamptz IS NULL OR event_time <= $7)
+              AND ($8::timestamptz IS NULL OR event_time >= $8)
+              AND text_search @@ plainto_tsquery('english', $1)
+            ORDER BY ts_rank_cd(text_search, plainto_tsquery('english', $1)) DESC
+            LIMIT $9
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                query,
+                query_text,
                 user_id,
                 agent_id,
                 session_id,
@@ -856,6 +914,7 @@ class PostgresBackend(StorageBackend):
             -- Step 1: Seed facts via vector similarity (L0)
             seed_facts AS (
                 SELECT id, text, confidence, mentions, session_id, subject, created_at, event_time, metadata,
+                       fact_type, emotion, reasoning,
                        embedding <=> $1::vector AS distance
                 FROM facts
                 WHERE user_id = $2
@@ -904,15 +963,15 @@ class PostgresBackend(StorageBackend):
 
             -- Return all three layers tagged by type
             SELECT 'fact'     AS layer, id, text, confidence, mentions, created_at,
-                              metadata::text, distance
+                              metadata::text, distance, fact_type, emotion, reasoning
             FROM seed_facts
             UNION ALL
             SELECT 'episode'  AS layer, id, text, confidence, NULL::integer AS mentions, created_at,
-                              metadata::text, NULL AS distance
+                              metadata::text, NULL AS distance, NULL AS fact_type, NULL AS emotion, NULL AS reasoning
             FROM related_episodes
             UNION ALL
             SELECT 'sentence' AS layer, id, text, NULL AS confidence, NULL::integer AS mentions, created_at,
-                              NULL AS metadata, NULL AS distance
+                              NULL AS metadata, NULL AS distance, NULL AS fact_type, NULL AS emotion, NULL AS reasoning
             FROM expanded_sentences
         """
         async with self._pool.acquire() as conn:

@@ -99,6 +99,9 @@ class StorageBackend(ABC):
         agent_id: str | None = None,
         session_id: str | None = None,
         subject: str | None = None,
+        fact_type: str | None = None,
+        emotion: str | None = None,
+        reasoning: str | None = None,
         confidence: float = 1.0,
         superseded_by_target: str | None = None,
         metadata: dict[str, Any] | None = None,
@@ -127,6 +130,23 @@ class StorageBackend(ABC):
         """Vector search over facts. Results include a 'distance' field (cosine distance).
         subject: pre-filter to facts about this entity before the vector scan.
         before_date/after_date: filter by event_time for temporal queries."""
+        ...
+
+    @abstractmethod
+    async def search_facts_keyword(
+        self,
+        query: str,
+        user_id: str,
+        agent_id: str | None = None,
+        session_id: str | None = None,
+        subject: str | None = None,
+        limit: int = 10,
+        active_only: bool = True,
+        before_date: datetime | None = None,
+        after_date: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """BM25/Keyword search over facts. Results include a 'distance' or 'score' field.
+        Used for hybrid search with Reciprocal Rank Fusion."""
         ...
 
     @abstractmethod

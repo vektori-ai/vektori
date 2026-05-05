@@ -58,6 +58,10 @@ CREATE TABLE IF NOT EXISTS facts (
     session_id TEXT,                           -- which session produced this fact
     subject TEXT,                              -- entity this fact is about (pre-filter discriminator)
 
+    fact_type TEXT,                            -- 'world', 'experience', or 'observation'
+    emotion TEXT,                              -- implied or stated emotion
+    reasoning TEXT,                            -- motivation or 'why' behind the fact
+
     is_active BOOLEAN DEFAULT true,
     superseded_by UUID REFERENCES facts(id),  -- conflict resolution chain
     confidence FLOAT DEFAULT 1.0,
@@ -67,12 +71,16 @@ CREATE TABLE IF NOT EXISTS facts (
     -- not when extraction ran. Used for time-aware retrieval filtering.
     event_time TIMESTAMPTZ,
 
+    -- Search vector for Keyword BM25 searches
+    text_search tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED,
+
     metadata JSONB DEFAULT '{}',
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_facts_event_time ON facts (user_id, event_time) WHERE event_time IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_facts_text_search ON facts USING GIN (text_search);
 CREATE INDEX IF NOT EXISTS idx_facts_embedding ON facts
     USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 CREATE INDEX IF NOT EXISTS idx_facts_user ON facts (user_id);

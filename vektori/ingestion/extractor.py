@@ -300,6 +300,9 @@ Return JSON:
   "facts": [
     {{
       "text": "one factual statement; no padding, no conjunctions joining two separate claims — split into two facts instead",
+      "fact_type": "'world' (general knowledge), 'experience' (personal events/subjective facts), or 'observation' (deduced patterns)",
+      "emotion": "optional — any implied or stated emotion, sentiment, or reaction associated with this fact",
+      "reasoning": "optional — the reasoning, motivation, or 'why' behind the fact",
       "source": "'user' for facts about the user, 'assistant' for notable things the assistant said",
       "subject": "'user' or a named person/entity (for user facts); 'assistant' for assistant facts",
       "source_quotes": ["verbatim text copied from the turn this fact came from"],

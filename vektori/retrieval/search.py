@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import statistics
 from datetime import datetime
 from typing import Any
 
@@ -63,8 +64,8 @@ class SearchPipeline:
         self.temporal_decay_rate = temporal_decay_rate
         self.use_mentions = use_mentions
         # Facts whose cosine similarity falls below this floor are dropped — applied to
-        # similarity only (not the composite score) so old-but-relevant facts aren't
-        # penalised by temporal decay. Irrelevant facts score ~0.1-0.2, weak matches ~0.3-0.4.
+        # similarity (or the composite score if components are missing) so old-but-relevant
+        # facts aren't penalised by temporal decay. Irrelevant facts score ~0.1-0.2, weak matches ~0.3-0.4.
         # Set to 0.0 to disable (always return something regardless of relevance).
         self.min_score = min_score
         # PPR replaces the simple graph hop for episode retrieval with a full random
@@ -146,6 +147,7 @@ class SearchPipeline:
             and getattr(self.db, "supports_single_query", False)
         ):
             return await self._search_l2_fast(
+                query,
                 query_embedding,
                 user_id,
                 agent_id,
@@ -158,6 +160,7 @@ class SearchPipeline:
             )
 
         return await self._search_stepped(
+            query,
             query_embedding,
             user_id,
             agent_id,
@@ -175,6 +178,7 @@ class SearchPipeline:
 
     async def _search_stepped(
         self,
+        query_text: str,
         query_embedding: list[float],
         user_id: str,
         agent_id: str | None,
@@ -188,21 +192,31 @@ class SearchPipeline:
         after_date: datetime | None = None,
     ) -> dict[str, Any]:
         # ── Step 1: Parallel — facts AND sentences ────────────────────────────
-        # Run both searches concurrently. Sentence search adds a second retrieval
-        # surface for content that's never compressed into facts (e.g. assistant
-        # turns, conversational details that don't survive fact extraction).
-        seed_facts, direct_sentences = await asyncio.gather(
+        # Run vector search, keyword search, and sentence search concurrently.
+        # Vector and keyword searches are fused via RRF to enable Hybrid Search.
+        seed_facts_vec, seed_facts_kw, direct_sentences = await asyncio.gather(
             self.db.search_facts(
                 embedding=query_embedding,
                 user_id=user_id,
                 agent_id=agent_id,
                 session_id=session_id,
                 subject=subject,
-                limit=top_k,
+                limit=top_k * 2,
                 active_only=not include_superseded,
                 before_date=before_date,
                 after_date=after_date,
             ),
+            self.db.search_facts_keyword(
+                query_text=query_text,
+                user_id=user_id,
+                agent_id=agent_id,
+                session_id=session_id,
+                subject=subject,
+                limit=top_k * 2,
+                active_only=not include_superseded,
+                before_date=before_date,
+                after_date=after_date,
+            ) if hasattr(self.db, "search_facts_keyword") else asyncio.sleep(0, result=[]),
             self.db.search_sentences(
                 embedding=query_embedding,
                 user_id=user_id,
@@ -210,6 +224,8 @@ class SearchPipeline:
                 limit=top_k,
             ),
         )
+
+        seed_facts = _reciprocal_rank_fusion(seed_facts_vec, seed_facts_kw)
 
         # Sentence fallback: no facts yet (extraction still in-flight)
         if not seed_facts:
@@ -230,12 +246,25 @@ class SearchPipeline:
             use_mentions=self.use_mentions,
         )
 
-        # Apply min score floor
-        if self.min_score > 0:
+        # Apply dynamic Z-score thresholding + min score floor
+        if scored_facts:
+            # Compute dynamic cutoff for contextual relevance (TEMPR)
+            raw_scores = [f.get("_score_components", {}).get("similarity", f["score"]) for f in scored_facts]
+            mean_score = sum(raw_scores) / len(raw_scores)
+            if len(raw_scores) > 1:
+                std_score = statistics.stdev(raw_scores)
+            else:
+                std_score = 0.0
+                
+            # Truncate the long tail: keep items within roughly 1 standard deviation of the mean,
+            # but never drop below the hard floor (self.min_score).
+            dynamic_threshold = mean_score - std_score
+            effective_min = max(self.min_score, dynamic_threshold)
+            
             scored_facts = [
                 f
                 for f in scored_facts
-                if f.get("_score_components", {}).get("similarity", f["score"]) >= self.min_score
+                if f.get("_score_components", {}).get("similarity", f["score"]) >= effective_min
             ]
 
         if self.debug:
@@ -281,7 +310,7 @@ class SearchPipeline:
             )
 
         if self.use_ppr and (fact_edges or episode_fact_map):
-            logger.info("PPR: running on %d fact edges, %d episode nodes, %d total facts", len(fact_edges), len(episode_fact_map), len(all_user_facts))
+            logger.debug("PPR: running on %d fact edges, %d episode nodes, %d total facts", len(fact_edges), len(episode_fact_map), len(all_user_facts))
             seed_scores = {
                 f["id"]: f.get("_score_components", {}).get("similarity", f.get("score", 0.0))
                 for f in top_k_facts
@@ -315,24 +344,11 @@ class SearchPipeline:
                     [(ep_id[:8], round(s, 5)) for ep_id, s in ppr_ranked[:3]],
                 )
         else:
-            logger.info("PPR: skipped (use_ppr=%s, fact_edges=%d, episode_nodes=%d) — using plain graph hop", self.use_ppr, len(fact_edges) if self.use_ppr else -1, len(episode_fact_map) if self.use_ppr else -1)
+            logger.debug("PPR: skipped (use_ppr=%s) — using plain graph hop", self.use_ppr)
             graph_episodes = await self.db.get_episodes_for_facts(seed_fact_ids)
 
-        seen_episode_ids: set[str] = set()
-        episodes: list[dict[str, Any]] = []
-        for ins in (*graph_episodes, *vec_episodes):
-            iid = ins.get("id")
-            if iid and iid not in seen_episode_ids:
-                seen_episode_ids.add(iid)
-                episodes.append(ins)
-
-        seen_synthesis_ids: set[str] = set()
-        syntheses: list[dict[str, Any]] = []
-        for ins in (*graph_syntheses, *vec_syntheses):
-            iid = ins.get("id")
-            if iid and iid not in seen_synthesis_ids:
-                seen_synthesis_ids.add(iid)
-                syntheses.append(ins)
+        episodes = _merge_unique(graph_episodes, vec_episodes)
+        syntheses = _merge_unique(graph_syntheses, vec_syntheses)
 
         # ── Step 3: Trace facts → source sentences ────────────────────────────
         source_sentence_ids = await self.db.get_source_sentences(seed_fact_ids)
@@ -341,81 +357,14 @@ class SearchPipeline:
         memory_found = len(top_facts) > 0
 
         # ── Step 4: Session scoring — merge direct search + fact-linked ───────
-        # Build lookup from direct sentence search (already have distances)
-        direct_sent_by_id: dict[str, dict[str, Any]] = {s["id"]: s for s in direct_sentences}
-
-        # Load fact-linked sentences not already in direct search results
-        missing_ids = [sid for sid in source_sentence_ids if sid not in direct_sent_by_id]
-        if missing_ids:
-            loaded = await self.db.get_sentences_by_ids(missing_ids)
-            for s in loaded:
-                direct_sent_by_id[s["id"]] = s
-
-        # All candidate IDs: direct search first (lower distance → higher priority),
-        # then fact-linked sentences not in direct search
-        all_candidate_ids: list[str] = list(
-            dict.fromkeys(
-                [
-                    *[s["id"] for s in direct_sentences],
-                    *source_sentence_ids,
-                ]
-            )
+        result_sentences = await _filter_top_sessions(
+            self.db,
+            direct_sentences,
+            source_sentence_ids,
+            scored_facts,
+            top_k,
+            depth,
         )
-
-        if not all_candidate_ids:
-            return {
-                "facts": top_facts,
-                "episodes": episodes,
-                "syntheses": syntheses,
-                "sentences": [],
-                "memory_found": memory_found,
-            }
-
-        # Per-session baseline distance from fact scores (for sessions that appear
-        # only via fact-linking, not in the direct sentence search)
-        fact_dist_by_session: dict[str, float] = {}
-        for f in scored_facts[:top_k]:
-            fsid = f.get("session_id")
-            if fsid:
-                fdist = f.get("distance", 0.5)
-                if fsid not in fact_dist_by_session or fdist < fact_dist_by_session[fsid]:
-                    fact_dist_by_session[fsid] = fdist
-
-        # Group candidates by session, track best (lowest) distance per session
-        session_candidates: dict[str, list[dict[str, Any]]] = {}
-        session_best_dist: dict[str, float] = {}
-
-        for sid in all_candidate_ids:
-            sent = direct_sent_by_id.get(sid)
-            if not sent:
-                continue
-            ssid = sent.get("session_id", "")
-            if not ssid:
-                continue
-            if ssid not in session_candidates:
-                session_candidates[ssid] = []
-                # Seed with the best fact distance for this session
-                session_best_dist[ssid] = fact_dist_by_session.get(ssid, 1.0)
-            session_candidates[ssid].append(sent)
-            # Direct sentence match beats the fact-distance baseline
-            sent_dist = sent.get("distance", 1.0)
-            if sent_dist < session_best_dist[ssid]:
-                session_best_dist[ssid] = sent_dist
-
-        # Pick top sessions: more sessions for L2 (broader context)
-        max_sessions = 5 if depth == "l2" else 3
-        top_session_ids = sorted(session_best_dist, key=lambda s: session_best_dist[s])[
-            :max_sessions
-        ]
-
-        # Return sentences from top sessions in conversation order
-        result_sentences: list[dict[str, Any]] = []
-        for ssid in top_session_ids:
-            sents = sorted(
-                session_candidates.get(ssid, []),
-                key=lambda x: (x.get("turn_number", 0), x.get("sentence_index", 0)),
-            )
-            result_sentences.extend(sents)
 
         return {
             "facts": top_facts,
@@ -429,6 +378,7 @@ class SearchPipeline:
 
     async def _search_l2_fast(
         self,
+        query_text: str,
         query_embedding: list[float],
         user_id: str,
         agent_id: str | None,
@@ -458,11 +408,21 @@ class SearchPipeline:
             use_mentions=self.use_mentions,
         )
 
-        if self.min_score > 0:
+        if scored_facts:
+            raw_scores = [f.get("_score_components", {}).get("similarity", f["score"]) for f in scored_facts]
+            mean_score = sum(raw_scores) / len(raw_scores)
+            if len(raw_scores) > 1:
+                std_score = statistics.stdev(raw_scores)
+            else:
+                std_score = 0.0
+                
+            dynamic_threshold = mean_score - std_score
+            effective_min = max(self.min_score, dynamic_threshold)
+            
             scored_facts = [
                 f
                 for f in scored_facts
-                if f.get("_score_components", {}).get("similarity", f["score"]) >= self.min_score
+                if f.get("_score_components", {}).get("similarity", f["score"]) >= effective_min
             ]
 
         if self.debug:
@@ -478,21 +438,9 @@ class SearchPipeline:
             self.db.get_syntheses_for_facts(top_fact_ids),
             self.db.search_syntheses(query_embedding, user_id, agent_id),
         )
-        seen_episode_ids: set[str] = set()
-        episodes: list[dict[str, Any]] = []
-        for ins in (*graph_episodes, *vec_episodes):
-            iid = ins.get("id")
-            if iid and iid not in seen_episode_ids:
-                seen_episode_ids.add(iid)
-                episodes.append(ins)
-
-        seen_synthesis_ids: set[str] = set()
-        syntheses: list[dict[str, Any]] = []
-        for ins in (*graph_syntheses, *vec_syntheses):
-            iid = ins.get("id")
-            if iid and iid not in seen_synthesis_ids:
-                seen_synthesis_ids.add(iid)
-                syntheses.append(ins)
+        
+        episodes = _merge_unique(graph_episodes, vec_episodes)
+        syntheses = _merge_unique(graph_syntheses, vec_syntheses)
 
         return {
             "facts": top_facts,
@@ -611,72 +559,19 @@ class SearchPipeline:
             self.db.search_syntheses(embeddings[0], user_id, agent_id),
             self.db.get_source_sentences(fact_ids),
         )
-        seen_episode_ids: set[str] = set()
-        episodes: list[dict[str, Any]] = []
-        for ins in (*graph_episodes, *vec_episodes):
-            iid = ins.get("id")
-            if iid and iid not in seen_episode_ids:
-                seen_episode_ids.add(iid)
-                episodes.append(ins)
-
-        seen_synthesis_ids: set[str] = set()
-        syntheses: list[dict[str, Any]] = []
-        for ins in (*graph_syntheses, *vec_syntheses):
-            iid = ins.get("id")
-            if iid and iid not in seen_synthesis_ids:
-                seen_synthesis_ids.add(iid)
-                syntheses.append(ins)
+        
+        episodes = _merge_unique(graph_episodes, vec_episodes)
+        syntheses = _merge_unique(graph_syntheses, vec_syntheses)
 
         # Session scoring: merge direct search + fact-linked sentences
-        direct_sent_by_id: dict[str, dict[str, Any]] = {s["id"]: s for s in direct_sentences}
-        missing_ids = [sid for sid in source_sentence_ids if sid not in direct_sent_by_id]
-        if missing_ids:
-            loaded = await self.db.get_sentences_by_ids(missing_ids)
-            for s in loaded:
-                direct_sent_by_id[s["id"]] = s
-
-        all_candidate_ids = list(
-            dict.fromkeys(
-                [
-                    *[s["id"] for s in direct_sentences],
-                    *source_sentence_ids,
-                ]
-            )
+        result_sentences = await _filter_top_sessions(
+            self.db,
+            direct_sentences,
+            source_sentence_ids,
+            top_facts,
+            top_k,
+            depth="l1",
         )
-
-        session_candidates: dict[str, list[dict[str, Any]]] = {}
-        session_best_dist: dict[str, float] = {}
-        fact_dist_by_session: dict[str, float] = {}
-        for f in top_facts:
-            fsid = f.get("session_id")
-            if fsid:
-                fdist = f.get("distance", 0.5)
-                if fsid not in fact_dist_by_session or fdist < fact_dist_by_session[fsid]:
-                    fact_dist_by_session[fsid] = fdist
-
-        for sid in all_candidate_ids:
-            sent = direct_sent_by_id.get(sid)
-            if not sent:
-                continue
-            ssid = sent.get("session_id", "")
-            if not ssid:
-                continue
-            if ssid not in session_candidates:
-                session_candidates[ssid] = []
-                session_best_dist[ssid] = fact_dist_by_session.get(ssid, 1.0)
-            session_candidates[ssid].append(sent)
-            sent_dist = sent.get("distance", 1.0)
-            if sent_dist < session_best_dist[ssid]:
-                session_best_dist[ssid] = sent_dist
-
-        top_session_ids = sorted(session_best_dist, key=lambda s: session_best_dist[s])[:3]
-        result_sentences: list[dict[str, Any]] = []
-        for ssid in top_session_ids:
-            sents = sorted(
-                session_candidates.get(ssid, []),
-                key=lambda x: (x.get("turn_number", 0), x.get("sentence_index", 0)),
-            )
-            result_sentences.extend(sents)
 
         return {
             "facts": _clean(top_facts),
@@ -686,50 +581,7 @@ class SearchPipeline:
             "memory_found": len(top_facts) > 0,
         }
 
-    # ── Sentence fallback ─────────────────────────────────────────────────────
-
-    async def _sentence_fallback(
-        self,
-        query_embedding: list[float],
-        user_id: str,
-        agent_id: str | None,
-        top_k: int,
-        depth: str,
-    ) -> dict[str, Any]:
-        """
-        Called when no facts exist yet (extraction still pending).
-        Falls through to sentence-level vector search so early queries still
-        return something useful. Sentences are always available immediately
-        since they're stored synchronously in add().
-        """
-        if depth == "l0":
-            return {"facts": [], "episodes": [], "syntheses": [], "memory_found": False}
-
-        sentences = await self.db.search_sentences(
-            embedding=query_embedding,
-            user_id=user_id,
-            agent_id=agent_id,
-            limit=top_k,
-        )
-        return {
-            "facts": [],
-            "episodes": [],
-            "syntheses": [],
-            "sentences": sentences,
-            "memory_found": False,
-        }
-
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-
-def _empty(depth: str) -> dict[str, Any]:
-    """Return the correct empty structure for a given depth."""
-    result: dict[str, Any] = {"facts": [], "episodes": [], "syntheses": []}
-    if depth in ("l1", "l2"):
-        result["sentences"] = []
-    return result
-
 
 def _clean(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Strip internal scoring debug fields before returning to the caller."""
@@ -793,3 +645,123 @@ def _dedup(sentences: list[dict[str, Any]]) -> list[dict[str, Any]]:
             seen.add(sid)
             result.append(s)
     return result
+
+
+def _merge_unique(*iterables: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge multiple lists of dicts by 'id', preserving order."""
+    seen: set[str] = set()
+    result = []
+    for it in iterables:
+        for item in it:
+            iid = item.get("id")
+            if iid and iid not in seen:
+                seen.add(iid)
+                result.append(item)
+    return result
+
+
+def _reciprocal_rank_fusion(
+    vector_results: list[dict[str, Any]],
+    keyword_results: list[dict[str, Any]],
+    k: int = 60
+) -> list[dict[str, Any]]:
+    """
+    Reciprocal Rank Fusion (RRF) algorithm to combine vector and BM25 results.
+    RRF score = sum(1 / (k + rank)) across different retrieval systems.
+    """
+    scores: dict[str, float] = {}
+    items_map: dict[str, dict[str, Any]] = {}
+    
+    for rank, item in enumerate(vector_results):
+        scores[item["id"]] = scores.get(item["id"], 0.0) + (1.0 / (k + rank))
+        items_map[item["id"]] = item
+        
+    for rank, item in enumerate(keyword_results):
+        scores[item["id"]] = scores.get(item["id"], 0.0) + (1.0 / (k + rank))
+        if item["id"] not in items_map:
+            # We map rank roughly to distance for backwards compatibility
+            item["distance"] = 1.0 - (1.0 / (k + rank))
+            items_map[item["id"]] = item
+            
+    # Sort descending by RRF score
+    sorted_ids = sorted(scores.keys(), key=lambda i: scores[i], reverse=True)
+    
+    fused_results = []
+    for item_id in sorted_ids:
+        # Convert higher RRF score back into a lower 'distance' so scoring processes it efficiently
+        item = items_map[item_id]
+        item["distance"] = max(0.0, 1.0 - (scores[item_id] * 20))  # arbitrary scaling
+        fused_results.append(item)
+        
+    return fused_results
+
+
+async def _filter_top_sessions(
+    db: StorageBackend,
+    direct_sentences: list[dict[str, Any]],
+    source_sentence_ids: list[str],
+    scored_facts: list[dict[str, Any]],
+    top_k: int,
+    depth: str,
+) -> list[dict[str, Any]]:
+    """Merge direct search and fact-linked sentences, and pick top sessions."""
+    direct_sent_by_id: dict[str, dict[str, Any]] = {s["id"]: s for s in direct_sentences}
+
+    missing_ids = [sid for sid in source_sentence_ids if sid not in direct_sent_by_id]
+    if missing_ids:
+        loaded = await db.get_sentences_by_ids(missing_ids)
+        for s in loaded:
+            direct_sent_by_id[s["id"]] = s
+
+    all_candidate_ids: list[str] = list(
+        dict.fromkeys(
+            [
+                *[s["id"] for s in direct_sentences],
+                *source_sentence_ids,
+            ]
+        )
+    )
+
+    if not all_candidate_ids:
+        return []
+
+    fact_dist_by_session: dict[str, float] = {}
+    for f in scored_facts[:top_k]:
+        fsid = f.get("session_id")
+        if fsid:
+            fdist = f.get("distance", 0.5)
+            if fsid not in fact_dist_by_session or fdist < fact_dist_by_session[fsid]:
+                fact_dist_by_session[fsid] = fdist
+
+    session_candidates: dict[str, list[dict[str, Any]]] = {}
+    session_best_dist: dict[str, float] = {}
+
+    for sid in all_candidate_ids:
+        sent = direct_sent_by_id.get(sid)
+        if not sent:
+            continue
+        ssid = sent.get("session_id", "")
+        if not ssid:
+            continue
+        if ssid not in session_candidates:
+            session_candidates[ssid] = []
+            session_best_dist[ssid] = fact_dist_by_session.get(ssid, 1.0)
+        session_candidates[ssid].append(sent)
+        sent_dist = sent.get("distance", 1.0)
+        if sent_dist < session_best_dist[ssid]:
+            session_best_dist[ssid] = sent_dist
+
+    max_sessions = 5 if depth == "l2" else 3
+    top_session_ids = sorted(session_best_dist, key=lambda s: session_best_dist[s])[
+        :max_sessions
+    ]
+
+    result_sentences: list[dict[str, Any]] = []
+    for ssid in top_session_ids:
+        sents = sorted(
+            session_candidates.get(ssid, []),
+            key=lambda x: (x.get("turn_number", 0), x.get("sentence_index", 0)),
+        )
+        result_sentences.extend(sents)
+
+    return result_sentences
