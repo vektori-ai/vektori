@@ -6,7 +6,7 @@ import asyncio
 import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ class ExtractionRequest:
     session_id: str
     user_id: str
     agent_id: str | None = None
-    sentence_ids: list[str] | None = None  # IDs of sentences stored in this session
+    sentence_catalog: list[dict[str, Any]] | None = None
     session_time: datetime | None = None  # when the conversation happened (for event_time on facts)
 
 
@@ -31,6 +31,21 @@ class ExtractionRequest:
 class _UserBuffer:
     requests: list[ExtractionRequest] = field(default_factory=list)
     token_count: int = 0
+
+
+@dataclass(frozen=True)
+class ScheduleResult:
+    status: str
+    accepted: bool
+
+
+@dataclass
+class WorkerStatus:
+    queued_count: int = 0
+    last_enqueue_time: datetime | None = None
+    last_success_time: datetime | None = None
+    last_failure_time: datetime | None = None
+    last_error: str | None = None
 
 
 class ExtractionWorker:
@@ -65,9 +80,13 @@ class ExtractionWorker:
         self._buffers: dict[str, _UserBuffer] = defaultdict(_UserBuffer)
         self._timers: dict[str, asyncio.Task] = {}
         self._semaphore = asyncio.Semaphore(max_concurrent_llm)
+        self._status: dict[str, WorkerStatus] = defaultdict(WorkerStatus)
+        self._shutdown = False
 
-    def schedule(self, request: ExtractionRequest) -> None:
+    def schedule(self, request: ExtractionRequest) -> ScheduleResult:
         """Queue an extraction job. Non-blocking. Token-threshold per user."""
+        if self._shutdown:
+            return ScheduleResult(status="rejected_shutdown", accepted=False)
         try:
             loop = asyncio.get_event_loop()
             if not loop.is_running():
@@ -75,18 +94,22 @@ class ExtractionWorker:
                     "No running event loop — dropping extraction for session %s",
                     request.session_id,
                 )
-                return
+                return ScheduleResult(status="dropped_no_loop", accepted=False)
         except RuntimeError:
             logger.warning(
                 "No event loop — dropping extraction for session %s",
                 request.session_id,
             )
-            return
+            return ScheduleResult(status="dropped_no_loop", accepted=False)
 
         key = f"{request.user_id}:{request.agent_id or ''}"
         buf = self._buffers[key]
         buf.requests.append(request)
         buf.token_count += _count_tokens(request.messages)
+        status = self._status[key]
+        status.queued_count = len(buf.requests)
+        status.last_enqueue_time = datetime.now(timezone.utc)
+        status.last_error = None
 
         # Cancel existing debounce timer
         existing = self._timers.get(key)
@@ -99,6 +122,18 @@ class ExtractionWorker:
         else:
             # Not enough signal yet — wait for debounce window (low-traffic fallback)
             self._timers[key] = asyncio.create_task(self._debounced_process(key))
+        return ScheduleResult(status="queued", accepted=True)
+
+    def get_status(self, user_id: str, agent_id: str | None = None) -> dict[str, Any]:
+        key = f"{user_id}:{agent_id or ''}"
+        status = self._status.get(key, WorkerStatus())
+        return {
+            "queued_count": status.queued_count,
+            "last_enqueue_time": status.last_enqueue_time,
+            "last_success_time": status.last_success_time,
+            "last_failure_time": status.last_failure_time,
+            "last_error": status.last_error,
+        }
 
     async def wait_for_idle(
         self, user_id: str, agent_id: str | None = None, timeout: float = 60.0
@@ -129,6 +164,8 @@ class ExtractionWorker:
     async def _process(self, key: str) -> None:
         buf = self._buffers.pop(key, None)
         self._timers.pop(key, None)
+        status = self._status[key]
+        status.queued_count = 0
         if not buf or not buf.requests:
             return
 
@@ -147,15 +184,21 @@ class ExtractionWorker:
                         req.session_id,
                         req.user_id,
                         req.agent_id,
+                        sentence_catalog=req.sentence_catalog,
                         session_time=req.session_time,
                     )
+                    self._status[key].last_success_time = datetime.now(timezone.utc)
+                    self._status[key].last_error = None
                 except Exception as e:
+                    self._status[key].last_failure_time = datetime.now(timezone.utc)
+                    self._status[key].last_error = str(e)
                     logger.error("Extraction failed for session %s: %s", req.session_id, e)
 
         await asyncio.gather(*[_extract_one(r) for r in buf.requests])
 
     async def shutdown(self, timeout: float = 30.0) -> None:
         """Cancel pending timers and wait for any in-flight tasks."""
+        self._shutdown = True
         pending = [t for t in self._timers.values() if not t.done()]
         for t in pending:
             t.cancel()

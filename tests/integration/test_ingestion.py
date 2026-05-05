@@ -50,7 +50,9 @@ async def test_add_filters_junk():
         session_id="test-s2",
         user_id="test-u1",
     )
-    assert result["sentences_stored"] == 0
+    assert result["sentences_stored"] == 1
+    sentences = list(v.db._sentences.values())
+    assert sentences[0]["is_searchable"] is False
 
 
 async def test_add_stores_user_and_assistant_sentences():
@@ -102,3 +104,83 @@ async def test_add_deduplicates_same_session():
     sentences = list(v.db._sentences.values())
     assert len(sentences) == 1
     assert sentences[0]["mentions"] == 2
+
+
+async def test_low_quality_sentences_are_stored_but_not_searchable():
+    v = _mock_vektori()
+    await v.db.initialize()
+    await v.add(
+        messages=[{"role": "user", "content": "Yes."}],
+        session_id="test-s5",
+        user_id="test-u5",
+    )
+
+    assert len(v.db._sentences) == 1
+    stored = next(iter(v.db._sentences.values()))
+    assert stored["is_searchable"] is False
+
+    results = await v.db.search_sentences([0.1] * 1536, user_id="test-u5")
+    assert results == []
+
+
+async def test_explicit_sentence_indices_link_fact_sources():
+    v = _mock_vektori()
+    await v.db.initialize()
+    v.llm.generate = AsyncMock(
+        side_effect=[
+            """{"facts":[{"text":"Caroline prefers WhatsApp for business communication.","source":"user","subject":"Caroline","source_sentence_indices":[0]}]}""",
+            """{"episodes":[{"text":"The user stated a communication preference.","fact_indices":[0]}]}""",
+        ]
+    )
+
+    await v.add(
+        messages=[{"role": "user", "content": "I prefer WhatsApp for business communication."}],
+        session_id="test-s6",
+        user_id="test-u6",
+    )
+
+    assert len(v.db._fact_sources) == 1
+    linked_sentence_id = v.db._fact_sources[0]["sentence_id"]
+    linked_sentence = v.db._sentences[linked_sentence_id]
+    assert linked_sentence["text"] == "I prefer WhatsApp for business communication."
+
+
+async def test_confirmation_fact_can_link_multiple_sentences():
+    v = _mock_vektori()
+    await v.db.initialize()
+    v.llm.generate = AsyncMock(
+        side_effect=[
+            """{"facts":[{"text":"Caroline prefers WhatsApp for business communication.","source":"user","subject":"Caroline","source_sentence_indices":[0,1]}]}""",
+            """{"episodes":[{"text":"The user confirmed a communication preference.","fact_indices":[0]}]}""",
+        ]
+    )
+
+    await v.add(
+        messages=[
+            {"role": "assistant", "content": "You prefer WhatsApp for business communication."},
+            {"role": "user", "content": "Yes."},
+        ],
+        session_id="test-s7",
+        user_id="test-u7",
+    )
+
+    linked_ids = [row["sentence_id"] for row in v.db._fact_sources]
+    linked_texts = [v.db._sentences[sid]["text"] for sid in linked_ids]
+    assert linked_texts == [
+        "You prefer WhatsApp for business communication.",
+        "Yes.",
+    ]
+
+
+async def test_memory_backend_deduplicates_next_edges_on_reingest():
+    v = _mock_vektori()
+    await v.db.initialize()
+    messages = [
+        {"role": "user", "content": "I prefer WhatsApp for business communication."},
+        {"role": "user", "content": "My loan balance is forty five thousand rupees."},
+    ]
+
+    await v.add(messages=messages, session_id="same-edges", user_id="test-u8")
+    await v.add(messages=messages, session_id="same-edges", user_id="test-u8")
+
+    assert len(v.db._edges) == 1

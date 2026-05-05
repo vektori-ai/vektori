@@ -77,6 +77,7 @@ class SQLiteBackend(StorageBackend):
                 content_hash TEXT NOT NULL UNIQUE,
                 mentions INTEGER DEFAULT 1,
                 is_active INTEGER DEFAULT 1,
+                is_searchable INTEGER DEFAULT 1,
                 event_time TEXT,
                 created_at TEXT DEFAULT (datetime('now'))
             );
@@ -210,6 +211,14 @@ class SQLiteBackend(StorageBackend):
             await self._conn.execute("DROP TABLE synthesis_facts_bad")
         if "event_time" not in cols:
             await self._conn.execute("ALTER TABLE facts ADD COLUMN event_time TEXT")
+        async with self._conn.execute("PRAGMA table_info(sentences)") as cursor:
+            sentence_cols = {row[1] for row in await cursor.fetchall()}
+        if "event_time" not in sentence_cols:
+            await self._conn.execute("ALTER TABLE sentences ADD COLUMN event_time TEXT")
+        if "is_searchable" not in sentence_cols:
+            await self._conn.execute(
+                "ALTER TABLE sentences ADD COLUMN is_searchable INTEGER DEFAULT 1"
+            )
 
         # episodes event_time migration — for DBs created before this column was added
         async with self._conn.execute("PRAGMA table_info(episodes)") as cursor:
@@ -258,12 +267,13 @@ class SQLiteBackend(StorageBackend):
             )
             await self._conn.execute(
                 """INSERT INTO sentences
-                   (id, text, embedding, user_id, agent_id, session_id, turn_number,
-                    sentence_index, role, content_hash, event_time)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, text, embedding, user_id, agent_id, session_id, turn_number,
+                    sentence_index, role, content_hash, event_time, is_searchable)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT (content_hash) DO UPDATE SET
                      mentions = mentions + 1,
-                     event_time = COALESCE(excluded.event_time, sentences.event_time)""",
+                     event_time = COALESCE(excluded.event_time, sentences.event_time),
+                     is_searchable = COALESCE(excluded.is_searchable, sentences.is_searchable)""",
                 (
                     sent["id"],
                     sent["text"],
@@ -276,6 +286,7 @@ class SQLiteBackend(StorageBackend):
                     sent.get("role", "user"),
                     content_hash,
                     sent.get("event_time"),
+                    1 if sent.get("is_searchable", True) else 0,
                 ),
             )
             count += 1
@@ -289,7 +300,7 @@ class SQLiteBackend(StorageBackend):
         agent_id: str | None = None,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
-        query = "SELECT * FROM sentences WHERE user_id = ?"
+        query = "SELECT * FROM sentences WHERE user_id = ? AND is_searchable = 1"
         params: list[Any] = [user_id]
         if agent_id:
             query += " AND agent_id = ?"
@@ -622,7 +633,8 @@ class SQLiteBackend(StorageBackend):
         placeholders = ",".join("?" * len(sentence_ids))
         async with self._conn.execute(
             f"""
-            SELECT id, text, session_id, turn_number, sentence_index, role, created_at
+            SELECT id, text, session_id, turn_number, sentence_index, role, created_at,
+                   event_time, is_searchable
             FROM sentences
             WHERE id IN ({placeholders}) AND is_active = 1
             ORDER BY session_id, turn_number, sentence_index

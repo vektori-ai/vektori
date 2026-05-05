@@ -96,22 +96,32 @@ class PostgresBackend(StorageBackend):
 
     async def _migrate(self, conn: Any) -> None:
         """Additive migrations for existing databases. Safe to run on every init."""
-        existing = {
+        facts_existing = {
             row["column_name"]
             for row in await conn.fetch(
                 "SELECT column_name FROM information_schema.columns WHERE table_name = 'facts'"
             )
         }
-        if "session_id" not in existing:
+        sentence_existing = {
+            row["column_name"]
+            for row in await conn.fetch(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'sentences'"
+            )
+        }
+        if "session_id" not in facts_existing:
             await conn.execute("ALTER TABLE facts ADD COLUMN session_id TEXT")
-        if "subject" not in existing:
+        if "subject" not in facts_existing:
             await conn.execute("ALTER TABLE facts ADD COLUMN subject TEXT")
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_facts_subject ON facts (user_id, subject) "
                 "WHERE subject IS NOT NULL"
             )
-        if "mentions" not in existing:
+        if "mentions" not in facts_existing:
             await conn.execute("ALTER TABLE facts ADD COLUMN mentions INTEGER DEFAULT 1")
+        if "event_time" not in sentence_existing:
+            await conn.execute("ALTER TABLE sentences ADD COLUMN event_time TIMESTAMPTZ")
+        if "is_searchable" not in sentence_existing:
+            await conn.execute("ALTER TABLE sentences ADD COLUMN is_searchable BOOLEAN DEFAULT true")
         await conn.execute("DROP INDEX IF EXISTS idx_syntheses_user_text")
         await conn.execute(
             """
@@ -173,6 +183,12 @@ class PostgresBackend(StorageBackend):
                     f"{sent['turn_number']}_{sent['sentence_index']}",
                     sent["text"],
                 ),
+                (
+                    datetime.fromisoformat(sent["event_time"])
+                    if isinstance(sent.get("event_time"), str)
+                    else sent.get("event_time")
+                ),
+                sent.get("is_searchable", True),
             )
             for sent, emb in zip(sentences, embeddings)
         ]
@@ -183,11 +199,13 @@ class PostgresBackend(StorageBackend):
                     """
                     INSERT INTO sentences
                         (id, text, embedding, user_id, agent_id, session_id,
-                         turn_number, sentence_index, role, content_hash)
+                         turn_number, sentence_index, role, content_hash, event_time, is_searchable)
                     VALUES
-                        ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10)
+                        ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                     ON CONFLICT (content_hash)
-                        DO UPDATE SET mentions = sentences.mentions + 1
+                        DO UPDATE SET mentions = sentences.mentions + 1,
+                                      event_time = COALESCE(EXCLUDED.event_time, sentences.event_time),
+                                      is_searchable = COALESCE(EXCLUDED.is_searchable, sentences.is_searchable)
                     """,
                     rows,
                 )
@@ -202,12 +220,13 @@ class PostgresBackend(StorageBackend):
     ) -> list[dict[str, Any]]:
         query = """
             SELECT id, text, session_id, turn_number, sentence_index, role,
-                   mentions, created_at,
+                   mentions, created_at, event_time, is_searchable,
                    embedding <=> $1::vector AS distance
             FROM sentences
             WHERE user_id = $2
               AND ($3::text IS NULL OR agent_id = $3)
               AND is_active = true
+              AND is_searchable = true
             ORDER BY embedding <=> $1::vector
             LIMIT $4
         """

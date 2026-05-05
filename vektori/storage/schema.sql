@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS sentences (
     mentions INTEGER DEFAULT 1,        -- incremented on re-encounter
 
     is_active BOOLEAN DEFAULT true,
+    is_searchable BOOLEAN DEFAULT true,
+    event_time TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
 );
