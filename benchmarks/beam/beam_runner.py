@@ -69,7 +69,7 @@ class BeamBenchmark:
         await self.vektori_client._ensure_initialized()
         
         logger.info(f"Downloading BEAM dataset {self.config.dataset_split}...")
-        hf_ds = load_dataset("Mohammadta/BEAM", split="test")
+        hf_ds = load_dataset("Mohammadta/BEAM", split=self.config.dataset_split)
         
         # Load up to max questions limit if needed
         limit = self.config.max_questions if self.config.max_questions else len(hf_ds)
