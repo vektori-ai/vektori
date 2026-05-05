@@ -449,6 +449,59 @@ class SQLiteBackend(StorageBackend):
         results.sort(key=lambda x: x["distance"])
         return results[:limit]
 
+    async def search_facts_keyword(
+        self,
+        query: str,
+        user_id: str,
+        agent_id: str | None = None,
+        session_id: str | None = None,
+        subject: str | None = None,
+        limit: int = 10,
+        active_only: bool = True,
+        before_date: datetime | None = None,
+        after_date: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM facts WHERE user_id = ?"
+        params: list[Any] = [user_id]
+        if active_only:
+            sql += " AND is_active = 1"
+        if agent_id:
+            sql += " AND agent_id = ?"
+            params.append(agent_id)
+        if session_id:
+            sql += " AND session_id = ?"
+            params.append(session_id)
+        if subject:
+            sql += " AND subject = ?"
+            params.append(subject)
+        if before_date:
+            sql += " AND event_time <= ?"
+            params.append(before_date.isoformat())
+        if after_date:
+            sql += " AND event_time >= ?"
+            params.append(after_date.isoformat())
+            
+        sql += " AND content LIKE ?"
+        params.append(f"%{query}%")
+            
+        async with self._conn.execute(sql, params) as cursor:
+            rows = await cursor.fetchall()
+            
+        results = []
+        for row in rows:
+            row_dict = dict(row)
+            row_dict.pop("embedding", None)
+            row_dict["metadata"] = json.loads(row_dict.get("metadata") or "{}")
+            results.append(
+                {
+                    **row_dict,
+                    "distance": 0.5, # baseline distance for basic EXACT matches
+                    "score": 1.0,
+                    "created_at": _parse_dt(row_dict.get("created_at")),
+                }
+            )
+        return results[:limit]
+
     async def get_active_facts(
         self,
         user_id: str,
