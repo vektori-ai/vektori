@@ -395,7 +395,8 @@ class PostgresBackend(StorageBackend):
 
     async def search_facts_keyword(
         self,
-        query_text: str,
+        query: str | None = None,
+        query_text: str | None = None,
         user_id: str,
         agent_id: str | None = None,
         session_id: str | None = None,
@@ -411,6 +412,10 @@ class PostgresBackend(StorageBackend):
         Returns a faux 'distance' (1.0 - normalized rank) to roughly interface 
         with down-stream ranking models, though RRF will overwrite it anyway.
         """
+        query_value = query or query_text
+        if not query_value:
+            return []
+
         query = """
             SELECT id, text, confidence, mentions, session_id, subject,
                    created_at, event_time, metadata,
@@ -431,7 +436,7 @@ class PostgresBackend(StorageBackend):
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 query,
-                query_text,
+                query_value,
                 user_id,
                 agent_id,
                 session_id,
