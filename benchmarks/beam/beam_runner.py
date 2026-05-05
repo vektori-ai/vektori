@@ -87,6 +87,10 @@ class BeamBenchmark:
         self._run_name = self.config.run_name or f"beam_{self.config.dataset_split}"
         chk_path = self.output_dir / f"{self._run_name}_checkpoint.json"
         self._checkpoint = BenchmarkCheckpoint(chk_path)
+        n_done = self._checkpoint.load()
+        remaining = len(self.dataset) - n_done
+        if n_done:
+            logger.info("Resuming — %d done, %d remaining", n_done, remaining)
         logger.info(f"Loaded {len(self.dataset)} BEAM instances.")
 
     async def run(self):
@@ -95,6 +99,8 @@ class BeamBenchmark:
             await self._run_instances()
             await self._evaluate_and_summarize()
         finally:
+            if self.vektori_client is not None:
+                await self.vektori_client.close()
             logger.info("Run finished.")
 
     def _parse_chat_messages(self, raw_chat: Any) -> list[dict[str, str]]:
@@ -162,6 +168,7 @@ class BeamBenchmark:
 
     async def _run_instances(self):
         for idx, row in enumerate(self.dataset):
+            sample_id = f"beam_sample_{idx}"
             # Parse chat turns
             raw_chat = row.get("chat") or row.get("chat_data") or row.get("chat_turns") or row.get("conversation") or []
             chat_turns = self._parse_chat_messages(raw_chat)
@@ -180,8 +187,6 @@ class BeamBenchmark:
                 probing_questions = ast.literal_eval(probing_questions_str)
             else:
                 probing_questions = {}
-
-            sample_id = f"beam_sample_{idx}"
             
             if not self._has_pending_questions(sample_id, probing_questions):
                 continue

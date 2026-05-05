@@ -205,6 +205,31 @@ class Vektori:
 
         return result
 
+    async def process_message(
+        self,
+        message: str,
+        session_id: str,
+        user_id: str,
+        agent_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        response: str | None = None,
+        session_time: datetime | None = None,
+        skip_extraction: bool = False,
+    ) -> dict[str, Any]:
+        """Backward-compatible alias for callers that store one exchange at a time."""
+        messages = [{"role": "user", "content": message}]
+        if response:
+            messages.append({"role": "assistant", "content": response})
+        return await self.add(
+            messages=messages,
+            session_id=session_id,
+            user_id=user_id,
+            agent_id=agent_id,
+            metadata=metadata,
+            session_time=session_time,
+            skip_extraction=skip_extraction,
+        )
+
     async def _auto_synthesize_if_due(
         self, user_id: str, agent_id: str | None, interval: int
     ) -> None:

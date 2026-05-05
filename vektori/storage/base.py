@@ -135,9 +135,9 @@ class StorageBackend(ABC):
     @abstractmethod
     async def search_facts_keyword(
         self,
+        user_id: str,
         query: str | None = None,
         query_text: str | None = None,
-        user_id: str,
         agent_id: str | None = None,
         session_id: str | None = None,
         subject: str | None = None,

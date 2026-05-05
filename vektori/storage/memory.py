@@ -153,6 +153,9 @@ class MemoryBackend(StorageBackend):
         agent_id: str | None = None,
         session_id: str | None = None,
         subject: str | None = None,
+        fact_type: str | None = None,
+        emotion: str | None = None,
+        reasoning: str | None = None,
         confidence: float = 1.0,
         superseded_by_target: str | None = None,
         metadata: dict[str, Any] | None = None,
@@ -167,6 +170,9 @@ class MemoryBackend(StorageBackend):
             "agent_id": agent_id,
             "session_id": session_id,
             "subject": subject,
+            "fact_type": fact_type,
+            "emotion": emotion,
+            "reasoning": reasoning,
             "confidence": confidence,
             "mentions": 1,
             "superseded_by": superseded_by_target,
@@ -211,6 +217,47 @@ class MemoryBackend(StorageBackend):
             sim = _cosine_similarity(embedding, f["embedding"])
             results.append({**f, "distance": 1.0 - sim})
         results.sort(key=lambda x: x["distance"])
+        return results[:limit]
+
+    async def search_facts_keyword(
+        self,
+        user_id: str,
+        query: str | None = None,
+        query_text: str | None = None,
+        agent_id: str | None = None,
+        session_id: str | None = None,
+        subject: str | None = None,
+        limit: int = 10,
+        active_only: bool = True,
+        before_date: datetime | None = None,
+        after_date: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        query_value = (query or query_text or "").strip().lower()
+        if not query_value:
+            return []
+
+        results = []
+        for fact in self._facts.values():
+            if fact.get("user_id") != user_id:
+                continue
+            if agent_id and fact.get("agent_id") != agent_id:
+                continue
+            if session_id and fact.get("session_id") != session_id:
+                continue
+            if subject and fact.get("subject") != subject:
+                continue
+            if active_only and not fact.get("is_active", True):
+                continue
+            event_time = fact.get("event_time")
+            if before_date and event_time and event_time > before_date:
+                continue
+            if after_date and event_time and event_time < after_date:
+                continue
+            if query_value not in str(fact.get("text", "")).lower():
+                continue
+            results.append({**fact, "distance": 0.5, "score": 1.0})
+
+        results.sort(key=lambda item: (-item.get("score", 0.0), item.get("created_at")))
         return results[:limit]
 
     async def get_active_facts(
