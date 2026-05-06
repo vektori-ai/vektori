@@ -42,11 +42,14 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-def _check_env() -> None:
+def _check_env(embedding_model: str) -> None:
     missing = []
-    for var in ("CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "GOOGLE_API_KEY"):
-        if not os.environ.get(var):
-            missing.append(var)
+    if embedding_model.startswith("cloudflare:"):
+        for var in ("CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"):
+            if not os.environ.get(var):
+                missing.append(var)
+    if not os.environ.get("GOOGLE_API_KEY"):
+        missing.append("GOOGLE_API_KEY")
     if missing:
         print(
             "ERROR: The following required environment variables are not set:\n"
@@ -161,5 +164,10 @@ async def _main() -> None:
 
 
 if __name__ == "__main__":
-    _check_env()
+    import sys as _sys
+    _embedding_model = "cloudflare:@cf/baai/bge-m3"
+    for _i, _arg in enumerate(_sys.argv):
+        if _arg == "--embedding-model" and _i + 1 < len(_sys.argv):
+            _embedding_model = _sys.argv[_i + 1]
+    _check_env(_embedding_model)
     asyncio.run(_main())
