@@ -73,6 +73,10 @@ async def _main() -> None:
              "Pass 0 to run the full dataset."
     )
     parser.add_argument("--depth", choices=["l0", "l1", "l2"], default="l1")
+    parser.add_argument(
+        "--embedding-model", default="cloudflare:@cf/baai/bge-m3",
+        help="Embedding model string (provider:model_name)"
+    )
     parser.add_argument("--output-dir", default="benchmark_results")
     parser.add_argument("--data-dir", default="data")
     parser.add_argument(
@@ -137,7 +141,7 @@ async def _main() -> None:
 
     config = LoCoMoConfig(
         dataset_name="locomo10_cooked",
-        embedding_model="cloudflare:@cf/baai/bge-m3",
+        embedding_model=args.embedding_model,
         extraction_model=args.extraction_model,
         eval_model=args.eval_model,
         qa_prompt_path=args.qa_prompt_file,
@@ -164,10 +168,9 @@ async def _main() -> None:
 
 
 if __name__ == "__main__":
-    import sys as _sys
     _embedding_model = "cloudflare:@cf/baai/bge-m3"
-    for _i, _arg in enumerate(_sys.argv):
-        if _arg == "--embedding-model" and _i + 1 < len(_sys.argv):
-            _embedding_model = _sys.argv[_i + 1]
+    for _i, _arg in enumerate(sys.argv):
+        if _arg == "--embedding-model" and _i + 1 < len(sys.argv):
+            _embedding_model = sys.argv[_i + 1]
     _check_env(_embedding_model)
     asyncio.run(_main())
