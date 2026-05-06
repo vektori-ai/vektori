@@ -96,6 +96,9 @@ class LoCoMoConfig:
 
     # Retrieval ablation
     use_ppr: bool = True
+    use_reranker: bool = True
+    reranker_top_n: int = 20
+    max_retrieval_tokens: int | None = None
 
 
 # ── Runner ────────────────────────────────────────────────────────────────────
@@ -156,6 +159,9 @@ class LoCoMoBenchmark:
                 async_extraction=False,
                 max_extraction_output_tokens=self.config.max_extraction_output_tokens,
                 use_ppr=self.config.use_ppr,
+                use_reranker=self.config.use_reranker,
+                reranker_top_n=self.config.reranker_top_n,
+                max_retrieval_tokens=self.config.max_retrieval_tokens,
             )
         )
         await self.vektori_client._ensure_initialized()

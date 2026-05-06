@@ -93,6 +93,18 @@ async def _main() -> None:
         help="Disable PPR retrieval — revert to plain graph hop (ablation)"
     )
     parser.add_argument(
+        "--no-reranker", action="store_true",
+        help="Disable cross-encoder reranking (faster but lower quality)"
+    )
+    parser.add_argument(
+        "--reranker-top-n", type=int, default=20,
+        help="Candidates passed to cross-encoder before final top-k selection"
+    )
+    parser.add_argument(
+        "--max-retrieval-tokens", type=int, default=None,
+        help="Token budget for retrieved context (None = no limit)"
+    )
+    parser.add_argument(
         "--no-cache", action="store_true",
         help="Disable session extract cache for this run"
     )
@@ -136,6 +148,9 @@ async def _main() -> None:
         cache_namespace=args.cache_namespace,
         use_ppr=not args.no_ppr,
         qa_thinking_level=args.qa_thinking_level,
+        use_reranker=not args.no_reranker,
+        reranker_top_n=args.reranker_top_n,
+        max_retrieval_tokens=args.max_retrieval_tokens,
     )
 
     if max_q:
