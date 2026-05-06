@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -810,26 +811,23 @@ class FactExtractor:
             logger.error("Batch embed failed for %d facts: %s", len(texts), e)
             return 0
 
-        for fact_data, fact_embedding in zip(fact_list, embeddings):
+        # Phase 1: parallel dedup checks for all facts
+        dedup_results = await asyncio.gather(*[
+            self._check_dedup(f["text"], emb, session_id, user_id, agent_id, f.get("subject"))
+            for f, emb in zip(fact_list, embeddings)
+        ])
+
+        # Filter out same-session dups
+        to_insert = [
+            (fd, emb, dedup)
+            for fd, emb, dedup in zip(fact_list, embeddings, dedup_results)
+            if not (dedup is not None and dedup[1])  # skip if same_session dup
+        ]
+
+        # Phase 2: parallel per-fact storage
+        async def _store_one(fact_data: dict[str, Any], fact_embedding: list[float], dedup: Any) -> int:
             try:
                 subject = fact_data.get("subject") or None
-
-                # Write-time semantic dedup
-                dedup = await self._check_dedup(
-                    fact_data["text"], fact_embedding, session_id, user_id, agent_id, subject
-                )
-
-                if dedup is not None:
-                    existing_id, same_session = dedup
-                    if same_session:
-                        # Pure dedup: same conversation, skip insert — do NOT
-                        # increment mentions (within-session repetition ≠ importance)
-                        continue
-                    # Cross-session near-dup: the newer fact supersedes the older one.
-                    # Insert the new fact (below), then deactivate the old one with a
-                    # superseded_by pointer so it's excluded from default active_only queries.
-
-                # Carry temporal expression and source role in metadata
                 meta: dict[str, Any] = {}
                 if fact_data.get("temporal_expr"):
                     meta["temporal_expr"] = fact_data["temporal_expr"]
@@ -846,27 +844,17 @@ class FactExtractor:
                     metadata=meta or None,
                     event_time=session_time,
                 )
-                facts_inserted += 1
-
-                # If this replaced a cross-session near-dup, deactivate the old fact now
-                # that we have the new fact_id to use as the superseded_by pointer.
-                if dedup is not None:
-                    old_id, _ = dedup
-                    await self.db.deactivate_fact(old_id, superseded_by=fact_id)
 
                 if _inserted_facts_out is not None:
                     _inserted_facts_out.append((fact_id, fact_data["text"]))
-
                 if _capture_out is not None:
-                    _capture_out.append(
-                        {
-                            "text": fact_data["text"],
-                            "subject": subject,
-                            "metadata": meta or {},
-                            "source_sentence_indices": fact_data.get("source_sentence_indices") or [],
-                            "source_quotes": fact_data.get("source_quotes") or [],
-                        }
-                    )
+                    _capture_out.append({
+                        "text": fact_data["text"],
+                        "subject": subject,
+                        "metadata": meta or {},
+                        "source_sentence_indices": fact_data.get("source_sentence_indices") or [],
+                        "source_quotes": fact_data.get("source_quotes") or [],
+                    })
 
                 linked = self._map_source_sentence_indices(
                     fact_data.get("source_sentence_indices") or [],
@@ -876,14 +864,27 @@ class FactExtractor:
                     linked = await self._link_to_source_sentences(
                         fact_data["source_quotes"], session_id, conversation
                     )
-                for sent_id in linked:
-                    await self.db.insert_fact_source(fact_id, sent_id)
 
-                # Build similarity + entity edges for PPR graph
-                await self._build_fact_edges(fact_id, fact_embedding, user_id, agent_id, subject=subject)
+                edge_rows = await self._collect_fact_edges(
+                    fact_id, fact_embedding, user_id, agent_id, subject=subject
+                )
 
+                deactivate_coro = (
+                    self.db.deactivate_fact(dedup[0], superseded_by=fact_id)
+                    if dedup is not None else asyncio.sleep(0)
+                )
+                await asyncio.gather(
+                    deactivate_coro,
+                    self.db.insert_fact_sources_batch([(fact_id, s) for s in linked]),
+                    self.db.insert_fact_edges_batch(edge_rows),
+                )
+                return 1
             except Exception as e:
                 logger.warning("Failed to insert fact '%s': %s", fact_data.get("text"), e)
+                return 0
+
+        results = await asyncio.gather(*[_store_one(fd, emb, d) for fd, emb, d in to_insert])
+        facts_inserted = sum(r for r in results if isinstance(r, int))
 
         return facts_inserted
 
@@ -1043,7 +1044,7 @@ class FactExtractor:
             logger.warning("Dedup lookup failed: %s", e)
         return None
 
-    async def _build_fact_edges(
+    async def _collect_fact_edges(
         self,
         fact_id: str,
         fact_embedding: list[float],
@@ -1052,19 +1053,10 @@ class FactExtractor:
         subject: str | None = None,
         sim_threshold: float = 0.75,
         limit: int = 10,
-    ) -> None:
-        """Build PPR graph edges: semantic (similarity-based) + entity (subject-based).
-
-        Semantic edges (edge_type='semantic'): link facts whose embeddings are
-        similar (sim >= 0.75). Let PPR multi-hop from matched facts to related ones.
-
-        Entity edges (edge_type='entity'): link all facts about the same named
-        entity (same non-generic subject). Makes the PPR graph entity-aware so
-        "Alice's job" and "Alice's hobbies" are connected even if dissimilar.
-        Entity edges only inserted when no semantic edge already exists (ON CONFLICT DO NOTHING).
-        """
+    ) -> list[tuple[str, str, str, float, str]]:
+        """Collect PPR edge rows without writing. Returns (src, tgt, user, weight, type) tuples."""
+        rows: list[tuple[str, str, str, float, str]] = []
         try:
-            # ── Semantic edges ──────────────────────────────────────────────────
             candidates = await self.db.search_facts(
                 embedding=fact_embedding,
                 user_id=user_id,
@@ -1078,13 +1070,9 @@ class FactExtractor:
                     continue
                 sim = 1.0 - c.get("distance", 1.0)
                 if sim >= sim_threshold:
-                    await self.db.insert_fact_edge(
-                        fact_id, c["id"], user_id, weight=round(sim, 4), edge_type="semantic"
-                    )
+                    rows.append((fact_id, c["id"], user_id, round(sim, 4), "semantic"))
                     semantic_linked.add(c["id"])
 
-            # ── Entity edges ────────────────────────────────────────────────────
-            # Skip generic subjects ('user', 'assistant') — only named entities.
             if subject and subject not in ("user", "assistant"):
                 entity_candidates = await self.db.search_facts(
                     embedding=fact_embedding,
@@ -1097,12 +1085,27 @@ class FactExtractor:
                 for c in entity_candidates:
                     if c["id"] == fact_id or c["id"] in semantic_linked:
                         continue
-                    # weight=0.6: meaningful but won't dominate over strong semantic edges
-                    await self.db.insert_fact_edge(
-                        fact_id, c["id"], user_id, weight=0.6, edge_type="entity"
-                    )
+                    rows.append((fact_id, c["id"], user_id, 0.6, "entity"))
         except Exception as e:
-            logger.debug("_build_fact_edges failed for %s: %s", fact_id, e)
+            logger.debug("_collect_fact_edges failed for %s: %s", fact_id, e)
+        return rows
+
+    async def _build_fact_edges(
+        self,
+        fact_id: str,
+        fact_embedding: list[float],
+        user_id: str,
+        agent_id: str | None,
+        subject: str | None = None,
+        sim_threshold: float = 0.75,
+        limit: int = 10,
+    ) -> None:
+        rows = await self._collect_fact_edges(
+            fact_id, fact_embedding, user_id, agent_id, subject=subject,
+            sim_threshold=sim_threshold, limit=limit,
+        )
+        if rows:
+            await self.db.insert_fact_edges_batch(rows)
 
     async def replay_episodes(
         self,
@@ -1248,20 +1251,17 @@ class FactExtractor:
             logger.warning("Batch embed failed for episodes: %s", e)
             return 0
 
-        episodes_created = 0
-        text_iter = iter(zip(episode_texts, embeddings))
+        valid_episodes = []
+        emb_iter = iter(zip(episode_texts, embeddings))
         for episode_data in raw_episodes:
             text = (episode_data.get("text") or "").strip()
             if not text:
                 continue
-            indices = episode_data.get("fact_indices") or []
-
             try:
-                _, embedding = next(text_iter)
+                _, embedding = next(emb_iter)
             except StopIteration:
                 break
-
-            # Map indices → fact IDs from this session's inserted facts
+            indices = episode_data.get("fact_indices") or []
             linked_ids = [
                 fact_id_list[i]
                 for i in indices
@@ -1269,19 +1269,22 @@ class FactExtractor:
             ]
             if not linked_ids:
                 continue
+            valid_episodes.append((text, embedding, linked_ids))
 
+        async def _insert_ep(text: str, embedding: list[float], linked_ids: list[str]) -> int:
             try:
                 episode_id = await self.db.insert_episode(
                     text, embedding, user_id, agent_id, session_id,
                     event_time=session_time,
                 )
-                for fid in linked_ids:
-                    await self.db.insert_episode_fact(episode_id, fid)
-                episodes_created += 1
+                await self.db.insert_episode_facts_batch([(episode_id, fid) for fid in linked_ids])
+                return 1
             except Exception as e:
                 logger.warning("Failed to insert episode '%s': %s", text, e)
+                return 0
 
-        return episodes_created
+        results = await asyncio.gather(*[_insert_ep(t, e, l) for t, e, l in valid_episodes])
+        return sum(r for r in results if isinstance(r, int))
 
     async def _link_to_source_sentences(
         self,

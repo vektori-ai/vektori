@@ -217,6 +217,22 @@ class StorageBackend(ABC):
         for fact_id, sentence_id in pairs:
             await self.insert_fact_source(fact_id, sentence_id)
 
+    async def insert_fact_sources_batch(self, pairs: list[tuple[str, str]]) -> None:
+        await self.insert_fact_sources(pairs)
+
+    async def insert_fact_edges_batch(self, rows: list[tuple[str, str, str, float, str]]) -> None:
+        """rows: (source_id, target_id, user_id, weight, edge_type)"""
+        for source_id, target_id, user_id, weight, edge_type in rows:
+            await self.insert_fact_edge(source_id, target_id, user_id, weight=weight, edge_type=edge_type)
+
+    async def insert_episode_facts_batch(self, pairs: list[tuple[str, str]]) -> None:
+        for episode_id, fact_id in pairs:
+            await self.insert_episode_fact(episode_id, fact_id)
+
+    async def insert_synthesis_facts_batch(self, pairs: list[tuple[str, str]]) -> None:
+        for synthesis_id, fact_id in pairs:
+            await self.insert_synthesis_fact(synthesis_id, fact_id)
+
     # ── Syntheses ──
 
     async def insert_synthesis(

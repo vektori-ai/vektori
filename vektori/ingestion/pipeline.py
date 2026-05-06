@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import Any
 
@@ -87,13 +88,9 @@ class IngestionPipeline:
                     }
                 )
 
-        # 2. Batch embed and upsert sentences (ON CONFLICT → increment mentions)
-        if all_sentences:
-            texts = [s["text"] for s in all_sentences]
-            embeddings = await self.embedder.embed_batch(texts)
-            await self.db.upsert_sentences(all_sentences, embeddings, user_id, agent_id)
-
-        # 3. Insert sequential NEXT edges within this session
+        # 2. Batch embed sentences, then upsert sentences + edges + session in parallel.
+        #    insert_edges and upsert_session don't need embeddings — sentence IDs are
+        #    deterministic hashes computed above, so all three can run concurrently.
         edges = [
             {
                 "source_id": all_sentences[i]["id"],
@@ -103,13 +100,18 @@ class IngestionPipeline:
             }
             for i in range(len(all_sentences) - 1)
         ]
-        if edges:
-            await self.db.insert_edges(edges)
-
-        # 4. Upsert session record
-        await self.db.upsert_session(
-            session_id, user_id, agent_id, metadata or {}, started_at=session_time
-        )
+        if all_sentences:
+            texts = [s["text"] for s in all_sentences]
+            embeddings = await self.embedder.embed_batch(texts)
+            await asyncio.gather(
+                self.db.upsert_sentences(all_sentences, embeddings, user_id, agent_id),
+                self.db.insert_edges(edges) if edges else asyncio.sleep(0),
+                self.db.upsert_session(session_id, user_id, agent_id, metadata or {}, started_at=session_time),
+            )
+        else:
+            await self.db.upsert_session(
+                session_id, user_id, agent_id, metadata or {}, started_at=session_time
+            )
 
         # 5. Trigger extraction — always runs as long as messages is non-empty.
         #    Extraction still sees raw messages, but now also gets the exact

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from vektori.ingestion.extractor import _parse_json_response
@@ -88,26 +89,21 @@ class Synthesizer:
             logger.error("Synthesis batch embed failed: %s", e)
             return 0
 
-        inserted = 0
         source_fact_ids = [f["id"] for f in base_facts if f.get("id")]
 
-        for fact_dict, emb in zip(valid_facts, embeddings):
-            # Check dedup against existing synthesis
-            existing = await self.db.search_syntheses(
-                embedding=emb, user_id=user_id, agent_id=agent_id, limit=5
-            )
+        # Parallel dedup checks
+        dedup_hits = await asyncio.gather(*[
+            self.db.search_syntheses(embedding=emb, user_id=user_id, agent_id=agent_id, limit=5)
+            for _, emb in zip(valid_facts, embeddings)
+        ])
 
-            skip = False
-            if existing:
-                best = existing[0]
-                sim = 1.0 - best.get("distance", 1.0)
-                if sim > 0.85:
-                    # We already have this synthesis, let's just skip it
-                    skip = True
+        to_insert = [
+            (fd, emb)
+            for (fd, emb), existing in zip(zip(valid_facts, embeddings), dedup_hits)
+            if not (existing and (1.0 - existing[0].get("distance", 1.0)) > 0.85)
+        ]
 
-            if skip:
-                continue
-
+        async def _insert_syn(fact_dict: dict, emb: list) -> int:
             try:
                 synthesis_id = await self.db.insert_synthesis(
                     text=fact_dict["text"],
@@ -116,10 +112,13 @@ class Synthesizer:
                     agent_id=agent_id,
                     session_id=None,
                 )
-                for fact_id in source_fact_ids:
-                    await self.db.insert_synthesis_fact(synthesis_id, fact_id)
-                inserted += 1
+                await self.db.insert_synthesis_facts_batch(
+                    [(synthesis_id, fid) for fid in source_fact_ids]
+                )
+                return 1
             except Exception as e:
                 logger.warning("Failed to insert synthesis: %s", e)
+                return 0
 
-        return inserted
+        results = await asyncio.gather(*[_insert_syn(fd, emb) for fd, emb in to_insert])
+        return sum(r for r in results if isinstance(r, int))

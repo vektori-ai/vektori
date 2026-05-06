@@ -620,6 +620,15 @@ class SQLiteBackend(StorageBackend):
         )
         await self._conn.commit()
 
+    async def insert_fact_sources_batch(self, pairs: list[tuple[str, str]]) -> None:
+        for fact_id, sentence_id in pairs:
+            await self._conn.execute(
+                "INSERT OR IGNORE INTO fact_sources (fact_id, sentence_id) VALUES (?, ?)",
+                (fact_id, sentence_id),
+            )
+        if pairs:
+            await self._conn.commit()
+
     async def get_source_sentences(self, fact_ids: list[str]) -> list[str]:
         if not fact_ids:
             return []
@@ -657,6 +666,15 @@ class SQLiteBackend(StorageBackend):
             (synthesis_id, fact_id),
         )
         await self._conn.commit()
+
+    async def insert_synthesis_facts_batch(self, pairs: list[tuple[str, str]]) -> None:
+        for synthesis_id, fact_id in pairs:
+            await self._conn.execute(
+                "INSERT OR IGNORE INTO synthesis_facts (synthesis_id, fact_id) VALUES (?, ?)",
+                (synthesis_id, fact_id),
+            )
+        if pairs:
+            await self._conn.commit()
 
     async def get_syntheses_for_facts(self, fact_ids: list[str]) -> list[dict[str, Any]]:
         if not fact_ids:
@@ -725,15 +743,27 @@ class SQLiteBackend(StorageBackend):
         target_id: str,
         user_id: str,
         weight: float = 1.0,
+        edge_type: str = "semantic",
     ) -> None:
-        # Store canonical order (smaller ID first) so (A,B) and (B,A) don't duplicate
         a, b = (source_id, target_id) if source_id < target_id else (target_id, source_id)
         await self._conn.execute(
-            """INSERT OR IGNORE INTO fact_edges (source_id, target_id, user_id, weight)
-               VALUES (?, ?, ?, ?)""",
-            (a, b, user_id, weight),
+            """INSERT OR IGNORE INTO fact_edges (source_id, target_id, user_id, edge_type, weight)
+               VALUES (?, ?, ?, ?, ?)""",
+            (a, b, user_id, edge_type, weight),
         )
         await self._conn.commit()
+
+    async def insert_fact_edges_batch(self, rows: list[tuple[str, str, str, float, str]]) -> None:
+        """rows: (source_id, target_id, user_id, weight, edge_type)"""
+        for source_id, target_id, user_id, weight, edge_type in rows:
+            a, b = (source_id, target_id) if source_id < target_id else (target_id, source_id)
+            await self._conn.execute(
+                """INSERT OR IGNORE INTO fact_edges (source_id, target_id, user_id, edge_type, weight)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (a, b, user_id, edge_type, weight),
+            )
+        if rows:
+            await self._conn.commit()
 
     async def get_fact_edges_for_user(
         self,
@@ -796,6 +826,15 @@ class SQLiteBackend(StorageBackend):
             (episode_id, fact_id),
         )
         await self._conn.commit()
+
+    async def insert_episode_facts_batch(self, pairs: list[tuple[str, str]]) -> None:
+        for episode_id, fact_id in pairs:
+            await self._conn.execute(
+                "INSERT OR IGNORE INTO episode_facts (episode_id, fact_id) VALUES (?, ?)",
+                (episode_id, fact_id),
+            )
+        if pairs:
+            await self._conn.commit()
 
     async def get_episodes_for_facts(self, fact_ids: list[str]) -> list[dict[str, Any]]:
         if not fact_ids:

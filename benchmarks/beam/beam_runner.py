@@ -252,25 +252,15 @@ class BeamBenchmark:
                         metadata={"beam_sample_id": sample_id, "beam_batch": batch_idx},
                     )
 
-                # 2. Query Phase for each probing question
-                for ability_type, questions in probing_questions.items():
-                    if isinstance(questions, dict):
-                        questions = [questions]
-                    elif not isinstance(questions, list):
-                        continue
-                        
-                    for sub_idx, q_dict in enumerate(questions):
-                        qid = f"{sample_id}_{ability_type}_{sub_idx}"
-                        if self._checkpoint.is_done(qid):
-                            continue
+                # 2. Query Phase — all questions run in parallel (semaphore=5)
+                qa_sem = asyncio.Semaphore(5)
 
+                async def _answer_question(ability_type: str, sub_idx: int, q_dict: dict, qid: str) -> None:
+                    async with qa_sem:
                         question_text = q_dict.get("question", "")
                         expected_ans = self._expected_answer(q_dict)
-                        
                         q_t0 = time.perf_counter()
-                        
                         try:
-                            # Retrieval + Generation
                             search_results = await self.vektori_client.search(
                                 query=question_text,
                                 user_id=sample_id,
@@ -292,7 +282,6 @@ class BeamBenchmark:
                                 expected_ans,
                                 actual_ans,
                             )
-                            
                             result = {
                                 "question_id": qid,
                                 "ability_type": ability_type,
@@ -300,18 +289,32 @@ class BeamBenchmark:
                                 "expected": expected_ans,
                                 "generated": actual_ans,
                                 "score": score,
-                                "latency_ms": (time.perf_counter() - q_t0) * 1000
+                                "latency_ms": (time.perf_counter() - q_t0) * 1000,
                             }
                             self._checkpoint.mark_done(qid, result)
                             self._checkpoint.save()
                             logger.info(f"✅ {qid} ({ability_type}) answered. Score: {score}")
-
                         except Exception as e:
                             logger.exception("❌ Question %s failed", qid)
-                            # Sleep momentarily in case of API rate limits
                             await asyncio.sleep(5)
                             self._checkpoint.mark_failed(qid, str(e))
                             self._checkpoint.save()
+
+                pending_questions = []
+                for ability_type, questions in probing_questions.items():
+                    if isinstance(questions, dict):
+                        questions = [questions]
+                    elif not isinstance(questions, list):
+                        continue
+                    for sub_idx, q_dict in enumerate(questions):
+                        qid = f"{sample_id}_{ability_type}_{sub_idx}"
+                        if not self._checkpoint.is_done(qid):
+                            pending_questions.append((ability_type, sub_idx, q_dict, qid))
+
+                await asyncio.gather(*[
+                    _answer_question(at, si, qd, qid)
+                    for at, si, qd, qid in pending_questions
+                ])
                     
             except Exception as e:
                 logger.exception("❌ Sample %s failed during ingestion or setup", sample_id)
