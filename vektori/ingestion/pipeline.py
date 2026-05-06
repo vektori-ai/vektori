@@ -103,8 +103,9 @@ class IngestionPipeline:
         if all_sentences:
             texts = [s["text"] for s in all_sentences]
             embeddings = await self.embedder.embed_batch(texts)
+            # sentences must be committed before edges (FK constraint)
+            await self.db.upsert_sentences(all_sentences, embeddings, user_id, agent_id)
             await asyncio.gather(
-                self.db.upsert_sentences(all_sentences, embeddings, user_id, agent_id),
                 self.db.insert_edges(edges) if edges else asyncio.sleep(0),
                 self.db.upsert_session(session_id, user_id, agent_id, metadata or {}, started_at=session_time),
             )
