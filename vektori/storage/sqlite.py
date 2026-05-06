@@ -165,9 +165,10 @@ class SQLiteBackend(StorageBackend):
                 source_id TEXT NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
                 target_id TEXT NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
                 user_id TEXT NOT NULL,
+                edge_type TEXT NOT NULL DEFAULT 'semantic',
                 weight REAL DEFAULT 1.0,
                 created_at TEXT DEFAULT (datetime('now')),
-                PRIMARY KEY (source_id, target_id)
+                PRIMARY KEY (source_id, target_id, edge_type)
             );
 
             CREATE INDEX IF NOT EXISTS idx_facts_user ON facts (user_id);
@@ -236,14 +237,21 @@ class SQLiteBackend(StorageBackend):
                         source_id TEXT NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
                         target_id TEXT NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
                         user_id TEXT NOT NULL,
+                        edge_type TEXT NOT NULL DEFAULT 'semantic',
                         weight REAL DEFAULT 1.0,
                         created_at TEXT DEFAULT (datetime('now')),
-                        PRIMARY KEY (source_id, target_id)
+                        PRIMARY KEY (source_id, target_id, edge_type)
                     )
                 """)
                 await self._conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_fact_edges_user ON fact_edges (user_id)"
                 )
+        async with self._conn.execute("PRAGMA table_info(fact_edges)") as cursor:
+            fe_cols = {row[1] for row in await cursor.fetchall()}
+        if "edge_type" not in fe_cols:
+            await self._conn.execute(
+                "ALTER TABLE fact_edges ADD COLUMN edge_type TEXT NOT NULL DEFAULT 'semantic'"
+            )
 
     async def close(self) -> None:
         if self._conn:
