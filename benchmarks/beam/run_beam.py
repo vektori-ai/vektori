@@ -30,6 +30,7 @@ async def _main():
     parser.add_argument("--reranker", default="bge:BAAI/bge-reranker-v2-m3")
     parser.add_argument("--top-k", type=int, default=15)
     parser.add_argument("--context-window", type=int, default=5)
+    parser.add_argument("--depth", choices=["l0", "l1", "l2"], default="l1")
     parser.add_argument("--output-dir", default="benchmark_results")
     parser.add_argument("--run-name", default=None)
     parser.add_argument("--max-questions", type=int, default=None, help="Pilot run cap")
@@ -47,6 +48,7 @@ async def _main():
         reranker_model=args.reranker,
         top_k=args.top_k,
         context_window=args.context_window,
+        retrieval_depth=args.depth,
         output_dir=output_dir,
         run_name=run_name,
         max_questions=args.max_questions

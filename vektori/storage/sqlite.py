@@ -486,7 +486,7 @@ class SQLiteBackend(StorageBackend):
             sql += " AND event_time >= ?"
             params.append(after_date.isoformat())
             
-        sql += " AND content LIKE ?"
+        sql += " AND text LIKE ?"
         params.append(f"%{query_value}%")
             
         async with self._conn.execute(sql, params) as cursor:
@@ -514,10 +514,24 @@ class SQLiteBackend(StorageBackend):
         limit: int = 100,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
-        query = "SELECT * FROM facts WHERE user_id = ? AND is_active = 1 LIMIT ? OFFSET ?"
-        async with self._conn.execute(query, (user_id, limit, offset)) as cursor:
+        sql = "SELECT * FROM facts WHERE user_id = ? AND is_active = 1"
+        params: list[Any] = [user_id]
+        if agent_id:
+            sql += " AND agent_id = ?"
+            params.append(agent_id)
+        sql += " LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        async with self._conn.execute(sql, params) as cursor:
             rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+        result = []
+        for row in rows:
+            d = dict(row)
+            try:
+                d["metadata"] = json.loads(d.get("metadata") or "{}")
+            except json.JSONDecodeError:
+                d["metadata"] = {}
+            result.append(d)
+        return result
 
     async def deactivate_fact(self, fact_id: str, superseded_by: str | None = None) -> None:
         await self._conn.execute(

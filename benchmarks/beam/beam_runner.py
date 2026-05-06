@@ -14,7 +14,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from datasets import load_dataset
 from vektori import Vektori
 from vektori.config import VektoriConfig
 from vektori.models.factory import create_llm
@@ -44,6 +43,7 @@ class BeamConfig:
     output_dir: str = "benchmark_results"
     run_name: str | None = None
     max_questions: int | None = None
+    retrieval_depth: str = "l1"
 
 
 class BeamBenchmark:
@@ -78,6 +78,13 @@ class BeamBenchmark:
         self._eval_llm = create_llm(self.config.eval_model, json_mode=False)
         
         logger.info(f"Downloading BEAM dataset {self.config.dataset_split}...")
+        try:
+            from datasets import load_dataset
+        except ImportError as e:
+            raise ImportError(
+                "BEAM benchmark requires Hugging Face datasets. "
+                "Install benchmark dependencies with: pip install -e '.[benchmarks]'"
+            ) from e
         hf_ds = load_dataset("Mohammadta/BEAM", split=self.config.dataset_split)
         
         # Load up to max questions limit if needed
@@ -138,6 +145,46 @@ class BeamBenchmark:
         _collect(raw_chat)
         return messages
 
+    def _parse_chat_batches(self, raw_chat: Any) -> list[list[dict[str, str]]]:
+        if isinstance(raw_chat, str):
+            try:
+                raw_chat = ast.literal_eval(raw_chat)
+            except Exception:
+                return []
+
+        if not isinstance(raw_chat, (list, tuple)) or not raw_chat:
+            parsed = self._parse_chat_messages(raw_chat)
+            return [parsed] if parsed else []
+
+        if all(isinstance(item, dict) for item in raw_chat):
+            parsed = self._parse_chat_messages(raw_chat)
+            return [parsed] if parsed else []
+
+        batches: list[list[dict[str, str]]] = []
+        for item in raw_chat:
+            parsed = self._parse_chat_messages(item)
+            if parsed:
+                batches.append(parsed)
+        return batches
+
+    def _parse_probing_questions(self, raw_questions: Any) -> dict[str, Any]:
+        if isinstance(raw_questions, dict):
+            return raw_questions
+        if isinstance(raw_questions, str) and raw_questions.strip().startswith("{"):
+            try:
+                parsed = ast.literal_eval(raw_questions)
+                return parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                logger.warning("Could not parse BEAM probing_questions payload", exc_info=True)
+        return {}
+
+    def _expected_answer(self, question: dict[str, Any]) -> str:
+        for key in ("answer", "ideal_response", "expected_answer", "reference_answer"):
+            value = question.get(key)
+            if value:
+                return str(value)
+        return ""
+
     def _has_pending_questions(self, sample_id: str, probing_questions: dict[str, Any]) -> bool:
         for ability_type, questions in probing_questions.items():
             if isinstance(questions, dict):
@@ -171,7 +218,8 @@ class BeamBenchmark:
             sample_id = f"beam_sample_{idx}"
             # Parse chat turns
             raw_chat = row.get("chat") or row.get("chat_data") or row.get("chat_turns") or row.get("conversation") or []
-            chat_turns = self._parse_chat_messages(raw_chat)
+            chat_batches = self._parse_chat_batches(raw_chat)
+            chat_turns = [turn for batch in chat_batches for turn in batch]
             if not chat_turns and not self._empty_chat_logged:
                 self._empty_chat_logged = True
                 keys = list(row.keys())
@@ -182,24 +230,26 @@ class BeamBenchmark:
                     type(raw_chat).__name__,
                 )
             # Parse probing questions (dict of ability_type -> question data)
-            probing_questions_str = row.get("probing_questions", "{}")
-            if probing_questions_str.startswith("{"):
-                probing_questions = ast.literal_eval(probing_questions_str)
-            else:
-                probing_questions = {}
+            probing_questions = self._parse_probing_questions(row.get("probing_questions", "{}"))
             
             if not self._has_pending_questions(sample_id, probing_questions):
                 continue
 
             try:
                 # 1. Ingestion Phase
-                logger.info(f"Ingesting {len(chat_turns)} turns for {sample_id}...")
+                logger.info(
+                    "Ingesting %d turns across %d batches for %s...",
+                    len(chat_turns),
+                    len(chat_batches),
+                    sample_id,
+                )
                 
-                if chat_turns:
+                for batch_idx, batch in enumerate(chat_batches):
                     await self.vektori_client.add(
-                        messages=chat_turns,
-                        session_id=sample_id,
+                        messages=batch,
+                        session_id=f"{sample_id}_batch_{batch_idx}",
                         user_id=sample_id,
+                        metadata={"beam_sample_id": sample_id, "beam_batch": batch_idx},
                     )
 
                 # 2. Query Phase for each probing question
@@ -215,7 +265,7 @@ class BeamBenchmark:
                             continue
 
                         question_text = q_dict.get("question", "")
-                        expected_ans = q_dict.get("answer", "")
+                        expected_ans = self._expected_answer(q_dict)
                         
                         q_t0 = time.perf_counter()
                         
@@ -224,7 +274,7 @@ class BeamBenchmark:
                             search_results = await self.vektori_client.search(
                                 query=question_text,
                                 user_id=sample_id,
-                                depth="l1",
+                                depth=self.config.retrieval_depth,
                             )
                             context = self._format_retrieved_context(search_results)
                             actual_ans = await generate_answer(
@@ -257,12 +307,23 @@ class BeamBenchmark:
                             logger.info(f"✅ {qid} ({ability_type}) answered. Score: {score}")
 
                         except Exception as e:
-                            logger.error(f"❌ Question {qid} failed: {e}")
+                            logger.exception("❌ Question %s failed", qid)
                             # Sleep momentarily in case of API rate limits
                             await asyncio.sleep(5)
                             self._checkpoint.mark_failed(qid, str(e))
                             self._checkpoint.save()
                     
+            except Exception as e:
+                logger.exception("❌ Sample %s failed during ingestion or setup", sample_id)
+                for ability_type, questions in probing_questions.items():
+                    if isinstance(questions, dict):
+                        questions = [questions]
+                    elif not isinstance(questions, list):
+                        continue
+                    for sub_idx, _ in enumerate(questions):
+                        qid = f"{sample_id}_{ability_type}_{sub_idx}"
+                        self._checkpoint.mark_failed(qid, str(e))
+                self._checkpoint.save()
             finally:
                 # Clean up isolated state
                 await self.vektori_client.delete_user(sample_id)

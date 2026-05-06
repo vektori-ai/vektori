@@ -10,16 +10,16 @@ logger = logging.getLogger(__name__)
 
 # List of the 10 ability types BEAM tests
 ABILITY_TYPES = [
-    "temporal_tracking",
-    "spatial_tracking",
-    "coreference",
-    "entity_tracking",
-    "relation_tracking",
-    "sentiment_tracking",
-    "topic_tracking",
-    "causality",
-    "logical_reasoning",
-    "state_tracking"
+    "abstention",
+    "contradiction_resolution",
+    "event_ordering",
+    "information_extraction",
+    "instruction_following",
+    "knowledge_update",
+    "multi_session_reasoning",
+    "preference_following",
+    "summarization",
+    "temporal_reasoning",
 ]
 
 class BeamJudge:

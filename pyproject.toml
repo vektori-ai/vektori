@@ -42,6 +42,13 @@ anthropic = ["anthropic>=0.20", "voyageai>=0.2"]
 sentence-transformers = ["sentence-transformers>=2.6"]
 bge = ["FlagEmbedding>=1.2"]
 litellm = ["litellm>=1.30"]
+gemini = ["google-genai>=1.0"]
+benchmarks = [
+    "datasets>=2.18",
+    "FlagEmbedding>=1.2",
+    "google-genai>=1.0",
+    "sentence-transformers>=2.6",
+]
 pipecat = ["pipecat-ai>=0.0.50", "fastapi>=0.110", "uvicorn[standard]>=0.29"]
 nvidia = ["openai>=1.12"]  # NVIDIA NIM uses OpenAI-compatible API
 dev = [
@@ -62,6 +69,7 @@ all = [
     "sentence-transformers>=2.6",
     "FlagEmbedding>=1.2",
     "litellm>=1.30",
+    "google-genai>=1.0",
     "veclite-db>=1.1.1",
     "openai>=1.12",  # NVIDIA NIM support
 ]

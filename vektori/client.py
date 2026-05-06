@@ -201,7 +201,10 @@ class Vektori:
                 self._bg_tasks.add(task)
                 task.add_done_callback(self._bg_tasks.discard)
             else:
-                await self._auto_synthesize_if_due(user_id, agent_id, n)
+                try:
+                    await self._auto_synthesize_if_due(user_id, agent_id, n)
+                except Exception as e:
+                    logger.error("Auto-synthesis failed: %s", e, exc_info=True)
 
         return result
 

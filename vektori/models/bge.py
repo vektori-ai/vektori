@@ -35,10 +35,20 @@ class BGEEmbedder(EmbeddingProvider):
     Install: pip install FlagEmbedding
     """
 
-    def __init__(self, model: str | None = None, use_fp16: bool = True) -> None:
+    def __init__(self, model: str | None = None, use_fp16: bool | None = None) -> None:
         self.model_name = model or DEFAULT_MODEL
-        self.use_fp16 = use_fp16
+        self.use_fp16 = self._resolve_fp16(use_fp16)
         self._model = None
+
+    def _resolve_fp16(self, use_fp16: bool | None) -> bool:
+        if use_fp16 is not None:
+            return use_fp16
+        try:
+            import torch
+
+            return bool(torch.cuda.is_available())
+        except Exception:
+            return False
 
     def _get_model(self):
         if self._model is None:
@@ -60,7 +70,14 @@ class BGEEmbedder(EmbeddingProvider):
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             None,
-            lambda: model.encode([text], batch_size=1, max_length=512)["dense_vecs"][0],
+            lambda: model.encode(
+                [text],
+                batch_size=1,
+                max_length=512,
+                return_dense=True,
+                return_sparse=False,
+                return_colbert_vecs=False,
+            )["dense_vecs"][0],
         )
         return result.tolist()
 
@@ -71,6 +88,13 @@ class BGEEmbedder(EmbeddingProvider):
         loop = asyncio.get_event_loop()
         results = await loop.run_in_executor(
             None,
-            lambda: model.encode(texts, batch_size=32, max_length=512)["dense_vecs"],
+            lambda: model.encode(
+                texts,
+                batch_size=32,
+                max_length=512,
+                return_dense=True,
+                return_sparse=False,
+                return_colbert_vecs=False,
+            )["dense_vecs"],
         )
         return [r.tolist() for r in results]
