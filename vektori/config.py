@@ -143,12 +143,12 @@ class VektoriConfig:
     quality_config: QualityConfig = field(default_factory=QualityConfig)
 
     # Retrieval defaults
-    default_top_k: int = 15
+    default_top_k: int = 20
     context_window: int = 3  # ±N sentences around matched sentence (L2)
     temporal_decay_rate: float = 0.001  # per day
 
     # Extraction limits (per extraction batch)
-    max_facts: int = 15  # max facts the LLM may return per session (prompt-level)
+    max_facts: int = 28  # max facts the LLM may return per session (prompt-level)
 
     # Token-threshold batching — fire extraction once buffered input exceeds this
     token_batch_threshold: int = 800  # ~800 tokens ≈ 3-4 turns before extraction fires
@@ -191,7 +191,7 @@ class VektoriConfig:
     use_reranker: bool = True
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     # How many candidates to pass to the reranker before final top-k selection
-    reranker_top_n: int = 20
+    reranker_top_n: int = 30
 
     # Token budget for retrieval output (None = no limit)
     max_retrieval_tokens: int | None = None
