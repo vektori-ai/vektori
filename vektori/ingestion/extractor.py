@@ -348,6 +348,27 @@ General:
   "today" → "on YYYY-MM-DD", "yesterday" → "on YYYY-MM-DD", "last week" → "on week of YYYY-MM-DD", etc.
   Do NOT use relative expressions if you know the absolute date.
 - `source_sentence_indices` must refer only to rows from SOURCE SENTENCE CATALOG. Prefer the smallest set of indices that fully supports the fact.
+
+PLANNED vs COMPLETED events — CRITICAL:
+- If the user says "I'm going to", "I plan to", "I want to", "I'm thinking of", "I might", "I hope to" → extract as PLANNED: "NAME plans to [X]"
+- If the user says "I went", "I did", "I visited", "I finished", "I've been" → extract as COMPLETED: "NAME [did X] on [date]"
+- NEVER merge a plan and a completed event into the same fact. Extract them separately.
+- If a plan from a prior turn is later confirmed as done, extract BOTH: the original plan AND the completion as separate facts.
+  BAD: "Caroline visited Paris after planning to."
+  GOOD fact 1: "Caroline planned to visit Paris."
+  GOOD fact 2: "Caroline visited Paris on 2023-08-15."
+
+DURATION and QUANTITY — CRITICAL:
+- Always capture HOW LONG and HOW MANY when stated:
+  BAD: "Tim went camping."   GOOD: "Tim went camping for 4 days."
+  BAD: "Sarah read books."  GOOD: "Sarah read 3 books during her vacation."
+- If a trip, project, or activity has a start + end, compute and state the duration.
+
+LISTS — extract each item as a SEPARATE fact:
+- If the user mentions 4 restaurants, extract 4 separate facts (one per restaurant).
+- If the user mentions 3 people at an event, extract 3 separate facts (one per person).
+- Do NOT merge list items into a single "User mentioned restaurants A, B, C, D" fact —
+  that fact is unsearchable when the user later asks specifically about "restaurant B".
 {domain_guidance}
 Return ONLY the JSON."""
 
