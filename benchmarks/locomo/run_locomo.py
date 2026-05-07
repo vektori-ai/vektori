@@ -48,8 +48,8 @@ def _check_env(embedding_model: str) -> None:
         for var in ("CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"):
             if not os.environ.get(var):
                 missing.append(var)
-    if not os.environ.get("GOOGLE_API_KEY"):
-        missing.append("GOOGLE_API_KEY")
+    if not (os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")):
+        missing.append("GOOGLE_API_KEY or GEMINI_API_KEY")
     if missing:
         print(
             "ERROR: The following required environment variables are not set:\n"
