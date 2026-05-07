@@ -99,7 +99,10 @@ def score_and_rank(
         # standing preferences decay much slower.
         is_event = "temporal_expr" in meta or meta.get("type") == "event"
         rate = temporal_decay_rate if is_event else preference_decay_rate
-        recency = math.exp(-rate * age_days)
+        # Floor at 0.35 so early-session one-time facts never get crushed by age alone.
+        # Without this, a highly relevant but old fact can be outranked by irrelevant
+        # recent facts purely due to recency decay.
+        recency = max(0.35, math.exp(-rate * age_days))
 
         # ── Mentions boost ───────────────────────────────────────────────────
         # log(1 + mentions) gives diminishing returns: 1→1.0, 5→1.79, 50→3.93.
