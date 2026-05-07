@@ -50,6 +50,8 @@ INSTRUCTIONS:
    - When context gives a start date and a completion event, compute and state the elapsed duration (e.g. "nearly two months") rather than listing both dates separately.
 9. If the context contains facts about multiple named people, only use facts where the subject explicitly matches the person the question asks about. Before giving your answer, verify: does the fact literally name the person the question is asking about? If a fact says "James did X" and the question asks what John did — that fact is not usable as an answer about John. Do not infer attribution. Facts labeled "User" or "Assistant" refer to the primary conversation participant — if other facts establish that person's name (e.g. "User's name is Caroline"), treat "User" facts as belonging to that person.
    Also: if the context says a person MISSED or DID NOT attend an event — that is NOT attendance. Never flip the sign of a negative fact.
+   Also: "planned to X" is NOT the same as "did X". If the context says a person planned to visit somewhere, that is NOT evidence they actually went. Only count completed events as completed events.
+10. Distinguish PLANNED from COMPLETED events. If a fact says "NAME plans/planned/was going to do X", that is a PLAN — do NOT report it as something that actually happened unless another fact confirms the completion. Similarly, if asked "What did X do?", do not answer with plans — only confirmed actions count.
 
 ANSWER:
 """
