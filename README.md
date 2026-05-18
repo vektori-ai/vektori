@@ -227,6 +227,16 @@ For a live end-to-end harness check, run [`scripts/test_agent_e2e.py`](scripts/t
 
 Hermes/OpenClaw support in this repo is currently an integration starter path (adapter/plugin wiring), not a widely benchmarked default harness.
 
+## Memory Explorer (local debug UI)
+
+Browse stored graph data for a user (facts, episodes, sentences, links, and profile summary):
+
+```bash
+python -m tools.memory_explorer.server
+```
+
+Then open `http://127.0.0.1:8765`.
+
 ---
 
 ## Storage Backends
