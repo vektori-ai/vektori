@@ -114,10 +114,13 @@ class GeminiLLM(LLMProvider):
                     f"model={self.model}, tokens={max_tokens}"
                 )
 
-                response = await client.aio.models.generate_content(
-                    model=self.model,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(**config_kwargs),
+                response = await asyncio.wait_for(
+                    client.aio.models.generate_content(
+                        model=self.model,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(**config_kwargs),
+                    ),
+                    timeout=120.0,
                 )
 
                 logger.debug(f"Gemini API call succeeded on attempt {attempt + 1}")
