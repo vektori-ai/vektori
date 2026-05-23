@@ -95,6 +95,7 @@ class SQLiteBackend(StorageBackend):
                 confidence REAL DEFAULT 1.0,
                 metadata TEXT DEFAULT '{}',
                 event_time TEXT,
+                fact_type TEXT,
                 created_at TEXT DEFAULT (datetime('now'))
             );
 
