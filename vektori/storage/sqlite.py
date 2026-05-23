@@ -382,14 +382,15 @@ class SQLiteBackend(StorageBackend):
         superseded_by_target: str | None = None,
         metadata: dict[str, Any] | None = None,
         event_time: datetime | None = None,
+        fact_type: str | None = None,
     ) -> str:
         fact_id = str(uuid.uuid4())
         event_time_str = event_time.isoformat() if event_time else None
         await self._conn.execute(
             """INSERT INTO facts
                (id, text, embedding, user_id, agent_id, session_id, subject,
-                confidence, superseded_by, metadata, event_time)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                confidence, superseded_by, metadata, event_time, fact_type)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 fact_id,
                 text,
@@ -402,6 +403,7 @@ class SQLiteBackend(StorageBackend):
                 superseded_by_target,
                 json.dumps(metadata or {}),
                 event_time_str,
+                fact_type,
             ),
         )
         await self._conn.commit()

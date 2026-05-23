@@ -28,7 +28,8 @@ async def _main():
     parser.add_argument("--embedding-model", default="cloudflare:@cf/baai/bge-m3")
     parser.add_argument("--extraction-model", default="gemini:gemini-2.5-flash-lite")
     parser.add_argument("--reranker", default="bge:BAAI/bge-reranker-v2-m3")
-    parser.add_argument("--top-k", type=int, default=15)
+    parser.add_argument("--top-k", type=int, default=20)
+    parser.add_argument("--reranker-top-n", type=int, default=30)
     parser.add_argument("--context-window", type=int, default=5)
     parser.add_argument("--depth", choices=["l0", "l1", "l2"], default="l1")
     parser.add_argument("--output-dir", default="benchmark_results")
@@ -47,6 +48,7 @@ async def _main():
         extraction_model=args.extraction_model,
         reranker_model=args.reranker,
         top_k=args.top_k,
+        reranker_top_n=args.reranker_top_n,
         context_window=args.context_window,
         retrieval_depth=args.depth,
         output_dir=output_dir,

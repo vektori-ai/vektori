@@ -457,7 +457,7 @@ class SearchPipeline:
     ) -> dict[str, Any]:
         """Expanded retrieval: concurrent L0 fact searches across multiple query variants."""
         if not queries:
-            return {"facts": [], "sentences": [], "memory_found": False}
+            return {"facts": [], "episodes": [], "syntheses": [], "sentences": [], "memory_found": False}
 
         embeddings = await self.embedder.embed_batch(queries)
 

@@ -864,6 +864,7 @@ class FactExtractor:
                     subject=subject,
                     metadata=meta or None,
                     event_time=session_time,
+                    fact_type=fact_data.get("fact_type") or None,
                 )
 
                 if _inserted_facts_out is not None:
@@ -965,6 +966,7 @@ class FactExtractor:
                     subject=subject,
                     metadata=meta or None,
                     event_time=session_time,
+                    fact_type=fact_data.get("fact_type") or None,
                 )
                 facts_inserted += 1
 

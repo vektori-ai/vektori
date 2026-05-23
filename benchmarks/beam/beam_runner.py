@@ -37,7 +37,8 @@ class BeamConfig:
     
     # Reranker integration
     reranker_model: str = "bge:BAAI/bge-reranker-v2-m3"
-    top_k: int = 15
+    top_k: int = 20
+    reranker_top_n: int = 30
     context_window: int = 5
     
     output_dir: str = "benchmark_results"
@@ -71,7 +72,7 @@ class BeamBenchmark:
                 async_extraction=False,
                 use_reranker=True,
                 reranker_model=self.config.reranker_model,
-                reranker_top_n=max(20, self.config.top_k),
+                reranker_top_n=self.config.reranker_top_n,
             )
         )
         await self.vektori_client._ensure_initialized()
