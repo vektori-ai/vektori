@@ -90,7 +90,7 @@ class BGEEmbedder(EmbeddingProvider):
             None,
             lambda: model.encode(
                 texts,
-                batch_size=32,
+                batch_size=8,
                 max_length=512,
                 return_dense=True,
                 return_sparse=False,

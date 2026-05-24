@@ -7,6 +7,8 @@ Evaluates Vektori's persistent agent memory and reasoning on the BEAM dataset.
 
 import ast
 import asyncio
+import ctypes
+import gc
 import json
 import logging
 import time
@@ -252,6 +254,11 @@ class BeamBenchmark:
                         user_id=sample_id,
                         metadata={"beam_sample_id": sample_id, "beam_batch": batch_idx},
                     )
+                    gc.collect()
+                    try:
+                        ctypes.CDLL("libc.so.6").malloc_trim(0)
+                    except Exception:
+                        pass
 
                 # 2. Query Phase — all questions run in parallel (semaphore=5)
                 qa_sem = asyncio.Semaphore(5)

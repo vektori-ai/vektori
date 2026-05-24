@@ -129,7 +129,7 @@ class GeminiLLM(LLMProvider):
             except Exception as e:
                 last_exception = e
                 error_msg = str(e).lower()
-                is_retryable = any(
+                is_retryable = isinstance(e, (TimeoutError, asyncio.TimeoutError)) or any(
                     term in error_msg
                     for term in ["timeout", "500", "429", "503", "connection", "network", "temporarily", "try again"]
                 )
