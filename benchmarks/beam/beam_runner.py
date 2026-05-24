@@ -365,6 +365,11 @@ class BeamBenchmark:
             finally:
                 # Clean up isolated state
                 await self.vektori_client.delete_user(sample_id)
+                gc.collect()
+                try:
+                    ctypes.CDLL("libc.so.6").malloc_trim(0)
+                except Exception:
+                    pass
 
     async def _evaluate_and_summarize(self):
         completed = self._checkpoint.get_completed()
