@@ -37,6 +37,10 @@ _CF_BASE = "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{m
 _BATCH_LIMIT = 100  # Cloudflare enforces ≤ 100 texts per request
 
 
+class CloudflareQuotaExhausted(RuntimeError):
+    """Raised when the daily 10k neuron free quota is exhausted (CF error code 3036)."""
+
+
 class CloudflareEmbedder(EmbeddingProvider):
     """Cloudflare Workers AI embedding provider.
 
@@ -113,6 +117,21 @@ class CloudflareEmbedder(EmbeddingProvider):
                         return payload["result"]["data"]
                     errors = payload.get("errors") or payload
                     raise RuntimeError(f"Cloudflare Workers AI error: {errors}")
+                if resp.status_code == 429:
+                    payload = resp.json()
+                    code = (payload.get("errors") or [{}])[0].get("code")
+                    if code == 3036:
+                        # Daily quota exhausted — unrecoverable, raise special error
+                        raise CloudflareQuotaExhausted(
+                            "Cloudflare daily 10k neuron quota exhausted (code 3036). "
+                            "Upgrade plan or wait until 00:00 UTC."
+                        )
+                    # code 3040 or generic 429 = transient, retry with backoff
+                    last_error = RuntimeError(f"Cloudflare 429 (code={code}): {resp.text[:200]}")
+                    logger.warning("Cloudflare 429 attempt %d/%d — retrying in %.1fs", attempt + 1, max_retries, delay)
+                    await asyncio.sleep(delay)
+                    delay *= 2
+                    continue
                 if resp.status_code >= 500:
                     last_error = RuntimeError(
                         f"Cloudflare Workers AI returned HTTP {resp.status_code}: {resp.text[:500]}"

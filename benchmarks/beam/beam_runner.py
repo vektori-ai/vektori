@@ -57,10 +57,31 @@ class BeamBenchmark:
         self.vektori_client = None
         self.dataset = []
         self._checkpoint = None
+        self._ingestion_done: set[str] = set()  # "sample_id:batch_idx" keys
+        self._ingestion_ckpt_path: Path | None = None
         self._eval_llm = None
         self._run_name = None
         self._empty_chat_logged = False
         self.judge = BeamJudge(config.eval_model)
+
+    def _load_ingestion_checkpoint(self) -> None:
+        if self._ingestion_ckpt_path and self._ingestion_ckpt_path.exists():
+            import json as _json
+            self._ingestion_done = set(_json.loads(self._ingestion_ckpt_path.read_text()))
+            if self._ingestion_done:
+                logger.info("Ingestion checkpoint: %d batches already done", len(self._ingestion_done))
+
+    def _mark_ingestion_done(self, sample_id: str, batch_idx: int) -> None:
+        key = f"{sample_id}:{batch_idx}"
+        self._ingestion_done.add(key)
+        if self._ingestion_ckpt_path:
+            import json as _json
+            tmp = self._ingestion_ckpt_path.with_suffix(".tmp")
+            tmp.write_text(_json.dumps(list(self._ingestion_done)))
+            tmp.rename(self._ingestion_ckpt_path)
+
+    def _ingestion_batch_done(self, sample_id: str, batch_idx: int) -> bool:
+        return f"{sample_id}:{batch_idx}" in self._ingestion_done
 
     async def setup(self) -> None:
         logger.info("Setting up BEAM benchmark environment…")
@@ -101,6 +122,8 @@ class BeamBenchmark:
         remaining = len(self.dataset) - n_done
         if n_done:
             logger.info("Resuming — %d done, %d remaining", n_done, remaining)
+        self._ingestion_ckpt_path = self.output_dir / f"{self._run_name}_ingestion_checkpoint.json"
+        self._load_ingestion_checkpoint()
         logger.info(f"Loaded {len(self.dataset)} BEAM instances.")
 
     async def run(self):
@@ -248,12 +271,16 @@ class BeamBenchmark:
                 )
                 
                 for batch_idx, batch in enumerate(chat_batches):
+                    if self._ingestion_batch_done(sample_id, batch_idx):
+                        logger.info("Skipping already-ingested batch %s/%d", sample_id, batch_idx)
+                        continue
                     await self.vektori_client.add(
                         messages=batch,
                         session_id=f"{sample_id}_batch_{batch_idx}",
                         user_id=sample_id,
                         metadata={"beam_sample_id": sample_id, "beam_batch": batch_idx},
                     )
+                    self._mark_ingestion_done(sample_id, batch_idx)
                     gc.collect()
                     try:
                         ctypes.CDLL("libc.so.6").malloc_trim(0)
