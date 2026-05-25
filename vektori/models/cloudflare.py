@@ -34,7 +34,8 @@ from vektori.models.base import EmbeddingProvider
 logger = logging.getLogger(__name__)
 
 _CF_BASE = "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{model}"
-_BATCH_LIMIT = 100  # Cloudflare enforces ≤ 100 texts per request
+_BATCH_LIMIT = 20   # keep per-request token count well under CF's 60K limit
+_MAX_CHARS = 2000   # ~500 tokens; matches local BGE max_length=512
 
 
 class CloudflareQuotaExhausted(RuntimeError):
@@ -88,10 +89,12 @@ class CloudflareEmbedder(EmbeddingProvider):
         if not texts:
             return []
 
+        # Truncate long texts to avoid CF's 60K token limit (code blocks, etc.)
+        texts = [t[:_MAX_CHARS] if len(t) > _MAX_CHARS else t for t in texts]
+
         all_embeddings: list[list[float]] = []
 
         async with httpx.AsyncClient(timeout=60.0) as client:
-            # Cloudflare enforces ≤ 100 texts per request — batch accordingly.
             for start in range(0, len(texts), _BATCH_LIMIT):
                 batch = texts[start : start + _BATCH_LIMIT]
                 all_embeddings.extend(await self._post_with_retry(client, batch))
