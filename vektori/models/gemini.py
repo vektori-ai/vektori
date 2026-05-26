@@ -27,12 +27,55 @@ DEFAULT_INITIAL_BACKOFF = 1.0
 DEFAULT_MAX_BACKOFF = 120.0
 DEFAULT_BACKOFF_MULTIPLIER = 2.0
 
+# Module-level key rotation state shared across all GeminiLLM instances.
+# Populated from GEMINI_API_KEYS (comma-separated) or falls back to GEMINI_API_KEY.
+_key_pool: list[str] = []
+_key_index: int = 0
+_exhausted_keys: set[str] = set()  # day-quota exhausted
+
+
+def _load_key_pool() -> list[str]:
+    multi = os.environ.get("GEMINI_API_KEYS", "")
+    if multi:
+        return [k.strip() for k in multi.split(",") if k.strip()]
+    single = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    return [single] if single else []
+
+
+def _current_key() -> str | None:
+    global _key_pool, _key_index
+    if not _key_pool:
+        _key_pool = _load_key_pool()
+    available = [k for k in _key_pool if k not in _exhausted_keys]
+    if not available:
+        return None
+    # keep _key_index within available pool
+    _key_index = _key_index % len(available)
+    return available[_key_index]
+
+
+def _rotate_key(exhausted_key: str) -> str | None:
+    global _key_index, _exhausted_keys, _key_pool
+    _exhausted_keys.add(exhausted_key)
+    available = [k for k in _key_pool if k not in _exhausted_keys]
+    if not available:
+        return None
+    _key_index = 0
+    logger.warning("Gemini key ...%s exhausted (day quota). Rotating to key ...%s", exhausted_key[-4:], available[0][-4:])
+    return available[0]
+
+
+def _is_day_quota_error(error_msg: str) -> bool:
+    return "generateRequestsPerDayPerProjectPerModel-FreeTier".lower() in error_msg.lower() or \
+           "generate_content_free_tier_requests" in error_msg.lower()
+
 
 class GeminiLLM(LLMProvider):
     """
     Google Gemini API provider using the google-genai SDK.
 
-    Supports all Gemini models. Reads GEMINI_API_KEY or GOOGLE_API_KEY from env.
+    Supports all Gemini models. Reads GEMINI_API_KEYS (comma-separated) or
+    GEMINI_API_KEY from env. Automatically rotates keys on day-quota exhaustion.
     """
 
     def __init__(
@@ -46,28 +89,26 @@ class GeminiLLM(LLMProvider):
         json_mode: bool = True,
     ) -> None:
         self.model = model or DEFAULT_MODEL
-        self._api_key = api_key
+        self._api_key = api_key  # explicit override — bypasses pool
         self._thinking_level = thinking_level  # None = use model-based default
         self._json_mode = json_mode
-        self._client = None
+        self._clients: dict[str, Any] = {}  # key -> genai.Client
         self.max_retries = max_retries
         self.initial_backoff = initial_backoff
         self.max_backoff = max_backoff
 
-    def _get_client(self):
-        if self._client is None:
-            try:
-                from google import genai
-            except ImportError as e:
-                raise ImportError("google-genai required: pip install google-genai") from e
+    def _get_client(self, api_key: str | None = None):
+        try:
+            from google import genai
+        except ImportError as e:
+            raise ImportError("google-genai required: pip install google-genai") from e
 
-            api_key = (
-                self._api_key
-                or os.environ.get("GEMINI_API_KEY")
-                or os.environ.get("GOOGLE_API_KEY")
-            )
-            self._client = genai.Client(api_key=api_key)
-        return self._client
+        key = api_key or self._api_key or _current_key()
+        if not key:
+            raise RuntimeError("No Gemini API key available")
+        if key not in self._clients:
+            self._clients[key] = genai.Client(api_key=key)
+        return self._clients[key], key
 
     async def _calculate_backoff(self, attempt: int) -> float:
         backoff = min(
@@ -94,8 +135,6 @@ class GeminiLLM(LLMProvider):
     async def generate(self, prompt: str, max_tokens: int | None = None) -> str:
         from google.genai import types
 
-        client = self._get_client()
-
         config_kwargs: dict[str, Any] = {"temperature": 0.1}
         if self._json_mode:
             config_kwargs["response_mime_type"] = "application/json"
@@ -109,9 +148,10 @@ class GeminiLLM(LLMProvider):
 
         for attempt in range(self.max_retries + 1):
             try:
+                client, active_key = self._get_client()
                 logger.debug(
                     f"Gemini API call (attempt {attempt + 1}/{self.max_retries + 1}): "
-                    f"model={self.model}, tokens={max_tokens}"
+                    f"model={self.model}, key=...{active_key[-4:]}"
                 )
 
                 response = await asyncio.wait_for(
@@ -128,9 +168,17 @@ class GeminiLLM(LLMProvider):
 
             except Exception as e:
                 last_exception = e
-                error_msg = str(e).lower()
+                error_msg = str(e)
+
+                # Day-quota exhausted — rotate key immediately, don't backoff
+                if _is_day_quota_error(error_msg) and not self._api_key:
+                    next_key = _rotate_key(active_key)
+                    if next_key is None:
+                        raise RuntimeError("All Gemini API keys exhausted (day quota)") from e
+                    continue  # retry immediately with new key, don't count as a retry attempt
+
                 is_retryable = isinstance(e, (TimeoutError, asyncio.TimeoutError)) or any(
-                    term in error_msg
+                    term in error_msg.lower()
                     for term in ["timeout", "500", "429", "503", "connection", "network", "temporarily", "try again"]
                 )
 
