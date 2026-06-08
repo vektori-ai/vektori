@@ -14,6 +14,7 @@ from vektori.fsmemory.extractor import DocumentExtractor
 from vektori.fsmemory.models import IngestResult
 from vektori.fsmemory.query import FSQuery
 from vektori.fsmemory.store import DEFAULT_DB_PATH, FSStore, path_session_id
+from vektori.models.factory import create_embedder, create_llm
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,6 @@ class FilesystemMemory:
         if self._initialized:
             return
 
-        from vektori.models.factory import create_embedder, create_llm
         from vektori.storage.sqlite import SQLiteBackend
 
         db_path = (
