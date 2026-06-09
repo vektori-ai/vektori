@@ -110,6 +110,18 @@ class ExtractionConfig:
 
 
 @dataclass
+class FSMemoryConfig:
+    """Configuration for FilesystemMemory (standalone — not used by VektoriConfig)."""
+
+    database_url: str | None = None
+    embedding_model: str = "openai:text-embedding-3-small"
+    extraction_model: str = "openai:gpt-4o-mini"
+    extract_facts: bool = True
+    exclude_patterns: list[str] = field(default_factory=list)
+    max_file_size_bytes: int = 200 * 1024
+
+
+@dataclass
 class QualityConfig:
     """Configuration for the sentence quality filter."""
 

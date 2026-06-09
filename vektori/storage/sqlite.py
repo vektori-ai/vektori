@@ -438,6 +438,39 @@ class SQLiteBackend(StorageBackend):
         results.sort(key=lambda x: x["distance"])
         return results[:limit]
 
+    async def search_facts_keyword(
+        self,
+        query: str,
+        user_id: str,
+        agent_id: str | None = None,
+        session_id: str | None = None,
+        subject: str | None = None,
+        limit: int = 10,
+        active_only: bool = True,
+        before_date: datetime | None = None,
+        after_date: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM facts WHERE user_id = ? AND text LIKE ?"
+        params: list[Any] = [user_id, f"%{query}%"]
+        if active_only:
+            sql += " AND is_active = 1"
+        if agent_id:
+            sql += " AND agent_id = ?"
+            params.append(agent_id)
+        if session_id:
+            sql += " AND session_id = ?"
+            params.append(session_id)
+        if subject:
+            sql += " AND subject = ?"
+            params.append(subject)
+        sql += f" LIMIT {limit}"
+        async with self._conn.execute(sql, params) as cursor:
+            rows = await cursor.fetchall()
+        return [
+            {**dict(r), "distance": 0.5, "created_at": _parse_dt(dict(r).get("created_at"))}
+            for r in rows
+        ]
+
     async def get_active_facts(
         self,
         user_id: str,
