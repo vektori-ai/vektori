@@ -10,6 +10,8 @@ from pathlib import Path
 
 import typer
 
+from vektori import telemetry
+
 app = typer.Typer(help="Vektori memory engine — self-hosted, zero-config.", no_args_is_help=True)
 
 _CONFIG_PATH = Path.home() / ".vektori" / "config.json"
@@ -746,4 +748,5 @@ def stats(
 
 
 def main() -> None:
+    telemetry.set_interface("cli")
     app()
