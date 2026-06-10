@@ -10,6 +10,8 @@ from pathlib import Path
 
 import typer
 
+from vektori import telemetry
+
 app = typer.Typer(help="Vektori memory engine — self-hosted, zero-config.", no_args_is_help=True)
 
 _CONFIG_PATH = Path.home() / ".vektori" / "config.json"
@@ -235,6 +237,12 @@ def init(
     _warn_openai(em, "--extraction-model")
     _warn_openai(eb, "--embedding-model")
 
+    telemetry.capture("cli:init", {
+        "backend": storage_backend or _default_storage_backend(),
+        "extraction_provider": telemetry.provider(em),
+        "embedding_provider": telemetry.provider(eb),
+    })
+
     async def _run() -> None:
         v = _client(
             em,
@@ -292,6 +300,13 @@ def add(
     _warn_openai(eb, "--embedding-model")
     sid = session_id or str(uuid.uuid4())
     messages = [{"role": "user", "content": text}]
+
+    telemetry.capture("cli:add", {
+        "backend": storage_backend or _default_storage_backend(),
+        "extraction_provider": telemetry.provider(em),
+        "embedding_provider": telemetry.provider(eb),
+        "no_extraction": no_extraction,
+    })
 
     async def _run() -> dict:
         v = _client(
@@ -357,6 +372,13 @@ def search(
     em = extraction_model or _default_extraction()
     eb = embedding_model or _default_embedding()
     _warn_openai(eb, "--embedding-model")
+
+    telemetry.capture("cli:search", {
+        "backend": storage_backend or _default_storage_backend(),
+        "embedding_provider": telemetry.provider(eb),
+        "depth": depth,
+        "expand": expand,
+    })
 
     async def _run() -> dict:
         v = _client(
@@ -432,6 +454,10 @@ def list_memories(
     """List all active memories (extracted facts) for a user."""
     eb = embedding_model or _default_embedding()
 
+    telemetry.capture("cli:list", {
+        "backend": storage_backend or _default_storage_backend(),
+    })
+
     async def _run() -> list:
         v = _client(
             _default_extraction(),
@@ -483,6 +509,10 @@ def delete(
     """Delete all memories for a user."""
     if not yes:
         typer.confirm(f"Delete ALL memories for user '{user_id}'?", abort=True)
+
+    telemetry.capture("cli:delete", {
+        "backend": storage_backend or _default_storage_backend(),
+    })
 
     async def _run() -> int:
         v = _client(
@@ -540,6 +570,12 @@ def remember(
     _warn_openai(em, "--extraction-model")
     sid = session_id or str(uuid.uuid4())
     messages = [{"role": "user", "content": text}]
+
+    telemetry.capture("cli:remember", {
+        "backend": storage_backend or _default_storage_backend(),
+        "extraction_provider": telemetry.provider(em),
+        "embedding_provider": telemetry.provider(eb),
+    })
 
     async def _run() -> dict:
         v = _client(
@@ -601,6 +637,13 @@ def recall(
     """Recall memories. Alias for `search` — reads naturally in agent prompts."""
     em = extraction_model or _default_extraction()
     eb = embedding_model or _default_embedding()
+
+    telemetry.capture("cli:recall", {
+        "backend": storage_backend or _default_storage_backend(),
+        "embedding_provider": telemetry.provider(eb),
+        "depth": depth,
+        "synthesize": synthesize,
+    })
 
     async def _run() -> dict:
         v = _client(
@@ -702,6 +745,10 @@ def stats(
     as_json: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
     """Show memory stats for a user."""
+
+    telemetry.capture("cli:stats", {
+        "backend": storage_backend or _default_storage_backend(),
+    })
 
     async def _run() -> dict:
         v = _client(
