@@ -24,6 +24,16 @@ _POSTHOG_API_KEY = "phc_REPLACE_WITH_YOUR_KEY"
 _POSTHOG_HOST = "https://us.i.posthog.com"
 _CONFIG_PATH = Path.home() / ".vektori" / "config.json"
 
+# Set by CLI at startup so client-level events know they came from the CLI.
+# Default is "sdk" — used when Vektori is imported directly in Python code.
+_interface: str = "sdk"
+
+
+def set_interface(name: str) -> None:
+    """Call once at process startup to tag all subsequent events with the interface name."""
+    global _interface
+    _interface = name
+
 _NOTICE = (
     "[vektori] Anonymous usage stats are collected to improve the project. "
     "Opt out: VEKTORI_NO_TELEMETRY=1  "
@@ -121,6 +131,7 @@ def capture(event: str, properties: dict[str, Any] | None = None) -> None:
             "python_version": f"{sys.version_info.major}.{sys.version_info.minor}",
             "platform": platform.system().lower(),
             "pkg_version": _pkg_version(),
+            "interface": _interface,
             **(properties or {}),
         },
     }

@@ -7,6 +7,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
+from vektori import telemetry
 from vektori.config import ExtractionConfig, QualityConfig, VektoriConfig
 
 logger = logging.getLogger(__name__)
@@ -138,6 +139,11 @@ class Vektori:
 
         self._initialized = True
         logger.info("Vektori initialized (backend=%s)", self.config.storage_backend)
+        telemetry.capture("vektori:init", {
+            "backend": self.config.storage_backend,
+            "extraction_provider": telemetry.provider(self.config.extraction_model),
+            "embedding_provider": telemetry.provider(self.config.embedding_model),
+        })
 
     async def add(
         self,
@@ -169,6 +175,12 @@ class Vektori:
             {"status": "ok", "sentences_stored": N, "extraction": "queued"|"done"|"skipped"}
         """
         await self._ensure_initialized()
+
+        telemetry.capture("vektori:add", {
+            "backend": self.config.storage_backend,
+            "skip_extraction": skip_extraction,
+            "async_extraction": self.config.async_extraction,
+        })
 
         result = await self._pipeline.ingest(
             messages, session_id, user_id, agent_id, metadata, session_time=session_time,
@@ -220,6 +232,11 @@ class Vektori:
         Maps source:source_id -> deterministic session_id so re-ingestion upserts, not duplicates.
         """
         session_id = f"{source}:{source_id}"
+
+        telemetry.capture("vektori:add_document", {
+            "backend": self.config.storage_backend,
+            "source": source,
+        })
 
         doc_metadata = metadata or {}
         doc_metadata.update({
@@ -305,6 +322,12 @@ class Vektori:
             }
         """
         await self._ensure_initialized()
+
+        telemetry.capture("vektori:search", {
+            "backend": self.config.storage_backend,
+            "depth": depth,
+            "expand": expand,
+        })
 
         if self.config.enable_retrieval_gate:
             from vektori.retrieval.gate import should_retrieve
