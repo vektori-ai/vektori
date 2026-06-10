@@ -20,7 +20,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-_POSTHOG_API_KEY = "phc_REPLACE_WITH_YOUR_KEY"
+_POSTHOG_API_KEY = "phc_J6J05uIXjo0Ii3rUFXfzMUB7qxfgKtHSOUE1xCMTCWt"
 _POSTHOG_HOST = "https://us.i.posthog.com"
 _CONFIG_PATH = Path.home() / ".vektori" / "config.json"
 
@@ -64,7 +64,6 @@ def _is_disabled() -> bool:
     return bool(
         os.environ.get("VEKTORI_NO_TELEMETRY")
         or os.environ.get("DO_NOT_TRACK")
-        or _POSTHOG_API_KEY == "phc_REPLACE_WITH_YOUR_KEY"
     )
 
 
