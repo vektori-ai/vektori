@@ -9,6 +9,7 @@ from tools.memory_explorer.server import (
     MemfsView,
     sx_fact_detail,
     sx_facts,
+    sx_graph,
     sx_search,
     sx_session_detail,
     sx_users,
@@ -116,6 +117,32 @@ def test_memfs_view_tree_note_and_search(tmp_path):
     # no index.db -> substring fallback still finds it
     hits = v.search("ruff")
     assert {h["path"] for h in hits} == {"semantic/style.md", "procedural/ci-setup.md"}
+
+
+def test_sx_graph_layers_and_edges(conn):
+    g = sx_graph(conn, "alice")
+    assert {f["id"] for f in g["facts"]} == {"f1", "f2"}
+    assert {s["id"] for s in g["sentences"]} == {"sn1"}
+    assert {e["id"] for e in g["episodes"]} == {"e1"}
+    assert {(x["fact_id"], x["sentence_id"]) for x in g["fs"]} == {("f1", "sn1")}
+    assert {(x["episode_id"], x["fact_id"]) for x in g["ef"]} == {("e1", "f1")}
+    assert g["ss"] == [{"old": "f2", "new": "f1"}]
+
+
+def test_sx_graph_empty_user(conn):
+    g = sx_graph(conn, "nobody")
+    assert g["facts"] == [] and g["ss"] == []
+
+
+def test_memfs_graph_nodes_edges(tmp_path):
+    root = tmp_path / "memfs"
+    (root / "semantic").mkdir(parents=True)
+    (root / "semantic" / "a.md").write_text("links to [[b]] and [[missing]]\n")
+    (root / "semantic" / "b.md").write_text("plain\n")
+    g = MemfsView(root).graph()
+    assert {n["path"] for n in g["nodes"]} == {"semantic/a.md", "semantic/b.md"}
+    # only resolved links become edges; broken [[missing]] is dropped
+    assert g["edges"] == [{"src": "semantic/a.md", "dst": "semantic/b.md"}]
 
 
 def test_memfs_view_missing_root(tmp_path):

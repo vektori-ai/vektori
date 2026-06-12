@@ -173,6 +173,36 @@
   .crumb { color: var(--faint); margin-bottom: 10px; font-size: 12px; }
   .crumb a { color: var(--muted); }
   mark { background: var(--accent-dim); color: var(--text); border-radius: 2px; padding: 0 1px; }
+
+  /* engine identity: sentex = blue, memfs = green */
+  .engine { font-size: 9px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase;
+            padding: 1px 7px; border-radius: 4px; vertical-align: 1px; }
+  .engine.sx { color: var(--accent); background: rgba(106,161,255,0.08); border: 1px solid rgba(106,161,255,0.3); }
+  .engine.mf { color: var(--ok); background: rgba(76,195,138,0.08); border: 1px solid rgba(76,195,138,0.3); }
+  .edot { display: inline-block; width: 6px; height: 6px; border-radius: 3px; flex: none; }
+  .edot.sx { background: var(--accent); } .edot.mf { background: var(--ok); }
+
+  /* pipeline (overview) */
+  .pipe { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0 2px; }
+  .pnode { border: 1px solid var(--border); border-radius: 8px; padding: 7px 16px; text-align: center;
+           cursor: pointer; background: var(--panel2); }
+  .pnode b { display: block; font-size: 17px; font-weight: 650; }
+  .pnode span { color: var(--faint); font-size: 11px; }
+  .parrow { color: var(--faint); font-size: 15px; }
+
+  /* graphs */
+  .graphwrap { overflow: auto; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; }
+  svg .gnode { cursor: pointer; }
+  svg .gnode rect { fill: var(--panel2); stroke: var(--border); }
+  svg .gnode:hover rect { stroke: var(--accent); }
+  svg .gnode.off rect { opacity: 0.5; }
+  svg .gnode.off text { opacity: 0.5; }
+  svg .gnode text { fill: var(--text); font: 11px var(--mono); }
+  svg .gband { fill: var(--faint); font: 10px var(--mono); letter-spacing: 0.1em; }
+  svg .gedge { stroke: #3a3d44; stroke-width: 1.2; fill: none; }
+  svg .gedge.super { stroke: var(--bad); stroke-dasharray: 4 3; stroke-width: 1.4; }
+  svg .gtick { stroke: var(--border); stroke-dasharray: 2 4; }
+  svg .gaxis { fill: var(--faint); font: 10px var(--mono); }
 </style>
 </head>
 <body>
@@ -213,10 +243,12 @@ const api = async (path) => {
 };
 
 const SECTIONS = [
-  ['overview', 'Overview'], ['facts', 'Facts'], ['episodes', 'Episodes'],
+  ['overview', 'Overview'], ['graph', 'Graph'], ['facts', 'Facts'], ['episodes', 'Episodes'],
   ['sessions', 'Conversations'], ['files', 'Files'], ['journal', 'Journal'],
 ];
-const state = { user: '', meta: null, counts: {}, factState: 'active', factQ: '', selId: null };
+const ENGINE = { facts: 'sx', episodes: 'sx', sessions: 'sx', files: 'mf', journal: 'mf' };
+const state = { user: '', meta: null, counts: {}, factState: 'active', factQ: '',
+                factView: 'list', fileView: 'list', selId: null };
 
 /* ── boot ─────────────────────────────────────────────────────────────── */
 async function boot() {
@@ -234,9 +266,12 @@ async function boot() {
   };
   const d = state.meta.db, m = state.meta.memfs;
   $('storeStatus').innerHTML =
-    `<span title="${esc(d.path)}"><i class="dot ${d.ok ? 'ok' : 'bad'}"></i>sentex</span>` +
-    `<span title="${esc(m.root)} — ${m.notes ?? 0} notes, ${m.chunks ?? 0} chunks indexed">` +
-    `<i class="dot ${m.ok ? 'ok' : 'bad'}"></i>memfs</span>`;
+    `<span title="conversation memory (3-layer store) — ${esc(d.path)}">
+       <i class="dot ${d.ok ? '' : 'bad'}" style="${d.ok ? 'background:var(--accent)' : ''}"></i>
+       <span style="color:${d.ok ? 'var(--accent)' : 'var(--bad)'}">sentex</span></span>` +
+    `<span title="file memory — ${esc(m.root)} — ${m.notes ?? 0} notes, ${m.chunks ?? 0} chunks indexed">
+       <i class="dot ${m.ok ? '' : 'bad'}" style="${m.ok ? 'background:var(--ok)' : ''}"></i>
+       <span style="color:${m.ok ? 'var(--ok)' : 'var(--bad)'}">memfs</span></span>`;
   if (!location.hash) location.hash = '#/overview';
   await route();
 }
@@ -245,11 +280,16 @@ function renderRail(active) {
   $('rail').innerHTML = SECTIONS.map(([id, label], i) => {
     const n = {facts: state.counts.facts_active, episodes: state.counts.episodes,
                sessions: state.counts.sessions, files: state.meta?.memfs?.notes}[id];
+    const eng = ENGINE[id];
     return `<button class="${active === id ? 'active' : ''}" onclick="location.hash='#/${id}'">
       <span class="num">${i + 1}</span>${label}
+      ${eng ? `<span class="edot ${eng}" title="${eng === 'sx' ? 'conversation memory (sentex)' : 'file memory (memfs)'}"></span>` : ''}
       ${n != null ? `<span class="count">${n}</span>` : ''}</button>`;
   }).join('');
 }
+const engineChip = (e) => e === 'sx'
+  ? '<span class="engine sx" title="from the conversation store">sentex</span>'
+  : '<span class="engine mf" title="from the file tree">memfs</span>';
 
 /* ── router ───────────────────────────────────────────────────────────── */
 async function route() {
@@ -263,7 +303,11 @@ async function route() {
   const c = $('content');
   try {
     if (section === 'overview') await pageOverview(c);
-    else if (section === 'facts') { await pageFacts(c); if (arg) openFact(arg); }
+    else if (section === 'graph') await pageGraph(c);
+    else if (section === 'facts') {
+      if (arg === 'timeline' || arg === 'list') { state.factView = arg; await pageFacts(c); }
+      else { await pageFacts(c); if (arg) openFact(arg); }
+    }
     else if (section === 'episodes') { await pageEpisodes(c); if (arg) openEpisode(arg); }
     else if (section === 'sessions') arg ? await pageTranscript(c, arg) : await pageSessions(c);
     else if (section === 'files') arg ? await pageNote(c, arg) : await pageFiles(c);
@@ -283,10 +327,18 @@ async function pageOverview(c) {
   c.innerHTML = `<div class="page">
     <h2>What ${esc(state.user)}'s agent knows</h2>
     <div class="sub">Active knowledge across both memory engines · read-only</div>
-    <div class="statline">
-      ${stat(n.facts_active, 'active facts')}${stat(n.facts_total - n.facts_active, 'superseded')}
-      ${stat(n.episodes, 'episodes')}${stat(n.sessions, 'conversations')}
-      ${stat(o.memfs_stats.notes ?? 0, 'memory files')}
+    <div class="panel" style="margin-bottom:16px">
+      <h3>${engineChip('sx')} conversations distill upward &nbsp;·&nbsp; ${engineChip('mf')} files link sideways
+        &nbsp;·&nbsp; <a href="#/graph">see both as graphs →</a></h3>
+      <div class="pipe">
+        ${pnode(n.sessions, 'conversations', '#/sessions')}<span class="parrow">→</span>
+        ${pnode(n.sentences, 'sentences heard', '#/sessions')}<span class="parrow">→</span>
+        ${pnode(n.facts_active, 'facts learned', '#/facts')}<span class="parrow">→</span>
+        ${pnode(n.episodes, 'episodes', '#/episodes')}
+        <span style="width:26px"></span>
+        ${pnode(o.memfs_stats.notes ?? 0, 'memory files', '#/files')}<span class="parrow">⇄</span>
+        ${pnode(o.memfs_stats.links ?? 0, 'wikilinks', '#/graph')}
+      </div>
     </div>
     <div class="grid2">
       <div class="panel"><h3>Living profile — top facts by confidence</h3>
@@ -313,6 +365,8 @@ async function pageOverview(c) {
   </div>`;
 }
 const stat = (v, label) => `<div class="stat"><b>${v ?? 0}</b><span>${label}</span></div>`;
+const pnode = (v, label, href) =>
+  `<div class="pnode" onclick="location.hash='${href}'"><b>${v ?? 0}</b><span>${label}</span></div>`;
 
 function factRow(f) {
   const conf = Math.round((f.confidence ?? 0) * 100);
@@ -325,18 +379,196 @@ function factRow(f) {
   </div>`;
 }
 
+/* ── graph: layered sentex hierarchy + memfs constellation ────────────── */
+const trunc = (s, n) => s.length > n ? s.slice(0, n - 1) + '…' : s;
+const pillW = (label) => label.length * 6.6 + 22;
+
+function gnode(x, y, label, full, onclick, cls = '', color = '') {
+  const w = pillW(label);
+  return `<g class="gnode ${cls}" transform="translate(${x - w / 2},${y})" onclick="${onclick}">
+    <title>${esc(full)}</title>
+    <rect width="${w}" height="24" rx="12"></rect>
+    <text x="${w / 2}" y="16" text-anchor="middle" ${color ? `style="fill:${color}"` : ''}>${esc(label)}</text>
+  </g>`;
+}
+const gedge = (x1, y1, x2, y2, cls = '') =>
+  `<path class="gedge ${cls}" d="M${x1},${y1} C${x1},${(y1 + y2) / 2} ${x2},${(y1 + y2) / 2} ${x2},${y2}"></path>`;
+
+// keep nodes in a band from overlapping: sort by desired x, push apart to minGap
+function spread(items, minGap, x0) {
+  items.sort((a, b) => a.x - b.x);
+  let prev = x0 - minGap;
+  for (const it of items) {
+    it.x = Math.max(it.x, prev + minGap);
+    prev = it.x;
+  }
+  return items;
+}
+
+function renderSentexLayers(g) {
+  if (!g.facts.length) {
+    return '<div class="empty">No facts yet — the hierarchy appears as conversations are distilled.</div>';
+  }
+  const facts = [...g.facts].sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
+  const GAP = 30, Y = {ep: 28, fact: 150, sent: 272};
+  const fx = {};
+  let x = 120;
+  for (const f of facts) {
+    const w = pillW(trunc(f.text, 26));
+    x += w / 2;
+    fx[f.id] = x;
+    x += w / 2 + GAP;
+  }
+  const width = Math.max(x + 60, 900);
+  // sentences: desired x = mean of linked facts
+  const sentFacts = {};
+  for (const e of g.fs) (sentFacts[e.sentence_id] = sentFacts[e.sentence_id] || []).push(e.fact_id);
+  const sents = g.sentences.map((s) => ({
+    ...s,
+    x: (sentFacts[s.id] || []).reduce((a, f) => a + (fx[f] || 0), 0) / ((sentFacts[s.id] || []).length || 1),
+  }));
+  spread(sents, 215, 120);
+  const sx = Object.fromEntries(sents.map((s) => [s.id, s.x]));
+  // episodes: desired x = mean of linked facts
+  const epFacts = {};
+  for (const e of g.ef) (epFacts[e.episode_id] = epFacts[e.episode_id] || []).push(e.fact_id);
+  const eps = g.episodes.map((e) => ({
+    ...e,
+    x: (epFacts[e.id] || []).reduce((a, f) => a + (fx[f] || 0), 0) / ((epFacts[e.id] || []).length || 1),
+  }));
+  spread(eps, 240, 140);
+  const ex = Object.fromEntries(eps.map((e) => [e.id, e.x]));
+
+  const edges =
+    g.ef.map((e) => gedge(ex[e.episode_id], Y.ep + 24, fx[e.fact_id], Y.fact)).join('') +
+    g.fs.map((e) => gedge(fx[e.fact_id], Y.fact + 24, sx[e.sentence_id], Y.sent)).join('') +
+    g.ss.map((e) => {
+      const x1 = fx[e.old], x2 = fx[e.new];
+      return `<path class="gedge super" d="M${x1},${Y.fact - 4} C${x1},${Y.fact - 42} ${x2},${Y.fact - 42} ${x2},${Y.fact - 4}"></path>
+        <text class="gaxis" x="${(x1 + x2) / 2}" y="${Y.fact - 46}" text-anchor="middle" style="fill:var(--bad)">replaced by →</text>`;
+    }).join('');
+
+  const nodes =
+    eps.map((e) => gnode(e.x, Y.ep, trunc(e.text, 34), e.text, `openEpisode('${esc(e.id)}')`)).join('') +
+    facts.map((f) => gnode(fx[f.id], Y.fact, trunc(f.text, 26), f.text,
+      `openFact('${esc(f.id)}')`, f.is_active ? '' : 'off', 'var(--accent)')).join('') +
+    sents.map((s) => gnode(s.x, Y.sent, trunc(s.text, 30), s.text,
+      `location.hash='#/sessions/${encodeURIComponent(s.session_id)}'`, '', 'var(--muted)')).join('');
+
+  const bands = [['EPISODES', Y.ep], ['FACTS', Y.fact], ['SENTENCES', Y.sent]].map(([t, y]) =>
+    `<text class="gband" x="12" y="${y + 16}">${t}</text>
+     <line class="gtick" x1="78" y1="${y + 12}" x2="${width - 16}" y2="${y + 12}"></line>`).join('');
+
+  return `<div class="graphwrap"><svg width="${width}" height="330">${bands}${edges}${nodes}</svg></div>`;
+}
+
+function renderMemfsMap(g) {
+  if (!g.nodes.length) {
+    return '<div class="empty">No memory files yet.</div>';
+  }
+  const TYPE_COLOR = {semantic: 'var(--accent)', procedural: 'var(--ok)',
+                      episodic: 'var(--episode)', source: 'var(--muted)', archive: 'var(--faint)'};
+  const cols = {};
+  for (const n of g.nodes) (cols[n.path.split('/')[0]] = cols[n.path.split('/')[0]] || []).push(n);
+  const order = ['semantic', 'procedural', 'episodic', 'sources', 'archive'].filter((d) => cols[d]);
+  const COLW = 280, height = Math.max(...order.map((d) => cols[d].length)) * 56 + 70;
+  const pos = {};
+  order.forEach((d, ci) => {
+    cols[d].forEach((n, ri) => {
+      pos[n.path] = {x: ci * COLW + COLW / 2, y: 56 + ri * 56};
+    });
+  });
+  const width = order.length * COLW;
+  const edges = g.edges.map((e) => {
+    const a = pos[e.src], b = pos[e.dst];
+    if (!a || !b) return '';
+    return `<path class="gedge" d="M${a.x},${a.y + 12} C${(a.x + b.x) / 2},${a.y + 12} ${(a.x + b.x) / 2},${b.y + 12} ${b.x},${b.y + 12}"></path>`;
+  }).join('');
+  const nodes = g.nodes.map((n) => gnode(pos[n.path].x, pos[n.path].y, trunc(n.title, 30), n.path,
+    `location.hash='#/files/${encodeURIComponent(n.path)}'`, '', TYPE_COLOR[n.type] || '')).join('');
+  const heads = order.map((d, ci) =>
+    `<text class="gband" x="${ci * COLW + COLW / 2}" y="22" text-anchor="middle">${d}/</text>`).join('');
+  return `<div class="graphwrap"><svg width="${width}" height="${height}">${heads}${edges}${nodes}</svg></div>`;
+}
+
+async function pageGraph(c) {
+  const [sg, mg] = await Promise.all([
+    state.user ? api('graph?user=' + encodeURIComponent(state.user))
+               : {facts: [], sentences: [], episodes: [], fs: [], ef: [], ss: []},
+    api('memfs/graph'),
+  ]);
+  c.innerHTML = `<div class="page" style="max-width:none">
+    <h2>Memory graphs</h2>
+    <div class="sub">Two engines, two shapes — every node is clickable</div>
+    <div class="panel" style="margin-bottom:16px">
+      <h3>${engineChip('sx')} Conversation memory — layered hierarchy</h3>
+      <div class="sub" style="margin-bottom:10px">Sentences at the bottom are distilled into facts;
+        facts roll up into episodes. <span style="color:var(--bad)">Dashed red</span> = a fact replaced by a newer one.</div>
+      ${renderSentexLayers(sg)}
+    </div>
+    <div class="panel">
+      <h3>${engineChip('mf')} File memory — wikilink map</h3>
+      <div class="sub" style="margin-bottom:10px">Columns mirror the directory tree; curves are
+        [[wikilinks]] between notes. Node color = note type.</div>
+      ${renderMemfsMap(mg)}
+    </div>
+  </div>`;
+}
+
 /* ── facts ────────────────────────────────────────────────────────────── */
+function renderFactTimeline(list) {
+  const facts = list.filter((f) => f.created_at);
+  if (!facts.length) return '<div class="empty">Nothing to plot.</div>';
+  const ts = (s) => new Date(s.replace(' ', 'T')).getTime();
+  const t0 = Math.min(...facts.map((f) => ts(f.created_at)));
+  const t1 = Math.max(...facts.map((f) => ts(f.created_at)), Date.now());
+  const PAD = 240, W = Math.max(980, document.body.clientWidth - 480);
+  const X = (t) => PAD + (t - t0) / Math.max(t1 - t0, 1) * (W - PAD - 170);
+  const subjects = [...new Set(facts.map((f) => f.subject || 'general'))];
+  const laneY = Object.fromEntries(subjects.map((s, i) => [s, 46 + i * 64]));
+  const fpos = {};
+  for (const lane of subjects) {
+    const inLane = facts.filter((f) => (f.subject || 'general') === lane)
+      .map((f) => ({f, x: X(ts(f.created_at))}));
+    spread(inLane, 60, PAD);
+    for (const {f, x} of inLane) fpos[f.id] = {x, y: laneY[lane]};
+  }
+  const arrows = facts.filter((f) => f.superseded_by && fpos[f.superseded_by]).map((f) => {
+    const a = fpos[f.id], b = fpos[f.superseded_by];
+    return `<path class="gedge super" d="M${a.x},${a.y - 4} C${a.x},${a.y - 34} ${b.x},${b.y - 34} ${b.x},${b.y - 4}"></path>`;
+  }).join('');
+  const nodes = facts.map((f) => gnode(fpos[f.id].x, fpos[f.id].y, trunc(f.text, 24), f.text,
+    `openFact('${esc(f.id)}')`, f.is_active ? '' : 'off', 'var(--accent)')).join('');
+  const lanes = subjects.map((s) =>
+    `<text class="gband" x="12" y="${laneY[s] + 16}">${esc(trunc(s, 18))}</text>
+     <line class="gtick" x1="${PAD - 30}" y1="${laneY[s] + 12}" x2="${W - 16}" y2="${laneY[s] + 12}"></line>`).join('');
+  const axis = [t0, (t0 + t1) / 2, t1].map((t) =>
+    `<text class="gaxis" x="${X(t)}" y="${subjects.length * 64 + 40}" text-anchor="middle">${
+      new Date(t).toLocaleDateString(undefined, {month: 'short', day: 'numeric'})}</text>`).join('');
+  return `<div class="graphwrap"><svg width="${W}" height="${subjects.length * 64 + 52}">
+    ${lanes}${arrows}${nodes}${axis}</svg></div>
+    <div class="sub" style="margin-top:8px">Knowledge over time, one lane per subject.
+      Dimmed pills were superseded — <span style="color:var(--bad)">dashed red</span> points to what replaced them.</div>`;
+}
+
 async function pageFacts(c) {
   if (!state.user) { c.innerHTML = emptySentex(); return; }
   const load = async () => {
-    const list = await api(`facts?user=${encodeURIComponent(state.user)}&state=${state.factState}&q=${encodeURIComponent(state.factQ)}`);
-    $('factList').innerHTML = list.map(factRow).join('') ||
-      `<div class="empty">No ${state.factState === 'all' ? '' : state.factState + ' '}facts${state.factQ ? ' matching “' + esc(state.factQ) + '”' : ''}.</div>`;
+    const wantState = state.factView === 'timeline' ? 'all' : state.factState;
+    const list = await api(`facts?user=${encodeURIComponent(state.user)}&state=${wantState}&q=${encodeURIComponent(state.factQ)}`);
+    $('factList').innerHTML = state.factView === 'timeline'
+      ? renderFactTimeline(list)
+      : list.map(factRow).join('') ||
+        `<div class="empty">No ${state.factState === 'all' ? '' : state.factState + ' '}facts${state.factQ ? ' matching “' + esc(state.factQ) + '”' : ''}.</div>`;
   };
   c.innerHTML = `<div class="page">
-    <h2>Facts</h2><div class="sub">Distilled knowledge · click a fact to trace where it came from</div>
+    <h2>Facts ${engineChip('sx')}</h2>
+    <div class="sub">What the agent learned from conversations · click a fact to trace where it came from</div>
     <div class="toolbar">
-      <div class="chipset">${['active', 'superseded', 'all'].map((s) =>
+      <div class="chipset">${['list', 'timeline'].map((v) =>
+        `<button class="${state.factView === v ? 'on' : ''}" data-fv="${v}">${v}</button>`).join('')}
+      </div>
+      <div class="chipset" id="stateChips">${['active', 'superseded', 'all'].map((s) =>
         `<button class="${state.factState === s ? 'on' : ''}" data-fs="${s}">${s}</button>`).join('')}
       </div>
       <input id="factFilter" placeholder="filter text…" value="${esc(state.factQ)}">
@@ -348,6 +580,13 @@ async function pageFacts(c) {
     c.querySelectorAll('[data-fs]').forEach((x) => x.classList.toggle('on', x === b));
     load();
   });
+  c.querySelectorAll('[data-fv]').forEach((b) => b.onclick = () => {
+    state.factView = b.dataset.fv;
+    c.querySelectorAll('[data-fv]').forEach((x) => x.classList.toggle('on', x === b));
+    $('stateChips').style.visibility = state.factView === 'timeline' ? 'hidden' : 'visible';
+    load();
+  });
+  $('stateChips').style.visibility = state.factView === 'timeline' ? 'hidden' : 'visible';
   let t; $('factFilter').oninput = (e) => { clearTimeout(t);
     t = setTimeout(() => { state.factQ = e.target.value; load(); }, 200); };
   await load();
@@ -391,7 +630,7 @@ async function pageEpisodes(c) {
   if (!state.user) { c.innerHTML = emptySentex(); return; }
   const list = await api('episodes?user=' + encodeURIComponent(state.user));
   c.innerHTML = `<div class="page">
-    <h2>Episodes</h2><div class="sub">Summarized happenings, distilled from conversations</div>
+    <h2>Episodes ${engineChip('sx')}</h2><div class="sub">Summarized happenings, distilled from conversations</div>
     ${list.map((e) => `<div class="row ${e.is_active ? '' : 'dim'}" onclick="openEpisode('${esc(e.id)}')">
         <span class="text">${esc(e.text)}</span>
         <span class="badge">${e.fact_count} fact${e.fact_count === 1 ? '' : 's'}</span>
@@ -421,7 +660,7 @@ async function pageSessions(c) {
   if (!state.user) { c.innerHTML = emptySentex(); return; }
   const list = await api('sessions?user=' + encodeURIComponent(state.user));
   c.innerHTML = `<div class="page">
-    <h2>Conversations</h2><div class="sub">Raw transcripts — the ground truth everything is distilled from</div>
+    <h2>Conversations ${engineChip('sx')}</h2><div class="sub">Raw transcripts — the ground truth everything is distilled from</div>
     ${list.map((s) => `<div class="row" onclick="location.hash='#/sessions/${encodeURIComponent(s.id)}'">
         <span class="text mono" style="font-family:var(--mono);font-size:12px">${esc(s.id)}</span>
         <span class="badge">${s.sentence_count} sentences</span>
@@ -477,7 +716,7 @@ async function pageFiles(c) {
   for (const n of t.notes) (groups[n.dir] = groups[n.dir] || []).push(n);
   const order = ['semantic', 'procedural', 'episodic', 'sources', 'archive'];
   c.innerHTML = `<div class="page">
-    <h2>Files</h2><div class="sub">Filesystem memory — plain markdown, canonical. The index is just a cache.</div>
+    <h2>Files ${engineChip('mf')}</h2><div class="sub">Plain markdown, canonical — the index is just a cache. <a href="#/graph">View as link map →</a></div>
     ${order.filter((d) => groups[d]).map((d) => `
       <div class="section-label">${d}/ · ${groups[d].length}</div>
       ${groups[d].map((n) => `<div class="row" onclick="location.hash='#/files/${encodeURIComponent(n.path)}'">
@@ -509,26 +748,81 @@ async function pageNote(c, relPath) {
       ${n.tags.map((t) => `<span class="badge">#${esc(t)}</span>`).join('')}
     </div>
     <div class="sub">${fmtDate(n.created)}${n.source ? ' · from ' + esc(n.source) : ''}</div>
+    ${noteLocalGraph(n)}
     <div class="note-body">${body}</div>
     ${n.backlinks.length ? `<div class="section-label" style="margin-top:28px">Linked from</div>` +
       n.backlinks.map((b) => `<button class="mini" onclick="location.hash='#/files/${encodeURIComponent(b)}'">${esc(b)}</button>`).join('') : ''}
   </div>`;
 }
 
+function noteLocalGraph(n) {
+  const ins = n.backlinks;
+  const outs = n.links_out.filter((l) => l.path);
+  if (!ins.length && !outs.length) return '';
+  const H = Math.max(ins.length, outs.length, 1) * 44 + 36;
+  const cy = H / 2, W = 880;
+  const hedge = (x1, y1, x2, y2) =>
+    `<path class="gedge" d="M${x1},${y1} C${(x1 + x2) / 2},${y1} ${(x1 + x2) / 2},${y2} ${x2},${y2}"></path>`;
+  const side = (items, x, getPath, label) => items.map((it, i) => {
+    const y = cy - ((items.length - 1) * 44) / 2 + i * 44 - 12;
+    const p = getPath(it);
+    return hedge(x < W / 2 ? x + pillW(trunc(label(it), 24)) / 2 : x - pillW(trunc(label(it), 24)) / 2,
+                 y + 12, W / 2 + (x < W / 2 ? -75 : 75), cy) +
+      gnode(x, y, trunc(label(it), 24), p, `location.hash='#/files/${encodeURIComponent(p)}'`);
+  }).join('');
+  return `<div class="graphwrap" style="margin:14px 0"><svg width="${W}" height="${H}">
+    <line class="gtick" x1="${W / 2}" y1="14" x2="${W / 2}" y2="${H - 14}"></line>
+    ${side(ins, 150, (b) => b, (b) => b.split('/').pop().replace('.md', ''))}
+    ${side(outs, W - 150, (l) => l.path, (l) => l.slug)}
+    ${gnode(W / 2, cy - 12, trunc(n.title, 22), n.path, '', '', 'var(--ok)')}
+    ${ins.length ? `<text class="gband" x="150" y="14" text-anchor="middle">LINKED FROM</text>` : ''}
+    ${outs.length ? `<text class="gband" x="${W - 150}" y="14" text-anchor="middle">LINKS TO</text>` : ''}
+  </svg></div>`;
+}
+
 /* ── journal ──────────────────────────────────────────────────────────── */
+function journalLine(j) {
+  const hits = j.hits || [];
+  switch (j.op) {
+    case 'recall':
+      return [`searched memory for “${j.query}” — ` + (hits.length
+        ? `found ${hits.length}: ${hits.map((h) => shortPath(h.path)).join(', ')}`
+        : 'found nothing'), 'read'];
+    case 'remember': return [`saved a new memory · ${shortPath(j.path)}`, 'write'];
+    case 'ingest': return [`imported an external file · ${shortPath(j.src || j.path)}`, 'write'];
+    case 'sync': {
+      const changed = (j.added || 0) + (j.updated || 0) + (j.removed || 0);
+      return [changed
+        ? `synced files ↔ index · ${j.added || 0} new, ${j.updated || 0} updated, ${j.removed || 0} removed`
+        : 'checked files ↔ index — everything up to date', 'neutral'];
+    }
+    case 'forget':
+      return [`deleted ${(j.removed || []).map(shortPath).join(', ') || j.target} — gone for real, no tombstone`, 'delete'];
+    case 'compact': return [`compacted a month of episodics into a digest`, 'write'];
+    default: return [JSON.stringify(j), 'neutral'];
+  }
+}
+const OP_STYLE = {read: 'color:var(--accent);border-color:rgba(106,161,255,.3)',
+                  write: 'color:var(--ok);border-color:rgba(76,195,138,.3)',
+                  delete: 'color:var(--bad);border-color:rgba(229,83,75,.3)', neutral: ''};
+
 async function pageJournal(c) {
   const list = await api('memfs/journal');
+  let lastDay = '';
   c.innerHTML = `<div class="page">
-    <h2>Journal</h2><div class="sub">Every memfs operation, append-only — newest first</div>
+    <h2>Journal ${engineChip('mf')}</h2>
+    <div class="sub">What the agent did with its file memory — every search, save, and cleanup. Newest first.</div>
     ${list.map((j) => {
-      const detail = j.op === 'recall'
-        ? `“${j.query}” → ${(j.hits || []).length} hit${(j.hits || []).length === 1 ? '' : 's'}: ${(j.hits || []).map((h) => shortPath(h.path)).join(', ')}`
-        : shortPath(j.path) || j.title || j.target || (j.scanned != null ? `scanned ${j.scanned}, +${j.added} −${j.removed}` : '');
-      return `<div class="row" style="cursor:default">
-        <span class="badge">${esc(j.op)}</span>
-        <span class="text">${esc(detail)}</span>
+      const day = (j.ts || '').slice(0, 10);
+      const head = day !== lastDay ? `<div class="section-label">${
+        new Date(day).toLocaleDateString(undefined, {weekday: 'long', month: 'long', day: 'numeric'})}</div>` : '';
+      lastDay = day;
+      const [text, kind] = journalLine(j);
+      return head + `<div class="row" style="cursor:default">
+        <span class="badge" style="${OP_STYLE[kind]}">${esc(j.op)}</span>
+        <span class="text">${esc(text)}</span>
         <span class="meta">${fmtDate(j.ts)}</span></div>`;
-    }).join('') || '<div class="empty">No journal yet — appears at the first memfs operation.</div>'}
+    }).join('') || '<div class="empty">No journal yet — it appears at the first memfs operation.</div>'}
   </div>`;
 }
 
@@ -547,21 +841,21 @@ async function pageSearch(c, q) {
   const total = r.facts.length + r.episodes.length + r.sentences.length + r.notes.length;
   c.innerHTML = `<div class="page">
     <h2>“${esc(q)}”</h2><div class="sub">${total} result${total === 1 ? '' : 's'} across both engines</div>
-    ${r.facts.length ? '<div class="section-label">Facts</div>' + r.facts.map((f) =>
+    ${r.facts.length ? `<div class="section-label">Facts ${engineChip('sx')}</div>` + r.facts.map((f) =>
       `<div class="row ${f.is_active ? '' : 'dim'}" onclick="openFact('${esc(f.id)}')">
         <span class="text">${hl(f.text, q)}</span>
         ${f.is_active ? '' : '<span class="badge state-off">superseded</span>'}
         <span class="meta">${fmtDate(f.created_at)}</span></div>`).join('') : ''}
-    ${r.notes.length ? '<div class="section-label">Files</div>' + r.notes.map((n) =>
+    ${r.notes.length ? `<div class="section-label">Files ${engineChip('mf')}</div>` + r.notes.map((n) =>
       `<div class="row" onclick="location.hash='#/files/${encodeURIComponent(n.path)}'">
         <span class="text">${hl(n.text, q)}</span>
         <span class="badge ${esc(n.type)}">${esc(n.type)}</span>
         <span class="meta">${esc(n.path)}:${n.start_line}</span></div>`).join('') : ''}
-    ${r.episodes.length ? '<div class="section-label">Episodes</div>' + r.episodes.map((e) =>
+    ${r.episodes.length ? `<div class="section-label">Episodes ${engineChip('sx')}</div>` + r.episodes.map((e) =>
       `<div class="row" onclick="openEpisode('${esc(e.id)}')">
         <span class="text">${hl(e.text, q)}</span>
         <span class="meta">${fmtDate(e.created_at)}</span></div>`).join('') : ''}
-    ${r.sentences.length ? '<div class="section-label">Said in conversation</div>' + r.sentences.map((s) =>
+    ${r.sentences.length ? `<div class="section-label">Said in conversation ${engineChip('sx')}</div>` + r.sentences.map((s) =>
       `<div class="row" onclick="location.hash='#/sessions/${encodeURIComponent(s.session_id)}'">
         <span class="text">${hl(s.text, q)}</span>
         <span class="badge">${esc(s.role)}</span>

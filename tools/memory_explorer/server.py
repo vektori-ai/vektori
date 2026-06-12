@@ -316,7 +316,7 @@ class MemfsView:
     def stats(self) -> dict:
         idx = self.root / ".memfs" / "index.db"
         s: dict = {"root": str(self.root), "notes": len(self._files()),
-                   "index_present": idx.is_file()}
+                   "links": len(self.graph()["edges"]), "index_present": idx.is_file()}
         conn = open_ro(idx)
         if conn:
             try:
