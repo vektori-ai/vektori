@@ -202,6 +202,34 @@ def sx_search(conn: sqlite3.Connection, user: str, q: str) -> dict:
     }
 
 
+def sx_graph(conn: sqlite3.Connection, user: str, limit: int = 60) -> dict:
+    """Layered hierarchy for one user: episodes / facts / source sentences + edges."""
+    facts = [fact_dict(r) for r in rows(conn,
+        "SELECT id, text, subject, confidence, is_active, superseded_by, session_id,"
+        " event_time, created_at, metadata FROM facts WHERE user_id=?"
+        " ORDER BY datetime(created_at) DESC LIMIT ?", (user, limit))]
+    fact_ids = [f["id"] for f in facts]
+    if not fact_ids:
+        return {"facts": [], "sentences": [], "episodes": [], "fs": [], "ef": [], "ss": []}
+    ph = ",".join("?" * len(fact_ids))
+    fs = rows(conn, f"SELECT fact_id, sentence_id FROM fact_sources WHERE fact_id IN ({ph})",
+              tuple(fact_ids))
+    sent_ids = sorted({x["sentence_id"] for x in fs})
+    sentences = rows(conn,
+        f"SELECT id, text, role, session_id, turn_number, created_at FROM sentences"
+        f" WHERE id IN ({','.join('?' * len(sent_ids))})", tuple(sent_ids)) if sent_ids else []
+    ef = rows(conn, f"SELECT episode_id, fact_id FROM episode_facts WHERE fact_id IN ({ph})",
+              tuple(fact_ids))
+    ep_ids = sorted({x["episode_id"] for x in ef})
+    episodes = rows(conn,
+        f"SELECT id, text, session_id, created_at FROM episodes"
+        f" WHERE id IN ({','.join('?' * len(ep_ids))})", tuple(ep_ids)) if ep_ids else []
+    ss = [{"old": f["id"], "new": f["superseded_by"]} for f in facts
+          if f["superseded_by"] and f["superseded_by"] in fact_ids]
+    return {"facts": facts, "sentences": sentences, "episodes": episodes,
+            "fs": fs, "ef": ef, "ss": ss}
+
+
 # ── memfs (file tree) ───────────────────────────────────────────────────────
 
 class MemfsView:
@@ -257,6 +285,20 @@ class MemfsView:
             "links_out": [{"slug": s, "path": stems.get(s)} for s in links_out],
             "backlinks": backlinks, "raw": raw,
         }
+
+    def graph(self) -> dict:
+        """Wikilink graph: nodes = notes, edges = resolved [[links]]."""
+        files = self._files()
+        stems = {f.stem: f.relative_to(self.root).as_posix() for f in files}
+        nodes, edges = [], []
+        for f in files:
+            note = parse_note(f)
+            rel = f.relative_to(self.root).as_posix()
+            nodes.append({"path": rel, "title": note.title, "type": note.type})
+            for slug in extract_wikilinks(note.body):
+                if slug in stems and stems[slug] != rel:
+                    edges.append({"src": rel, "dst": stems[slug]})
+        return {"nodes": nodes, "edges": edges}
 
     def journal(self, limit: int = 200) -> list[dict]:
         jpath = self.root / ".memfs" / "journal.jsonl"
@@ -396,6 +438,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(self.memfs.tree() if self.memfs.ok else {"notes": [], "memory_md": ""})
             elif route == "memfs/note":
                 self._json(self.memfs.note(qs.get("path", "")) or {"error": "not found"})
+            elif route == "graph" and conn:
+                self._json(sx_graph(conn, user))
+            elif route == "memfs/graph":
+                self._json(self.memfs.graph() if self.memfs.ok else {"nodes": [], "edges": []})
             elif route == "memfs/journal":
                 self._json(self.memfs.journal())
             elif route == "search":
