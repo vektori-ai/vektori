@@ -1,0 +1,600 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vektori — Memory Explorer</title>
+<style>
+  :root {
+    --bg: #101113; --panel: #17181b; --panel2: #1d1f23; --border: #26282c;
+    --text: #e7e9ec; --muted: #94989f; --faint: #5c6066;
+    --accent: #6aa1ff; --accent-dim: #2a3a58;
+    --ok: #4cc38a; --warn: #e5a13d; --bad: #e5534b;
+    --fact: #6aa1ff; --episode: #e5a13d; --sentence: #94989f;
+    --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 13px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif;
+    overflow: hidden;
+  }
+  ::selection { background: var(--accent-dim); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: #2c2e33; border-radius: 5px; border: 2px solid var(--bg); }
+
+  .app { display: grid; grid-template-rows: 44px 1fr; height: 100vh; }
+  .cols { display: grid; grid-template-columns: 192px 1fr; min-height: 0; }
+  .cols.with-inspector { grid-template-columns: 192px 1fr 400px; }
+
+  /* top bar */
+  .topbar {
+    display: flex; align-items: center; gap: 14px; padding: 0 14px;
+    border-bottom: 1px solid var(--border); background: var(--panel);
+  }
+  .brand { font-weight: 650; letter-spacing: -0.01em; white-space: nowrap; }
+  .brand span { color: var(--faint); font-weight: 400; }
+  select {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 8px; font: inherit; max-width: 220px;
+  }
+  .searchbox {
+    flex: 1; max-width: 460px; display: flex; align-items: center; gap: 8px;
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 6px;
+    padding: 4px 10px; color: var(--faint); cursor: text;
+  }
+  .searchbox input {
+    flex: 1; background: none; border: none; outline: none; color: var(--text); font: inherit;
+  }
+  kbd {
+    font: 11px var(--mono); background: var(--bg); border: 1px solid var(--border);
+    border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; color: var(--muted);
+  }
+  .status { margin-left: auto; display: flex; gap: 14px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; }
+  .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
+
+  /* left rail */
+  .rail { border-right: 1px solid var(--border); background: var(--panel); padding: 10px 8px; overflow-y: auto; }
+  .rail button {
+    display: flex; width: 100%; align-items: center; gap: 8px; padding: 6px 10px;
+    background: none; border: none; border-radius: 6px; color: var(--muted);
+    font: inherit; cursor: pointer; text-align: left;
+  }
+  .rail button:hover { background: var(--panel2); color: var(--text); }
+  .rail button.active { background: var(--accent-dim); color: var(--text); }
+  .rail .count { margin-left: auto; font: 11px var(--mono); color: var(--faint); }
+  .rail .num { color: var(--faint); font: 11px var(--mono); width: 10px; }
+  .rail h4 { margin: 14px 10px 4px; font-size: 10px; text-transform: uppercase;
+             letter-spacing: 0.08em; color: var(--faint); font-weight: 600; }
+
+  /* content */
+  .content { overflow-y: auto; min-width: 0; }
+  .page { padding: 18px 22px; max-width: 1080px; }
+  .page h2 { margin: 0 0 2px; font-size: 16px; font-weight: 650; letter-spacing: -0.01em; }
+  .page .sub { color: var(--muted); margin-bottom: 16px; }
+
+  .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+  .chipset { display: flex; gap: 4px; background: var(--panel); border: 1px solid var(--border);
+             border-radius: 7px; padding: 3px; }
+  .chipset button {
+    background: none; border: none; color: var(--muted); font: inherit; cursor: pointer;
+    padding: 3px 10px; border-radius: 5px;
+  }
+  .chipset button.on { background: var(--panel2); color: var(--text); }
+  .toolbar input {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text); font: inherit; padding: 5px 10px; width: 240px;
+  }
+
+  /* rows */
+  .row {
+    display: flex; align-items: baseline; gap: 10px; padding: 8px 10px;
+    border-bottom: 1px solid var(--border); cursor: pointer; border-radius: 4px;
+  }
+  .row:hover { background: var(--panel); }
+  .row.sel { background: var(--accent-dim); }
+  .row .text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row.dim .text { color: var(--faint); }
+  .row .meta { color: var(--faint); font: 11px var(--mono); white-space: nowrap; }
+  .badge {
+    font-size: 10px; font-weight: 600; padding: 1px 7px; border-radius: 9px;
+    border: 1px solid var(--border); color: var(--muted); white-space: nowrap;
+  }
+  .badge.semantic { color: var(--accent); border-color: var(--accent-dim); }
+  .badge.episodic { color: var(--episode); }
+  .badge.procedural { color: var(--ok); }
+  .badge.source, .badge.archive { color: var(--muted); }
+  .badge.state-off { color: var(--faint); }
+  .meter { width: 36px; height: 4px; background: var(--panel2); border-radius: 2px; overflow: hidden; flex: none; align-self: center; }
+  .meter i { display: block; height: 100%; background: var(--accent); }
+
+  /* overview */
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+  .panel h3 { margin: 0 0 10px; font-size: 12px; font-weight: 600; color: var(--muted);
+              text-transform: uppercase; letter-spacing: 0.06em; }
+  .statline { display: flex; gap: 18px; margin-bottom: 16px; flex-wrap: wrap; }
+  .stat b { font-size: 19px; font-weight: 650; }
+  .stat span { display: block; color: var(--faint); font-size: 11px; }
+  pre.mono {
+    margin: 0; font: 12px/1.6 var(--mono); white-space: pre-wrap; word-break: break-word;
+    color: var(--muted);
+  }
+
+  /* inspector */
+  .inspector {
+    border-left: 1px solid var(--border); background: var(--panel); overflow-y: auto;
+    padding: 16px 18px;
+  }
+  .inspector h3 { margin: 0; font-size: 14px; font-weight: 650; line-height: 1.4; }
+  .inspector .close { float: right; background: none; border: none; color: var(--faint);
+                      font-size: 16px; cursor: pointer; padding: 0 2px; }
+  .inspector .close:hover { color: var(--text); }
+  .kv { margin: 12px 0; display: grid; grid-template-columns: 92px 1fr; gap: 4px 10px; font-size: 12px; }
+  .kv dt { color: var(--faint); } .kv dd { margin: 0; word-break: break-word; }
+  .kv dd.mono { font-family: var(--mono); font-size: 11px; }
+  .section-label { margin: 18px 0 8px; font-size: 11px; font-weight: 600; color: var(--faint);
+                   text-transform: uppercase; letter-spacing: 0.06em; }
+  .quote {
+    border-left: 2px solid var(--border); padding: 6px 10px; margin: 6px 0;
+    font-size: 12px; color: var(--muted);
+  }
+  .quote .who { font: 10px var(--mono); color: var(--faint); display: block; margin-bottom: 2px; }
+  .quote.user-role { border-left-color: var(--accent); }
+  .mini {
+    display: block; padding: 7px 10px; margin: 4px 0; border: 1px solid var(--border);
+    border-radius: 6px; font-size: 12px; color: var(--text); cursor: pointer; background: none;
+    width: 100%; text-align: left; font-family: inherit; line-height: 1.45;
+  }
+  .mini:hover { border-color: var(--accent-dim); background: var(--panel2); }
+  .mini .tag { color: var(--faint); font: 10px var(--mono); }
+
+  /* transcript */
+  .turn { display: grid; grid-template-columns: 100px 1fr; gap: 12px; padding: 7px 0; }
+  .turn .who { font: 11px var(--mono); color: var(--faint); text-align: right; padding-top: 2px; white-space: nowrap; }
+  .turn.user-role .who { color: var(--accent); }
+  .sent { padding: 1px 6px; margin-left: -6px; border-radius: 4px; }
+  .sent.has-facts { cursor: pointer; box-shadow: inset 2px 0 0 var(--ok); padding-left: 8px; }
+  .sent.has-facts:hover { background: var(--panel); }
+  .sent .fcount { font: 10px var(--mono); color: var(--ok); margin-left: 6px; }
+
+  /* note reading view */
+  .note-body { font: 13px/1.7 var(--mono); white-space: pre-wrap; word-break: break-word;
+               max-width: 860px; color: var(--text); }
+  .note-body .wikilink { color: var(--accent); cursor: pointer; }
+  .note-head { display: flex; gap: 8px; align-items: center; margin-bottom: 4px; flex-wrap: wrap; }
+
+  .empty { padding: 48px 0; text-align: center; color: var(--faint); }
+  .empty code { font-family: var(--mono); background: var(--panel); padding: 2px 7px; border-radius: 5px; }
+  .crumb { color: var(--faint); margin-bottom: 10px; font-size: 12px; }
+  .crumb a { color: var(--muted); }
+  mark { background: var(--accent-dim); color: var(--text); border-radius: 2px; padding: 0 1px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <div class="brand">vektori <span>/ memory</span></div>
+    <select id="userSel" title="user"></select>
+    <div class="searchbox" onclick="goSearch()">
+      <input id="searchInput" placeholder="Search facts, conversations, files…"
+             onkeydown="if(event.key==='Enter')goSearch(this.value)">
+      <kbd>/</kbd>
+    </div>
+    <div class="status" id="storeStatus"></div>
+  </div>
+  <div class="cols" id="cols">
+    <nav class="rail" id="rail"></nav>
+    <main class="content" id="content"></main>
+    <aside class="inspector" id="inspector" hidden></aside>
+  </div>
+</div>
+
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmtDate = (s) => {
+  if (!s) return '';
+  const d = new Date(s.includes('T') || s.includes(' ') ? s : s + 'T00:00:00');
+  return isNaN(d) ? esc(s) : d.toLocaleDateString(undefined, {month:'short', day:'numeric'}) +
+    ' ' + d.toLocaleTimeString(undefined, {hour:'2-digit', minute:'2-digit'});
+};
+const shortPath = (p) => String(p ?? '').split('/').slice(-2).join('/');
+const api = async (path) => {
+  const r = await fetch('/api/' + path);
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+  return r.json();
+};
+
+const SECTIONS = [
+  ['overview', 'Overview'], ['facts', 'Facts'], ['episodes', 'Episodes'],
+  ['sessions', 'Conversations'], ['files', 'Files'], ['journal', 'Journal'],
+];
+const state = { user: '', meta: null, counts: {}, factState: 'active', factQ: '', selId: null };
+
+/* ── boot ─────────────────────────────────────────────────────────────── */
+async function boot() {
+  state.meta = await api('meta');
+  const users = state.meta.db.users;
+  $('userSel').innerHTML = users.length
+    ? users.map((u) => `<option>${esc(u)}</option>`).join('')
+    : '<option value="">(no users)</option>';
+  state.user = localStorage.getItem('vk_user') || users[0] || '';
+  if (users.includes(state.user)) $('userSel').value = state.user; else state.user = users[0] || '';
+  $('userSel').onchange = () => {
+    state.user = $('userSel').value;
+    localStorage.setItem('vk_user', state.user);
+    closeInspector(); route();
+  };
+  const d = state.meta.db, m = state.meta.memfs;
+  $('storeStatus').innerHTML =
+    `<span title="${esc(d.path)}"><i class="dot ${d.ok ? 'ok' : 'bad'}"></i>sentex</span>` +
+    `<span title="${esc(m.root)} — ${m.notes ?? 0} notes, ${m.chunks ?? 0} chunks indexed">` +
+    `<i class="dot ${m.ok ? 'ok' : 'bad'}"></i>memfs</span>`;
+  if (!location.hash) location.hash = '#/overview';
+  await route();
+}
+
+function renderRail(active) {
+  $('rail').innerHTML = SECTIONS.map(([id, label], i) => {
+    const n = {facts: state.counts.facts_active, episodes: state.counts.episodes,
+               sessions: state.counts.sessions, files: state.meta?.memfs?.notes}[id];
+    return `<button class="${active === id ? 'active' : ''}" onclick="location.hash='#/${id}'">
+      <span class="num">${i + 1}</span>${label}
+      ${n != null ? `<span class="count">${n}</span>` : ''}</button>`;
+  }).join('');
+}
+
+/* ── router ───────────────────────────────────────────────────────────── */
+async function route() {
+  const [, section = 'overview', ...rest] = location.hash.slice(1).split('/');
+  const arg = decodeURIComponent(rest.join('/') || '');
+  try {
+    if (state.user) state.counts = (await api('overview?user=' + encodeURIComponent(state.user))).counts;
+  } catch {}
+  renderRail(section);
+  closeInspector();
+  const c = $('content');
+  try {
+    if (section === 'overview') await pageOverview(c);
+    else if (section === 'facts') { await pageFacts(c); if (arg) openFact(arg); }
+    else if (section === 'episodes') { await pageEpisodes(c); if (arg) openEpisode(arg); }
+    else if (section === 'sessions') arg ? await pageTranscript(c, arg) : await pageSessions(c);
+    else if (section === 'files') arg ? await pageNote(c, arg) : await pageFiles(c);
+    else if (section === 'journal') await pageJournal(c);
+    else if (section === 'search') await pageSearch(c, arg);
+  } catch (e) {
+    c.innerHTML = `<div class="page"><div class="empty">${esc(e.message)}</div></div>`;
+  }
+}
+window.addEventListener('hashchange', route);
+
+/* ── overview ─────────────────────────────────────────────────────────── */
+async function pageOverview(c) {
+  if (!state.user) { c.innerHTML = emptySentex(); return; }
+  const o = await api('overview?user=' + encodeURIComponent(state.user));
+  const n = o.counts;
+  c.innerHTML = `<div class="page">
+    <h2>What ${esc(state.user)}'s agent knows</h2>
+    <div class="sub">Active knowledge across both memory engines · read-only</div>
+    <div class="statline">
+      ${stat(n.facts_active, 'active facts')}${stat(n.facts_total - n.facts_active, 'superseded')}
+      ${stat(n.episodes, 'episodes')}${stat(n.sessions, 'conversations')}
+      ${stat(o.memfs_stats.notes ?? 0, 'memory files')}
+    </div>
+    <div class="grid2">
+      <div class="panel"><h3>Living profile — top facts by confidence</h3>
+        ${o.profile.length ? o.profile.map(factRow).join('') :
+          '<div class="empty">No active facts yet.</div>'}
+      </div>
+      <div class="panel"><h3>MEMORY.md — filesystem map of content</h3>
+        ${o.memory_md ? `<pre class="mono">${esc(o.memory_md)}</pre>` :
+          '<div class="empty">No MEMORY.md — the agent hasn\'t written file memories yet.</div>'}
+      </div>
+    </div>
+    <div class="grid2" style="margin-top:16px">
+      <div class="panel"><h3>Recently learned</h3>
+        ${o.recent_facts.map(factRow).join('') || '<div class="empty">—</div>'}
+      </div>
+      <div class="panel"><h3>Recent file activity</h3>
+        ${o.recent_journal.map((j) => `<div class="row" onclick="location.hash='#/journal'">
+            <span class="badge">${esc(j.op)}</span>
+            <span class="text">${esc(j.query ? '“' + j.query + '”' : shortPath(j.path) || j.title || '')}</span>
+            <span class="meta">${fmtDate(j.ts)}</span></div>`).join('') ||
+          '<div class="empty">—</div>'}
+      </div>
+    </div>
+  </div>`;
+}
+const stat = (v, label) => `<div class="stat"><b>${v ?? 0}</b><span>${label}</span></div>`;
+
+function factRow(f) {
+  const conf = Math.round((f.confidence ?? 0) * 100);
+  return `<div class="row ${f.is_active ? '' : 'dim'}" onclick="openFact('${esc(f.id)}')">
+    <span class="text">${esc(f.text)}</span>
+    ${f.subject ? `<span class="badge">${esc(f.subject)}</span>` : ''}
+    ${f.is_active ? `<span class="meter" title="confidence ${conf}%"><i style="width:${conf}%"></i></span>`
+                  : '<span class="badge state-off">superseded</span>'}
+    <span class="meta">${fmtDate(f.created_at)}</span>
+  </div>`;
+}
+
+/* ── facts ────────────────────────────────────────────────────────────── */
+async function pageFacts(c) {
+  if (!state.user) { c.innerHTML = emptySentex(); return; }
+  const load = async () => {
+    const list = await api(`facts?user=${encodeURIComponent(state.user)}&state=${state.factState}&q=${encodeURIComponent(state.factQ)}`);
+    $('factList').innerHTML = list.map(factRow).join('') ||
+      `<div class="empty">No ${state.factState === 'all' ? '' : state.factState + ' '}facts${state.factQ ? ' matching “' + esc(state.factQ) + '”' : ''}.</div>`;
+  };
+  c.innerHTML = `<div class="page">
+    <h2>Facts</h2><div class="sub">Distilled knowledge · click a fact to trace where it came from</div>
+    <div class="toolbar">
+      <div class="chipset">${['active', 'superseded', 'all'].map((s) =>
+        `<button class="${state.factState === s ? 'on' : ''}" data-fs="${s}">${s}</button>`).join('')}
+      </div>
+      <input id="factFilter" placeholder="filter text…" value="${esc(state.factQ)}">
+    </div>
+    <div id="factList"></div>
+  </div>`;
+  c.querySelectorAll('[data-fs]').forEach((b) => b.onclick = () => {
+    state.factState = b.dataset.fs;
+    c.querySelectorAll('[data-fs]').forEach((x) => x.classList.toggle('on', x === b));
+    load();
+  });
+  let t; $('factFilter').oninput = (e) => { clearTimeout(t);
+    t = setTimeout(() => { state.factQ = e.target.value; load(); }, 200); };
+  await load();
+}
+
+async function openFact(id) {
+  const d = await api('fact?id=' + encodeURIComponent(id));
+  if (d.error) return;
+  const f = d.fact;
+  openInspector(`
+    <h3>${esc(f.text)}</h3>
+    <dl class="kv">
+      <dt>state</dt><dd>${f.is_active ? 'active' : 'superseded'}</dd>
+      <dt>confidence</dt><dd>${f.confidence ?? '—'}</dd>
+      ${f.subject ? `<dt>subject</dt><dd>${esc(f.subject)}</dd>` : ''}
+      ${f.event_time ? `<dt>event time</dt><dd>${fmtDate(f.event_time)}</dd>` : ''}
+      <dt>learned</dt><dd>${fmtDate(f.created_at)}</dd>
+      <dt>id</dt><dd class="mono">${esc(f.id)}</dd>
+    </dl>
+    ${d.superseded_by_fact.length ? `<div class="section-label">Replaced by</div>` +
+      d.superseded_by_fact.map((x) => miniFact(x)).join('') : ''}
+    ${d.supersedes_facts.length ? `<div class="section-label">Replaces</div>` +
+      d.supersedes_facts.map((x) => miniFact(x)).join('') : ''}
+    <div class="section-label">Heard in — verbatim sources</div>
+    ${d.sentences.map((s) => `<div class="quote ${s.role === 'user' ? 'user-role' : ''}">
+        <span class="who">${esc(s.role)} · turn ${s.turn_number} ·
+          <a href="#/sessions/${encodeURIComponent(s.session_id)}">open conversation</a></span>
+        ${esc(s.text)}</div>`).join('') ||
+      '<div class="quote">No linked source sentences.</div>'}
+    ${d.episodes.length ? `<div class="section-label">Part of episodes</div>` +
+      d.episodes.map((e) => `<button class="mini" onclick="openEpisode('${esc(e.id)}')">
+        ${esc(e.text)}<br><span class="tag">${fmtDate(e.created_at)}</span></button>`).join('') : ''}
+    ${d.related.length ? `<div class="section-label">Related facts</div>` +
+      d.related.map((x) => miniFact(x)).join('') : ''}
+  `);
+}
+const miniFact = (x) => `<button class="mini" onclick="openFact('${esc(x.id)}')">${esc(x.text)}</button>`;
+
+/* ── episodes ─────────────────────────────────────────────────────────── */
+async function pageEpisodes(c) {
+  if (!state.user) { c.innerHTML = emptySentex(); return; }
+  const list = await api('episodes?user=' + encodeURIComponent(state.user));
+  c.innerHTML = `<div class="page">
+    <h2>Episodes</h2><div class="sub">Summarized happenings, distilled from conversations</div>
+    ${list.map((e) => `<div class="row ${e.is_active ? '' : 'dim'}" onclick="openEpisode('${esc(e.id)}')">
+        <span class="text">${esc(e.text)}</span>
+        <span class="badge">${e.fact_count} fact${e.fact_count === 1 ? '' : 's'}</span>
+        <span class="meta">${fmtDate(e.session_date || e.created_at)}</span>
+      </div>`).join('') || '<div class="empty">No episodes yet.</div>'}
+  </div>`;
+}
+
+async function openEpisode(id) {
+  const d = await api('episode?id=' + encodeURIComponent(id));
+  if (d.error) return;
+  openInspector(`
+    <h3>${esc(d.episode.text)}</h3>
+    <dl class="kv">
+      <dt>recorded</dt><dd>${fmtDate(d.episode.created_at)}</dd>
+      ${d.episode.session_id ? `<dt>conversation</dt>
+        <dd><a href="#/sessions/${encodeURIComponent(d.episode.session_id)}">open transcript</a></dd>` : ''}
+      <dt>id</dt><dd class="mono">${esc(d.episode.id)}</dd>
+    </dl>
+    <div class="section-label">Facts in this episode</div>
+    ${d.facts.map((x) => miniFact(x)).join('') || '<div class="quote">No linked facts.</div>'}
+  `);
+}
+
+/* ── conversations ────────────────────────────────────────────────────── */
+async function pageSessions(c) {
+  if (!state.user) { c.innerHTML = emptySentex(); return; }
+  const list = await api('sessions?user=' + encodeURIComponent(state.user));
+  c.innerHTML = `<div class="page">
+    <h2>Conversations</h2><div class="sub">Raw transcripts — the ground truth everything is distilled from</div>
+    ${list.map((s) => `<div class="row" onclick="location.hash='#/sessions/${encodeURIComponent(s.id)}'">
+        <span class="text mono" style="font-family:var(--mono);font-size:12px">${esc(s.id)}</span>
+        <span class="badge">${s.sentence_count} sentences</span>
+        <span class="badge">${s.fact_count} facts</span>
+        <span class="meta">${fmtDate(s.started_at)}</span>
+      </div>`).join('') || '<div class="empty">No conversations recorded.</div>'}
+  </div>`;
+}
+
+async function pageTranscript(c, sessionId) {
+  const d = await api('session?id=' + encodeURIComponent(sessionId));
+  const turns = [];
+  let cur = null;
+  for (const s of d.sentences) {
+    if (!cur || cur.turn !== s.turn_number || cur.role !== s.role) {
+      cur = { turn: s.turn_number, role: s.role, sentences: [] };
+      turns.push(cur);
+    }
+    cur.sentences.push(s);
+  }
+  c.innerHTML = `<div class="page">
+    <div class="crumb"><a href="#/sessions">Conversations</a> / <span style="font-family:var(--mono)">${esc(sessionId)}</span></div>
+    <h2>Transcript</h2>
+    <div class="sub">Sentences with a <span style="color:var(--ok)">green edge</span> produced facts — click them to see which</div>
+    ${turns.map((t) => `<div class="turn ${t.role === 'user' ? 'user-role' : ''}">
+      <div class="who">${esc(t.role)} · t${t.turn}</div>
+      <div>${t.sentences.map((s) => {
+        const facts = d.facts_by_sentence[s.id] || [];
+        return `<div class="sent ${facts.length ? 'has-facts' : ''}"
+          ${facts.length ? `onclick='showSentenceFacts(${JSON.stringify(JSON.stringify({text: s.text, facts}))})'` : ''}>
+          ${esc(s.text)}${facts.length ? `<span class="fcount">→ ${facts.length} fact${facts.length === 1 ? '' : 's'}</span>` : ''}
+        </div>`;
+      }).join('')}</div>
+    </div>`).join('') || '<div class="empty">Empty transcript.</div>'}
+  </div>`;
+}
+
+function showSentenceFacts(payload) {
+  const {text, facts} = JSON.parse(payload);
+  openInspector(`
+    <h3>Facts from this sentence</h3>
+    <div class="quote user-role" style="margin-top:12px">${esc(text)}</div>
+    <div class="section-label">Produced</div>
+    ${facts.map((f) => `<button class="mini" onclick="openFact('${esc(f.fact_id)}')">
+      ${esc(f.text)}<br><span class="tag">${f.is_active ? 'active' : 'superseded'}</span></button>`).join('')}
+  `);
+}
+
+/* ── files (memfs) ────────────────────────────────────────────────────── */
+async function pageFiles(c) {
+  const t = await api('memfs/tree');
+  const groups = {};
+  for (const n of t.notes) (groups[n.dir] = groups[n.dir] || []).push(n);
+  const order = ['semantic', 'procedural', 'episodic', 'sources', 'archive'];
+  c.innerHTML = `<div class="page">
+    <h2>Files</h2><div class="sub">Filesystem memory — plain markdown, canonical. The index is just a cache.</div>
+    ${order.filter((d) => groups[d]).map((d) => `
+      <div class="section-label">${d}/ · ${groups[d].length}</div>
+      ${groups[d].map((n) => `<div class="row" onclick="location.hash='#/files/${encodeURIComponent(n.path)}'">
+        <span class="text">${esc(n.title)}</span>
+        <span class="badge ${esc(n.type)}">${esc(n.type)}</span>
+        ${n.links_out ? `<span class="meta">${n.links_out} link${n.links_out === 1 ? '' : 's'}</span>` : ''}
+        <span class="meta">${fmtDate(n.created)}</span>
+      </div>`).join('')}`).join('') ||
+      `<div class="empty">No memory files. The agent writes them via
+        <code>mem.remember(…)</code> — or drop markdown into the tree yourself; it's picked up on sync.</div>`}
+  </div>`;
+}
+
+async function pageNote(c, relPath) {
+  const n = await api('memfs/note?path=' + encodeURIComponent(relPath));
+  if (n.error) { c.innerHTML = `<div class="page"><div class="empty">${esc(n.error)}</div></div>`; return; }
+  const slugToPath = {};
+  for (const l of n.links_out) if (l.path) slugToPath[l.slug] = l.path;
+  const body = esc(n.body).replace(/\[\[([^\]]+)\]\]/g, (m, slug) => {
+    const p = slugToPath[slug.trim()];
+    return p ? `<span class="wikilink" onclick="location.hash='#/files/${encodeURIComponent(p)}'">[[${esc(slug)}]]</span>`
+             : `<span class="wikilink" style="color:var(--bad)" title="broken link">[[${esc(slug)}]]</span>`;
+  });
+  c.innerHTML = `<div class="page">
+    <div class="crumb"><a href="#/files">Files</a> / <span style="font-family:var(--mono)">${esc(n.path)}</span></div>
+    <div class="note-head">
+      <h2>${esc(n.title)}</h2>
+      <span class="badge ${esc(n.type)}">${esc(n.type)}</span>
+      ${n.tags.map((t) => `<span class="badge">#${esc(t)}</span>`).join('')}
+    </div>
+    <div class="sub">${fmtDate(n.created)}${n.source ? ' · from ' + esc(n.source) : ''}</div>
+    <div class="note-body">${body}</div>
+    ${n.backlinks.length ? `<div class="section-label" style="margin-top:28px">Linked from</div>` +
+      n.backlinks.map((b) => `<button class="mini" onclick="location.hash='#/files/${encodeURIComponent(b)}'">${esc(b)}</button>`).join('') : ''}
+  </div>`;
+}
+
+/* ── journal ──────────────────────────────────────────────────────────── */
+async function pageJournal(c) {
+  const list = await api('memfs/journal');
+  c.innerHTML = `<div class="page">
+    <h2>Journal</h2><div class="sub">Every memfs operation, append-only — newest first</div>
+    ${list.map((j) => {
+      const detail = j.op === 'recall'
+        ? `“${j.query}” → ${(j.hits || []).length} hit${(j.hits || []).length === 1 ? '' : 's'}: ${(j.hits || []).map((h) => shortPath(h.path)).join(', ')}`
+        : shortPath(j.path) || j.title || j.target || (j.scanned != null ? `scanned ${j.scanned}, +${j.added} −${j.removed}` : '');
+      return `<div class="row" style="cursor:default">
+        <span class="badge">${esc(j.op)}</span>
+        <span class="text">${esc(detail)}</span>
+        <span class="meta">${fmtDate(j.ts)}</span></div>`;
+    }).join('') || '<div class="empty">No journal yet — appears at the first memfs operation.</div>'}
+  </div>`;
+}
+
+/* ── search ───────────────────────────────────────────────────────────── */
+function goSearch(q) {
+  q = (typeof q === 'string' ? q : $('searchInput').value).trim();
+  if (q) location.hash = '#/search/' + encodeURIComponent(q);
+  else $('searchInput').focus();
+}
+const hl = (text, q) => esc(text).replace(new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'),
+  (m) => `<mark>${m}</mark>`);
+
+async function pageSearch(c, q) {
+  $('searchInput').value = q;
+  const r = await api(`search?user=${encodeURIComponent(state.user)}&q=${encodeURIComponent(q)}`);
+  const total = r.facts.length + r.episodes.length + r.sentences.length + r.notes.length;
+  c.innerHTML = `<div class="page">
+    <h2>“${esc(q)}”</h2><div class="sub">${total} result${total === 1 ? '' : 's'} across both engines</div>
+    ${r.facts.length ? '<div class="section-label">Facts</div>' + r.facts.map((f) =>
+      `<div class="row ${f.is_active ? '' : 'dim'}" onclick="openFact('${esc(f.id)}')">
+        <span class="text">${hl(f.text, q)}</span>
+        ${f.is_active ? '' : '<span class="badge state-off">superseded</span>'}
+        <span class="meta">${fmtDate(f.created_at)}</span></div>`).join('') : ''}
+    ${r.notes.length ? '<div class="section-label">Files</div>' + r.notes.map((n) =>
+      `<div class="row" onclick="location.hash='#/files/${encodeURIComponent(n.path)}'">
+        <span class="text">${hl(n.text, q)}</span>
+        <span class="badge ${esc(n.type)}">${esc(n.type)}</span>
+        <span class="meta">${esc(n.path)}:${n.start_line}</span></div>`).join('') : ''}
+    ${r.episodes.length ? '<div class="section-label">Episodes</div>' + r.episodes.map((e) =>
+      `<div class="row" onclick="openEpisode('${esc(e.id)}')">
+        <span class="text">${hl(e.text, q)}</span>
+        <span class="meta">${fmtDate(e.created_at)}</span></div>`).join('') : ''}
+    ${r.sentences.length ? '<div class="section-label">Said in conversation</div>' + r.sentences.map((s) =>
+      `<div class="row" onclick="location.hash='#/sessions/${encodeURIComponent(s.session_id)}'">
+        <span class="text">${hl(s.text, q)}</span>
+        <span class="badge">${esc(s.role)}</span>
+        <span class="meta">${fmtDate(s.created_at)}</span></div>`).join('') : ''}
+    ${total === 0 ? '<div class="empty">Nothing in either engine matches.</div>' : ''}
+  </div>`;
+}
+
+/* ── inspector + keyboard ─────────────────────────────────────────────── */
+function openInspector(html) {
+  $('inspector').hidden = false;
+  $('cols').classList.add('with-inspector');
+  $('inspector').innerHTML = `<button class="close" onclick="closeInspector()" title="esc">✕</button>` + html;
+  $('inspector').scrollTop = 0;
+}
+function closeInspector() {
+  $('inspector').hidden = true;
+  $('cols').classList.remove('with-inspector');
+}
+const emptySentex = () => `<div class="page"><div class="empty">
+  No conversation store found.<br>Point the server at one:
+  <code>python -m tools.memory_explorer.server --db path/to/vektori.db</code></div></div>`;
+
+document.addEventListener('keydown', (e) => {
+  const typing = ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName);
+  if (e.key === 'Escape') { closeInspector(); document.activeElement.blur(); return; }
+  if (typing) return;
+  if (e.key === '/') { e.preventDefault(); $('searchInput').focus(); return; }
+  const i = parseInt(e.key, 10) - 1;
+  if (i >= 0 && i < SECTIONS.length) location.hash = '#/' + SECTIONS[i][0];
+});
+
+boot().catch((e) => { $('content').innerHTML = `<div class="page"><div class="empty">${esc(e.message)}</div></div>`; });
+</script>
+</body>
+</html>
